@@ -17,6 +17,7 @@ React + Node.js app for managing RV park registrations with:
 - `server/` Express API with PostgreSQL
 - `sql/001_rv_park_schema.sql` copy/paste SQL for your Railway Postgres database
 - `sql/002_seed_rv_sites_example.sql` optional starter site data you can edit first
+- `sql/003_pricing_and_site_categories_upgrade.sql` site-category and pricing upgrade
 
 ## Database Setup
 
@@ -31,6 +32,8 @@ It creates:
 - an exclusion constraint that prevents overlapping bookings for the same site
 
 If you want starter site records, edit and run [sql/002_seed_rv_sites_example.sql](/Users/kadenwhite/Desktop/RVPark/sql/002_seed_rv_sites_example.sql) after the schema file.
+
+If your database is moving to the expanded pricing model, run [sql/003_pricing_and_site_categories_upgrade.sql](/Users/kadenwhite/Desktop/RVPark/sql/003_pricing_and_site_categories_upgrade.sql) too.
 
 ## Local Setup
 

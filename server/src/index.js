@@ -39,6 +39,88 @@ app.use("/api", (req, res, next) => {
   return next();
 });
 
+function nightsBetween(arrivalDate, leaveDate) {
+  const start = new Date(`${arrivalDate}T00:00:00Z`);
+  const end = new Date(`${leaveDate}T00:00:00Z`);
+  return Math.round((end - start) / 86400000);
+}
+
+function toPriceNumber(value) {
+  return value === null || value === undefined ? null : Number(value);
+}
+
+function getPricingCategory(site) {
+  if (site.river_category === "prime_river") {
+    return "prime_river";
+  }
+
+  if (site.river_category === "normal_river") {
+    return "normal_river";
+  }
+
+  return site.is_big_rig ? "off_river_big_rig" : "off_river_small_rig";
+}
+
+function buildPricingRuleLookup(pricingRules) {
+  const lookup = new Map();
+
+  for (const rule of pricingRules) {
+    lookup.set(`${rule.site_category}:${rule.number_of_days}`, {
+      numberOfDays: rule.number_of_days,
+      normalPrice: toPriceNumber(rule.normal_price),
+      discountPrice: toPriceNumber(rule.discount_price)
+    });
+  }
+
+  return lookup;
+}
+
+function buildPricingRulesByCategory(pricingRules) {
+  const byCategory = new Map();
+
+  for (const rule of pricingRules) {
+    const current = byCategory.get(rule.site_category) || [];
+    current.push({
+      numberOfDays: rule.number_of_days,
+      normalPrice: toPriceNumber(rule.normal_price),
+      discountPrice: toPriceNumber(rule.discount_price)
+    });
+    byCategory.set(rule.site_category, current);
+  }
+
+  for (const [category, rules] of byCategory) {
+    byCategory.set(
+      category,
+      rules.sort((left, right) => left.numberOfDays - right.numberOfDays)
+    );
+  }
+
+  return byCategory;
+}
+
+function getPricingForSiteAndNights(site, numberOfNights, pricingLookup) {
+  const pricingCategory = getPricingCategory(site);
+  const rule = pricingLookup.get(`${pricingCategory}:${numberOfNights}`) || null;
+
+  return {
+    pricingCategory,
+    numberOfNights,
+    pricingConfigured: Boolean(rule),
+    normalPrice: rule?.normalPrice ?? null,
+    discountPrice: rule?.discountPrice ?? null
+  };
+}
+
+function decorateSiteWithPricingTable(site, pricingRulesByCategory) {
+  const pricingCategory = getPricingCategory(site);
+
+  return {
+    ...site,
+    pricing_category: pricingCategory,
+    pricing_rules: pricingRulesByCategory.get(pricingCategory) || []
+  };
+}
+
 function parseAvailabilityFilters(body) {
   const arrivalDate = body.arrivalDate;
   const leaveDate = body.leaveDate;
@@ -74,10 +156,46 @@ async function loadCandidateSites(minSizeFeet, riverfrontOnly) {
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const result = await pool.query(
     `
-      SELECT id, site_number, size_feet, is_on_river
+      SELECT
+        id,
+        site_number,
+        size_feet,
+        is_on_river,
+        river_category,
+        is_big_rig
       FROM rv_sites
       ${whereClause}
       ORDER BY site_number
+    `,
+    values
+  );
+
+  return result.rows;
+}
+
+async function loadPricingRules(numberOfDays = null) {
+  const values = [];
+  let whereClause = "";
+
+  if (Array.isArray(numberOfDays) && numberOfDays.length > 0) {
+    values.push(numberOfDays);
+    whereClause = `WHERE number_of_days = ANY($1::integer[])`;
+  } else if (typeof numberOfDays === "number") {
+    values.push(numberOfDays);
+    whereClause = `WHERE number_of_days = $1`;
+  }
+
+  const result = await pool.query(
+    `
+      SELECT
+        id,
+        site_category,
+        number_of_days,
+        normal_price,
+        discount_price
+      FROM pricing_rules
+      ${whereClause}
+      ORDER BY site_category, number_of_days
     `,
     values
   );
@@ -116,15 +234,27 @@ app.get("/api/health", async (_req, res) => {
 
 app.get("/api/sites", async (_req, res) => {
   try {
-    const result = await pool.query(
-      `
-        SELECT id, site_number, size_feet, is_on_river
-        FROM rv_sites
-        ORDER BY site_number
-      `
-    );
+    const [sitesResult, pricingRules] = await Promise.all([
+      pool.query(
+        `
+          SELECT
+            id,
+            site_number,
+            size_feet,
+            is_on_river,
+            river_category,
+            is_big_rig
+          FROM rv_sites
+          ORDER BY site_number
+        `
+      ),
+      loadPricingRules()
+    ]);
 
-    res.json(result.rows);
+    const pricingRulesByCategory = buildPricingRulesByCategory(pricingRules);
+    res.json(
+      sitesResult.rows.map((site) => decorateSiteWithPricingTable(site, pricingRulesByCategory))
+    );
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -178,6 +308,8 @@ app.post("/api/availability/search", async (req, res) => {
 
   try {
     const sites = await loadCandidateSites(filters.minSizeFeet, filters.riverfrontOnly);
+    const numberOfNights = nightsBetween(filters.arrivalDate, filters.leaveDate);
+    const pricingLookup = buildPricingRuleLookup(await loadPricingRules(numberOfNights));
     const conflictingStays = await loadConflictingStays(
       sites.map((site) => site.id),
       filters.arrivalDate,
@@ -197,10 +329,13 @@ app.post("/api/availability/search", async (req, res) => {
       id: site.id,
       siteNumber: site.site_number,
       sizeFeet: site.size_feet,
-      isOnRiver: site.is_on_river
+      isOnRiver: site.is_on_river,
+      riverCategory: site.river_category,
+      isBigRig: site.is_big_rig,
+      ...getPricingForSiteAndNights(site, numberOfNights, pricingLookup)
     }));
 
-    res.json({ directMatches });
+    res.json({ numberOfNights, directMatches });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -228,7 +363,40 @@ app.post("/api/availability/plan", async (req, res) => {
     );
     const plan = buildSiteSwitchPlan(availability, filters.arrivalDate, filters.leaveDate);
 
-    res.json({ plan });
+    if (!plan) {
+      return res.json({ plan: null, totals: null });
+    }
+
+    const uniqueNightCounts = [...new Set(plan.map((segment) => nightsBetween(segment.arrivalDate, segment.leaveDate)))];
+    const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
+    const siteLookup = new Map(sites.map((site) => [site.id, site]));
+    const pricedPlan = plan.map((segment) => {
+      const site = siteLookup.get(segment.siteId);
+      return {
+        ...segment,
+        ...getPricingForSiteAndNights(
+          site,
+          nightsBetween(segment.arrivalDate, segment.leaveDate),
+          pricingLookup
+        )
+      };
+    });
+
+    const totals = pricedPlan.reduce(
+      (summary, segment) => ({
+        normalPrice:
+          summary.normalPrice !== null && segment.normalPrice !== null
+            ? summary.normalPrice + segment.normalPrice
+            : null,
+        discountPrice:
+          summary.discountPrice !== null && segment.discountPrice !== null
+            ? summary.discountPrice + segment.discountPrice
+            : null
+      }),
+      { normalPrice: 0, discountPrice: 0 }
+    );
+
+    res.json({ plan: pricedPlan, totals });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -266,6 +434,8 @@ app.get("/api/reservations/:id", async (req, res) => {
           rss.id,
           rss.site_id,
           s.site_number,
+          s.river_category,
+          s.is_big_rig,
           rss.arrival_date::text,
           rss.leave_date::text
         FROM reservation_site_stays rss
@@ -276,9 +446,24 @@ app.get("/api/reservations/:id", async (req, res) => {
       [req.params.id]
     );
 
+    const uniqueNightCounts = [
+      ...new Set(
+        staysResult.rows.map((segment) => nightsBetween(segment.arrival_date, segment.leave_date))
+      )
+    ];
+    const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
+    const pricedSiteStays = staysResult.rows.map((segment) => ({
+      ...segment,
+      ...getPricingForSiteAndNights(
+        segment,
+        nightsBetween(segment.arrival_date, segment.leave_date),
+        pricingLookup
+      )
+    }));
+
     res.json({
       ...reservationResult.rows[0],
-      siteStays: staysResult.rows
+      siteStays: pricedSiteStays
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -338,6 +523,8 @@ app.post("/api/reservations", async (req, res) => {
           rss.id,
           rss.site_id,
           s.site_number,
+          s.river_category,
+          s.is_big_rig,
           rss.arrival_date::text,
           rss.leave_date::text
         FROM reservation_site_stays rss
@@ -348,9 +535,40 @@ app.post("/api/reservations", async (req, res) => {
       [reservationId]
     );
 
+    const uniqueNightCounts = [
+      ...new Set(
+        createdReservation.rows.map((segment) =>
+          nightsBetween(segment.arrival_date, segment.leave_date)
+        )
+      )
+    ];
+    const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
+    const pricedSiteStays = createdReservation.rows.map((segment) => ({
+      ...segment,
+      ...getPricingForSiteAndNights(
+        segment,
+        nightsBetween(segment.arrival_date, segment.leave_date),
+        pricingLookup
+      )
+    }));
+    const totals = pricedSiteStays.reduce(
+      (summary, segment) => ({
+        normalPrice:
+          summary.normalPrice !== null && segment.normalPrice !== null
+            ? summary.normalPrice + segment.normalPrice
+            : null,
+        discountPrice:
+          summary.discountPrice !== null && segment.discountPrice !== null
+            ? summary.discountPrice + segment.discountPrice
+            : null
+      }),
+      { normalPrice: 0, discountPrice: 0 }
+    );
+
     res.status(201).json({
       id: reservationId,
-      siteStays: createdReservation.rows
+      totals,
+      siteStays: pricedSiteStays
     });
   } catch (error) {
     await client.query("ROLLBACK");

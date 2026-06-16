@@ -40,6 +40,47 @@ const emptySiteFilters = {
   maxSizeFeet: ""
 };
 
+function nightsBetween(arrivalDate, leaveDate) {
+  if (!arrivalDate || !leaveDate) {
+    return null;
+  }
+
+  const start = new Date(`${arrivalDate}T00:00:00Z`);
+  const end = new Date(`${leaveDate}T00:00:00Z`);
+  return Math.round((end - start) / 86400000);
+}
+
+function formatCurrency(value) {
+  if (value === null || value === undefined) {
+    return "Not set";
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD"
+  }).format(Number(value));
+}
+
+function formatPricingCategory(value) {
+  if (!value) {
+    return "unknown";
+  }
+
+  return value.replaceAll("_", " ");
+}
+
+function getSiteTypeLabel(site) {
+  return site.is_on_river || site.isOnRiver ? "Riverfront" : "Standard";
+}
+
+function getPricingRuleForNights(site, numberOfNights) {
+  if (!numberOfNights || !Array.isArray(site.pricing_rules)) {
+    return null;
+  }
+
+  return site.pricing_rules.find((rule) => rule.numberOfDays === numberOfNights) || null;
+}
+
 function ensureArray(value, label) {
   if (Array.isArray(value)) {
     return value;
@@ -98,7 +139,8 @@ function SiteStayFields({ segment, index, sites, onChange, onRemove, canRemove }
             <option value="">Select a site</option>
             {sites.map((site) => (
               <option key={site.id} value={site.id}>
-                Site {site.site_number} • {site.size_feet} ft {site.is_on_river ? "• River" : ""}
+                Site {site.site_number} • {site.size_feet} ft •{" "}
+                {formatPricingCategory(site.pricing_category)}
               </option>
             ))}
           </select>
@@ -142,6 +184,7 @@ export default function App() {
   const [reservationForm, setReservationForm] = useState(emptyReservation);
   const [directMatches, setDirectMatches] = useState([]);
   const [switchPlan, setSwitchPlan] = useState(null);
+  const [switchPlanTotals, setSwitchPlanTotals] = useState(null);
   const [createdReservation, setCreatedReservation] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
@@ -188,6 +231,41 @@ export default function App() {
 
       return true;
     });
+  const siteLookup = new Map(sites.map((site) => [String(site.id), site]));
+  const reservationPricingPreview = reservationForm.siteStays
+    .map((segment, index) => {
+      const site = siteLookup.get(String(segment.siteId));
+      const numberOfNights = nightsBetween(segment.arrivalDate, segment.leaveDate);
+
+      if (!site || !numberOfNights || numberOfNights <= 0) {
+        return null;
+      }
+
+      const pricingRule = getPricingRuleForNights(site, numberOfNights);
+
+      return {
+        index,
+        siteNumber: site.site_number,
+        pricingCategory: site.pricing_category,
+        numberOfNights,
+        normalPrice: pricingRule?.normalPrice ?? null,
+        discountPrice: pricingRule?.discountPrice ?? null
+      };
+    })
+    .filter(Boolean);
+  const reservationPricingTotals = reservationPricingPreview.reduce(
+    (summary, segment) => ({
+      normalPrice:
+        summary.normalPrice !== null && segment.normalPrice !== null
+          ? summary.normalPrice + segment.normalPrice
+          : null,
+      discountPrice:
+        summary.discountPrice !== null && segment.discountPrice !== null
+          ? summary.discountPrice + segment.discountPrice
+          : null
+    }),
+    { normalPrice: 0, discountPrice: 0 }
+  );
 
   function updateSearchField(field, value) {
     setSearchForm((current) => ({ ...current, [field]: value }));
@@ -246,6 +324,9 @@ export default function App() {
     setErrorMessage("");
     setSuccessMessage("");
     setCreatedReservation(null);
+    setDirectMatches([]);
+    setSwitchPlan(null);
+    setSwitchPlanTotals(null);
 
     try {
       const [searchResult, planResult] = await Promise.all([
@@ -261,6 +342,7 @@ export default function App() {
 
       setDirectMatches(ensureArray(searchResult.directMatches, "Availability"));
       setSwitchPlan(planResult.plan);
+      setSwitchPlanTotals(planResult.totals);
     } catch (error) {
       setErrorMessage(error.message);
     }
@@ -409,8 +491,10 @@ export default function App() {
                 <ul className="result-list">
                   {directMatches.map((site) => (
                     <li key={site.id}>
-                      Site {site.siteNumber} • {site.sizeFeet} ft •{" "}
-                      {site.isOnRiver ? "Riverfront" : "Standard"}
+                      <strong>Site {site.siteNumber}</strong> • {site.sizeFeet} ft •{" "}
+                      {getSiteTypeLabel(site)} • {formatPricingCategory(site.pricingCategory)} •{" "}
+                      {site.numberOfNights} nights • Normal {formatCurrency(site.normalPrice)} •
+                      Discount {formatCurrency(site.discountPrice)}
                     </li>
                   ))}
                 </ul>
@@ -429,13 +513,23 @@ export default function App() {
                 ) : null}
               </div>
               {switchPlan?.length ? (
-                <ol className="timeline-list">
-                  {switchPlan.map((segment, index) => (
-                    <li key={`${segment.siteId}-${index}`}>
-                      Site {segment.siteNumber}: {segment.arrivalDate} to {segment.leaveDate}
-                    </li>
-                  ))}
-                </ol>
+                <>
+                  <ol className="timeline-list">
+                    {switchPlan.map((segment, index) => (
+                      <li key={`${segment.siteId}-${index}`}>
+                        Site {segment.siteNumber}: {segment.arrivalDate} to {segment.leaveDate} •{" "}
+                        {segment.numberOfNights} nights •{" "}
+                        {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
+                        {formatCurrency(segment.normalPrice)} • Discount{" "}
+                        {formatCurrency(segment.discountPrice)}
+                      </li>
+                    ))}
+                  </ol>
+                  <div className="pricing-summary">
+                    <span>Total normal: {formatCurrency(switchPlanTotals?.normalPrice)}</span>
+                    <span>Total discount: {formatCurrency(switchPlanTotals?.discountPrice)}</span>
+                  </div>
+                </>
               ) : (
                 <p className="muted">No multi-site plan is available for that date range.</p>
               )}
@@ -553,6 +647,28 @@ export default function App() {
                 ))}
               </div>
 
+              {reservationPricingPreview.length ? (
+                <div className="pricing-preview-card">
+                  <h3>Pricing Preview</h3>
+                  <ul className="result-list">
+                    {reservationPricingPreview.map((segment) => (
+                      <li key={segment.index}>
+                        Site {segment.siteNumber} • {segment.numberOfNights} nights •{" "}
+                        {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
+                        {formatCurrency(segment.normalPrice)} • Discount{" "}
+                        {formatCurrency(segment.discountPrice)}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="pricing-summary">
+                    <span>Total normal: {formatCurrency(reservationPricingTotals.normalPrice)}</span>
+                    <span>
+                      Total discount: {formatCurrency(reservationPricingTotals.discountPrice)}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="button-row">
                 <button type="button" className="ghost-button" onClick={addSiteStay}>
                   Add site stay
@@ -576,10 +692,20 @@ export default function App() {
               <ol className="timeline-list">
                 {createdReservation.siteStays.map((segment) => (
                   <li key={segment.id}>
-                    Site {segment.site_number}: {segment.arrival_date} to {segment.leave_date}
+                    Site {segment.site_number}: {segment.arrival_date} to {segment.leave_date} •{" "}
+                    {segment.numberOfNights} nights •{" "}
+                    {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
+                    {formatCurrency(segment.normalPrice)} • Discount{" "}
+                    {formatCurrency(segment.discountPrice)}
                   </li>
                 ))}
               </ol>
+              <div className="pricing-summary">
+                <span>Total normal: {formatCurrency(createdReservation.totals?.normalPrice)}</span>
+                <span>
+                  Total discount: {formatCurrency(createdReservation.totals?.discountPrice)}
+                </span>
+              </div>
             </div>
           ) : (
             <p className="muted">Create a reservation to see its saved timeline here.</p>
@@ -629,6 +755,19 @@ export default function App() {
               <article key={site.id} className={`site-tile ${site.is_on_river ? "river" : ""}`}>
                 <h3>Site {site.site_number}</h3>
                 <p>{site.size_feet} feet</p>
+                <p>{getSiteTypeLabel(site)}</p>
+                <p>River category: {formatPricingCategory(site.river_category)}</p>
+                <p>Big rig: {site.is_big_rig ? "Yes" : "No"}</p>
+                <p>Pricing category: {formatPricingCategory(site.pricing_category)}</p>
+                <div className="pricing-table">
+                  {site.pricing_rules.map((rule) => (
+                    <div key={rule.numberOfDays} className="pricing-row">
+                      <span>{rule.numberOfDays} nights</span>
+                      <span>Normal {formatCurrency(rule.normalPrice)}</span>
+                      <span>Discount {formatCurrency(rule.discountPrice)}</span>
+                    </div>
+                  ))}
+                </div>
                 <span>{site.is_on_river ? "Riverfront" : "Standard"}</span>
               </article>
             ))}

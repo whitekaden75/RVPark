@@ -120,6 +120,44 @@ textarea {
   font-size: 0.9rem;
 }
 
+.pricing-table {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pricing-row,
+.pricing-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.pricing-row {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(57, 81, 58, 0.1);
+}
+
+.pricing-preview-card {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(57, 81, 58, 0.12);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.pricing-preview-card h3 {
+  margin-top: 0;
+}
+
+.pricing-summary {
+  margin-top: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, max-content));
+  color: #244a31;
+  font-weight: 600;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
