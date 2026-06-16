@@ -1,0 +1,184 @@
+function toDate(value) {
+  return new Date(`${value}T00:00:00Z`);
+}
+
+function formatDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function uniqueSortedDates(values) {
+  return [...new Set(values)].sort();
+}
+
+function subtractBusyIntervals(requestStart, requestEnd, busyIntervals) {
+  const free = [];
+  let cursor = requestStart;
+
+  for (const interval of busyIntervals) {
+    if (interval.leave_date <= cursor) {
+      continue;
+    }
+
+    if (interval.arrival_date > cursor) {
+      free.push({ start: cursor, end: interval.arrival_date });
+    }
+
+    if (interval.leave_date > cursor) {
+      cursor = interval.leave_date;
+    }
+
+    if (cursor >= requestEnd) {
+      break;
+    }
+  }
+
+  if (cursor < requestEnd) {
+    free.push({ start: cursor, end: requestEnd });
+  }
+
+  return free.filter((segment) => segment.start < segment.end);
+}
+
+export function buildAvailabilityMap(sites, conflictingStays, arrivalDate, leaveDate) {
+  const bySite = new Map();
+
+  for (const site of sites) {
+    bySite.set(site.id, []);
+  }
+
+  for (const stay of conflictingStays) {
+    if (bySite.has(stay.site_id)) {
+      bySite.get(stay.site_id).push(stay);
+    }
+  }
+
+  const availability = sites.map((site) => {
+    const busyIntervals = (bySite.get(site.id) || []).sort((a, b) =>
+      a.arrival_date.localeCompare(b.arrival_date)
+    );
+
+    return {
+      ...site,
+      freeIntervals: subtractBusyIntervals(arrivalDate, leaveDate, busyIntervals)
+    };
+  });
+
+  return availability;
+}
+
+export function buildSiteSwitchPlan(availability, arrivalDate, leaveDate) {
+  const intervals = [];
+
+  for (const site of availability) {
+    for (const interval of site.freeIntervals) {
+      intervals.push({
+        siteId: site.id,
+        siteNumber: site.site_number,
+        sizeFeet: site.size_feet,
+        isOnRiver: site.is_on_river,
+        start: interval.start,
+        end: interval.end
+      });
+    }
+  }
+
+  intervals.sort((a, b) => {
+    if (a.start === b.start) {
+      return a.end.localeCompare(b.end);
+    }
+
+    return a.start.localeCompare(b.start);
+  });
+
+  const plan = [];
+  let cursor = arrivalDate;
+
+  while (cursor < leaveDate) {
+    let best = null;
+
+    for (const interval of intervals) {
+      if (interval.start <= cursor && interval.end > cursor) {
+        if (!best || interval.end > best.end) {
+          best = interval;
+        }
+      }
+    }
+
+    if (!best) {
+      return null;
+    }
+
+    plan.push({
+      siteId: best.siteId,
+      siteNumber: best.siteNumber,
+      sizeFeet: best.sizeFeet,
+      isOnRiver: best.isOnRiver,
+      arrivalDate: cursor,
+      leaveDate: best.end
+    });
+
+    cursor = best.end;
+  }
+
+  const merged = [];
+
+  for (const segment of plan) {
+    const previous = merged.at(-1);
+
+    if (previous && previous.siteId === segment.siteId && previous.leaveDate === segment.arrivalDate) {
+      previous.leaveDate = segment.leaveDate;
+    } else {
+      merged.push({ ...segment });
+    }
+  }
+
+  return merged;
+}
+
+export function getDirectMatches(availability, arrivalDate, leaveDate) {
+  return availability.filter((site) =>
+    site.freeIntervals.some(
+      (interval) => interval.start <= arrivalDate && interval.end >= leaveDate
+    )
+  );
+}
+
+export function validateReservationSegments(siteStays) {
+  if (!Array.isArray(siteStays) || siteStays.length === 0) {
+    return "At least one site stay is required.";
+  }
+
+  const sorted = [...siteStays].sort((a, b) => a.arrivalDate.localeCompare(b.arrivalDate));
+
+  for (let index = 0; index < sorted.length; index += 1) {
+    const current = sorted[index];
+
+    if (!current.siteId || !current.arrivalDate || !current.leaveDate) {
+      return "Each site stay needs a site, arrival date, and leave date.";
+    }
+
+    if (current.arrivalDate >= current.leaveDate) {
+      return "Each site stay must have an arrival date before the leave date.";
+    }
+
+    if (index > 0) {
+      const previous = sorted[index - 1];
+
+      if (previous.leaveDate !== current.arrivalDate) {
+        return "Site stays must be contiguous with no gaps or overlaps.";
+      }
+    }
+  }
+
+  return null;
+}
+
+export function normalizeSegments(siteStays) {
+  return [...siteStays]
+    .sort((a, b) => a.arrivalDate.localeCompare(b.arrivalDate))
+    .map((segment) => ({
+      siteId: Number(segment.siteId),
+      arrivalDate: formatDate(toDate(segment.arrivalDate)),
+      leaveDate: formatDate(toDate(segment.leaveDate))
+    }));
+}
