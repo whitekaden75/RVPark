@@ -30,41 +30,31 @@ textarea {
   padding: 32px 0 56px;
 }
 
-.hero {
-  border-radius: 28px;
-  padding: 40px;
-  background:
-    linear-gradient(135deg, rgba(24, 60, 34, 0.92), rgba(56, 106, 72, 0.9)),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cpath fill='none' stroke='rgba(255,255,255,0.08)' stroke-width='2' d='M0 80 Q40 50 80 80 T160 80'/%3E%3C/svg%3E");
-  color: #f6fbf3;
-  box-shadow: 0 24px 60px rgba(32, 58, 35, 0.18);
+.passcode-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
 }
 
-.eyebrow {
-  margin: 0 0 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  font-size: 0.8rem;
-  opacity: 0.85;
+.passcode-card {
+  width: min(440px, 100%);
+  display: grid;
+  gap: 16px;
+  background: rgba(255, 252, 246, 0.9);
+  border: 1px solid rgba(77, 104, 79, 0.12);
+  border-radius: 24px;
+  padding: 32px;
+  box-shadow: 0 18px 42px rgba(48, 68, 47, 0.08);
 }
 
-.hero h1 {
+.passcode-card h1 {
   margin: 0;
-  font-size: clamp(2rem, 4vw, 3.8rem);
-  line-height: 1.05;
-  max-width: 760px;
-}
-
-.hero-copy {
-  max-width: 680px;
-  margin: 16px 0 0;
-  color: rgba(246, 251, 243, 0.88);
 }
 
 .layout {
   display: grid;
   gap: 24px;
-  margin-top: 24px;
 }
 
 .card {
@@ -100,6 +90,13 @@ textarea {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 16px;
+}
+
+.site-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 220px));
+  gap: 16px;
+  margin-bottom: 20px;
 }
 
 .site-tile {
@@ -248,15 +245,12 @@ textarea {
   .two-column,
   .results-grid,
   .field-grid,
-  .compact-grid {
+  .compact-grid,
+  .site-filter-bar {
     grid-template-columns: 1fr;
   }
 
   .checkbox-row {
     padding-top: 0;
-  }
-
-  .hero {
-    padding: 28px;
   }
 }

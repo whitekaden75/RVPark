@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+const apiBaseUrl = (
+  import.meta.env.VITE_API_BASE_URL || "https://rvpark-production.up.railway.app/api"
+).replace(/\/+$/, "");
+const appPasscode = import.meta.env.VITE_APP_PASSCODE || "rvpark2026";
+const unlockStorageKey = "rvpark-unlocked";
 
 const emptySearch = {
   arrivalDate: "",
@@ -25,17 +29,49 @@ const emptyReservation = {
 };
 
 const rvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
+const siteNumberCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base"
+});
+
+const emptySiteFilters = {
+  type: "all",
+  minSizeFeet: "",
+  maxSizeFeet: ""
+};
+
+function ensureArray(value, label) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  throw new Error(`${label} response was not a list. Check VITE_API_BASE_URL.`);
+}
 
 async function apiRequest(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    "x-app-passcode": appPasscode,
+    ...(options.headers || {})
+  };
+
   const response = await fetch(`${apiBaseUrl}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers,
     ...options
   });
 
-  const data = await response.json().catch(() => ({}));
+  const contentType = response.headers.get("content-type") || "";
+  const isJson = contentType.includes("application/json");
+  const data = isJson ? await response.json().catch(() => ({})) : null;
 
   if (!response.ok) {
-    throw new Error(data.message || "Request failed.");
+    throw new Error(data?.message || "Request failed.");
+  }
+
+  if (!isJson) {
+    throw new Error(
+      `Expected JSON from ${apiBaseUrl}${path}. Check that VITE_API_BASE_URL points to your backend /api URL.`
+    );
   }
 
   return data;
@@ -89,8 +125,18 @@ function SiteStayFields({ segment, index, sites, onChange, onRemove, canRemove }
 }
 
 export default function App() {
+  const [isUnlocked, setIsUnlocked] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    return window.sessionStorage.getItem(unlockStorageKey) === "true";
+  });
+  const [passcodeInput, setPasscodeInput] = useState("");
+  const [passcodeError, setPasscodeError] = useState("");
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [siteFilters, setSiteFilters] = useState(emptySiteFilters);
   const [searchForm, setSearchForm] = useState(emptySearch);
   const [customerForm, setCustomerForm] = useState(emptyCustomer);
   const [reservationForm, setReservationForm] = useState(emptyReservation);
@@ -108,8 +154,8 @@ export default function App() {
           apiRequest("/customers")
         ]);
 
-        setSites(siteData);
-        setCustomers(customerData);
+        setSites(ensureArray(siteData, "Sites"));
+        setCustomers(ensureArray(customerData, "Customers"));
       } catch (error) {
         setErrorMessage(error.message);
       }
@@ -118,8 +164,50 @@ export default function App() {
     loadInitialData();
   }, []);
 
+  const visibleSites = [...sites]
+    .sort((left, right) => siteNumberCollator.compare(left.site_number, right.site_number))
+    .filter((site) => {
+      if (siteFilters.type === "riverfront" && !site.is_on_river) {
+        return false;
+      }
+
+      if (siteFilters.type === "standard" && site.is_on_river) {
+        return false;
+      }
+
+      const minSizeFeet = siteFilters.minSizeFeet ? Number(siteFilters.minSizeFeet) : null;
+      const maxSizeFeet = siteFilters.maxSizeFeet ? Number(siteFilters.maxSizeFeet) : null;
+
+      if (minSizeFeet && site.size_feet < minSizeFeet) {
+        return false;
+      }
+
+      if (maxSizeFeet && site.size_feet > maxSizeFeet) {
+        return false;
+      }
+
+      return true;
+    });
+
   function updateSearchField(field, value) {
     setSearchForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function handleUnlock(event) {
+    event.preventDefault();
+
+    if (passcodeInput !== appPasscode) {
+      setPasscodeError("Incorrect passcode.");
+      return;
+    }
+
+    window.sessionStorage.setItem(unlockStorageKey, "true");
+    setPasscodeError("");
+    setIsUnlocked(true);
+  }
+
+  function updateSiteFilter(field, value) {
+    setSiteFilters((current) => ({ ...current, [field]: value }));
   }
 
   function updateCustomerField(field, value) {
@@ -171,7 +259,7 @@ export default function App() {
         })
       ]);
 
-      setDirectMatches(searchResult.directMatches);
+      setDirectMatches(ensureArray(searchResult.directMatches, "Availability"));
       setSwitchPlan(planResult.plan);
     } catch (error) {
       setErrorMessage(error.message);
@@ -238,39 +326,35 @@ export default function App() {
     }));
   }
 
+  if (!isUnlocked) {
+    return (
+      <div className="passcode-shell">
+        <form className="passcode-card" onSubmit={handleUnlock}>
+          <h1>RV Park Access</h1>
+          <p className="muted">Enter the passcode to open the reservation app.</p>
+          <label>
+            Passcode
+            <input
+              type="password"
+              value={passcodeInput}
+              onChange={(event) => setPasscodeInput(event.target.value)}
+            />
+          </label>
+          {passcodeError ? <div className="message error">{passcodeError}</div> : null}
+          <button type="submit" className="primary-button">
+            Unlock
+          </button>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="page-shell">
-      <header className="hero">
-        <div>
-          <p className="eyebrow">River RV Park</p>
-          <h1>Reservations built around site availability and site switching.</h1>
-          <p className="hero-copy">
-            Check direct availability, generate a split-stay plan, and save a reservation
-            timeline without double booking a site.
-          </p>
-        </div>
-      </header>
-
       {errorMessage ? <div className="message error">{errorMessage}</div> : null}
       {successMessage ? <div className="message success">{successMessage}</div> : null}
 
       <main className="layout">
-        <section className="card">
-          <div className="section-heading">
-            <h2>RV Sites</h2>
-            <p>Current site inventory with size and riverfront details.</p>
-          </div>
-          <div className="site-grid">
-            {sites.map((site) => (
-              <article key={site.id} className={`site-tile ${site.is_on_river ? "river" : ""}`}>
-                <h3>Site {site.site_number}</h3>
-                <p>{site.size_feet} feet</p>
-                <span>{site.is_on_river ? "Riverfront" : "Standard"}</span>
-              </article>
-            ))}
-          </div>
-        </section>
-
         <section className="card">
           <div className="section-heading">
             <h2>Availability Search</h2>
@@ -500,6 +584,58 @@ export default function App() {
           ) : (
             <p className="muted">Create a reservation to see its saved timeline here.</p>
           )}
+        </section>
+
+        <section className="card">
+          <div className="section-heading">
+            <h2>RV Sites</h2>
+            <p>Current site inventory with size and riverfront details.</p>
+          </div>
+          <div className="site-filter-bar">
+            <label>
+              Type
+              <select
+                value={siteFilters.type}
+                onChange={(event) => updateSiteFilter("type", event.target.value)}
+              >
+                <option value="all">All sites</option>
+                <option value="riverfront">Riverfront only</option>
+                <option value="standard">Standard only</option>
+              </select>
+            </label>
+            <label>
+              Min size
+              <input
+                type="number"
+                min="1"
+                placeholder="Any"
+                value={siteFilters.minSizeFeet}
+                onChange={(event) => updateSiteFilter("minSizeFeet", event.target.value)}
+              />
+            </label>
+            <label>
+              Max size
+              <input
+                type="number"
+                min="1"
+                placeholder="Any"
+                value={siteFilters.maxSizeFeet}
+                onChange={(event) => updateSiteFilter("maxSizeFeet", event.target.value)}
+              />
+            </label>
+          </div>
+          <div className="site-grid">
+            {visibleSites.map((site) => (
+              <article key={site.id} className={`site-tile ${site.is_on_river ? "river" : ""}`}>
+                <h3>Site {site.site_number}</h3>
+                <p>{site.size_feet} feet</p>
+                <span>{site.is_on_river ? "Riverfront" : "Standard"}</span>
+              </article>
+            ))}
+          </div>
+          {!visibleSites.length ? (
+            <p className="muted">No sites match the current filters.</p>
+          ) : null}
         </section>
       </main>
     </div>

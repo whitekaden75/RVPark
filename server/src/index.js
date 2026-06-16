@@ -14,13 +14,30 @@ dotenv.config();
 
 const app = express();
 const port = Number(process.env.PORT || 4000);
+const appPasscode = process.env.APP_PASSCODE || "rvpark2026";
+const appPasscodeHeader = "x-app-passcode";
 
 app.use(
   cors({
-    origin: process.env.CLIENT_ORIGIN?.split(",").map((value) => value.trim()) || "*"
+    origin: process.env.CLIENT_ORIGIN?.split(",").map((value) => value.trim()) || "*",
+    allowedHeaders: ["Content-Type", appPasscodeHeader]
   })
 );
 app.use(express.json());
+
+app.use("/api", (req, res, next) => {
+  if (req.path === "/health") {
+    return next();
+  }
+
+  const requestPasscode = req.header(appPasscodeHeader);
+
+  if (requestPasscode !== appPasscode) {
+    return res.status(401).json({ message: "Invalid passcode." });
+  }
+
+  return next();
+});
 
 function parseAvailabilityFilters(body) {
   const arrivalDate = body.arrivalDate;
