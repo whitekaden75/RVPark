@@ -61,6 +61,16 @@ function nightsBetween(arrivalDate, leaveDate) {
   return Math.round((end - start) / 86400000);
 }
 
+function formatDateInput(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(dateString, numberOfDays) {
+  const date = new Date(`${dateString}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + numberOfDays);
+  return formatDateInput(date);
+}
+
 function formatCurrency(value) {
   if (value === null || value === undefined) {
     return "Not set";
@@ -216,6 +226,9 @@ export default function App() {
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [reservations, setReservations] = useState([]);
+  const [timelineSiteId, setTimelineSiteId] = useState("");
+  const [timelineStartDate, setTimelineStartDate] = useState(formatDateInput(new Date()));
+  const [timelineDays, setTimelineDays] = useState("14");
   const [customerSearch, setCustomerSearch] = useState("");
   const [isTypeMenuOpen, setIsTypeMenuOpen] = useState(false);
   const [siteFilters, setSiteFilters] = useState(emptySiteFilters);
@@ -250,6 +263,12 @@ export default function App() {
 
     loadInitialData();
   }, []);
+
+  useEffect(() => {
+    if (!timelineSiteId && sites.length > 0) {
+      setTimelineSiteId(String(sites[0].id));
+    }
+  }, [sites, timelineSiteId]);
 
   const visibleSites = [...sites]
     .sort((left, right) => siteNumberCollator.compare(left.site_number, right.site_number))
@@ -322,6 +341,48 @@ export default function App() {
     const fullName = `${customer.first_name} ${customer.last_name}`.toLowerCase();
     return fullName.includes(searchValue);
   });
+  const scheduleReservations = [...reservations].sort((left, right) => {
+    const leftDate = left.siteStays[0]?.arrival_date || "";
+    const rightDate = right.siteStays[0]?.arrival_date || "";
+    return leftDate.localeCompare(rightDate);
+  });
+  const today = formatDateInput(new Date());
+  const currentOccupancy = scheduleReservations
+    .map((reservation) => {
+      const activeSiteStays = reservation.siteStays.filter(
+        (segment) => segment.arrival_date <= today && segment.leave_date > today
+      );
+
+      if (!activeSiteStays.length) {
+        return null;
+      }
+
+      return {
+        ...reservation,
+        activeSiteStays
+      };
+    })
+    .filter(Boolean);
+  const timelineEndDate = addDays(timelineStartDate, Number(timelineDays || 14));
+  const selectedTimelineSite = sites.find((site) => String(site.id) === timelineSiteId) || null;
+  const selectedSiteTimeline = scheduleReservations
+    .flatMap((reservation) =>
+      reservation.siteStays
+        .filter(
+          (segment) =>
+            String(segment.site_id) === timelineSiteId &&
+            segment.arrival_date < timelineEndDate &&
+            segment.leave_date > timelineStartDate
+        )
+        .map((segment) => ({
+          reservationId: reservation.id,
+          customerName: `${reservation.first_name} ${reservation.last_name}`,
+          rvKind: reservation.rv_kind,
+          rigLengthFeet: reservation.rig_length_feet,
+          segment
+        }))
+    )
+    .sort((left, right) => left.segment.arrival_date.localeCompare(right.segment.arrival_date));
 
   async function refreshReservations() {
     const reservationData = await apiRequest("/reservations");
@@ -331,6 +392,7 @@ export default function App() {
   function resetReservationForm() {
     setReservationForm(emptyReservation);
     setCustomerSearch("");
+    setCustomerForm(emptyCustomer);
     setEditingReservationId(null);
     setCreatedReservation(null);
   }
@@ -458,39 +520,30 @@ export default function App() {
     }
   }
 
-  async function handleCustomerCreate(event) {
-    event.preventDefault();
-    setErrorMessage("");
-    setSuccessMessage("");
-
-    try {
-      const createdCustomer = await apiRequest("/customers", {
-        method: "POST",
-        body: JSON.stringify(customerForm)
-      });
-
-      setCustomers((current) => [...current, createdCustomer]);
-      setReservationForm((current) => ({
-        ...current,
-        customerId: String(createdCustomer.id)
-      }));
-      setCustomerSearch(`${createdCustomer.first_name} ${createdCustomer.last_name}`);
-      setCustomerForm(emptyCustomer);
-      setSuccessMessage(`Created customer #${createdCustomer.id}.`);
-    } catch (error) {
-      setErrorMessage(error.message);
-    }
-  }
-
   async function handleReservationCreate(event) {
     event.preventDefault();
     setErrorMessage("");
     setSuccessMessage("");
 
     try {
+      let customerId = reservationForm.customerId
+        ? Number(reservationForm.customerId)
+        : null;
+
+      if (!customerId) {
+        const createdCustomer = await apiRequest("/customers", {
+          method: "POST",
+          body: JSON.stringify(customerForm)
+        });
+
+        setCustomers((current) => [...current, createdCustomer]);
+        setCustomerSearch(`${createdCustomer.first_name} ${createdCustomer.last_name}`);
+        customerId = createdCustomer.id;
+      }
+
       const payload = {
         ...reservationForm,
-        customerId: Number(reservationForm.customerId)
+        customerId
       };
       const created = await apiRequest(
         editingReservationId ? `/reservations/${editingReservationId}` : "/reservations",
@@ -571,12 +624,6 @@ export default function App() {
       }))
     }));
   }
-
-  const scheduleReservations = [...reservations].sort((left, right) => {
-    const leftDate = left.siteStays[0]?.arrival_date || "";
-    const rightDate = right.siteStays[0]?.arrival_date || "";
-    return leftDate.localeCompare(rightDate);
-  });
 
   if (!isUnlocked) {
     return (
@@ -707,13 +754,13 @@ export default function App() {
           </div>
         </section>
 
-        <section className="card two-column">
+        <section className="card">
           <div>
             <div className="section-heading">
-              <h2>Create Customer</h2>
-              <p>Save guest details first, then attach the customer to a reservation.</p>
+              <h2>{editingReservationId ? `Edit Reservation #${editingReservationId}` : "Create Reservation"}</h2>
+              <p>Create the customer and reservation together, or pick an existing customer.</p>
             </div>
-            <form onSubmit={handleCustomerCreate}>
+            <form onSubmit={handleReservationCreate}>
               <div className="field-grid">
                 <label>
                   First name
@@ -744,20 +791,6 @@ export default function App() {
                     onChange={(event) => updateCustomerField("phoneNumber", event.target.value)}
                   />
                 </label>
-              </div>
-              <button type="submit" className="primary-button">
-                Create customer
-              </button>
-            </form>
-          </div>
-
-          <div>
-            <div className="section-heading">
-              <h2>{editingReservationId ? `Edit Reservation #${editingReservationId}` : "Create Reservation"}</h2>
-              <p>One reservation can contain one or more contiguous site stays.</p>
-            </div>
-            <form onSubmit={handleReservationCreate}>
-              <div className="field-grid">
                 <label>
                   Search customer
                   <input
@@ -772,7 +805,7 @@ export default function App() {
                     value={reservationForm.customerId}
                     onChange={(event) => updateReservationField("customerId", event.target.value)}
                   >
-                    <option value="">Select a customer</option>
+                    <option value="">Create a new customer from the fields above</option>
                     {visibleCustomers.map((customer) => (
                       <option key={customer.id} value={customer.id}>
                         #{customer.id} {customer.first_name} {customer.last_name}
@@ -914,17 +947,17 @@ export default function App() {
         <section className="card">
           <div className="section-heading">
             <h2>Schedule</h2>
-            <p>View saved reservations and load any one into the form for editing.</p>
+            <p>See who is in a site today, then inspect a single site timeline for any date window.</p>
           </div>
           <div className="button-row">
-            <span className="muted">{scheduleReservations.length} reservations</span>
+            <span className="muted">{currentOccupancy.length} current stays today</span>
             <button type="button" className="ghost-button" onClick={handleReservationRefresh}>
               Refresh schedule
             </button>
           </div>
-          {scheduleReservations.length ? (
+          {currentOccupancy.length ? (
             <div className="schedule-list">
-              {scheduleReservations.map((reservation) => (
+              {currentOccupancy.map((reservation) => (
                 <article key={reservation.id} className="timeline-card">
                   <div className="result-header">
                     <h3>
@@ -943,7 +976,7 @@ export default function App() {
                     {reservation.rig_length_feet ? ` • ${reservation.rig_length_feet} ft rig` : ""}
                   </p>
                   <ol className="timeline-list">
-                    {reservation.siteStays.map((segment) => (
+                    {reservation.activeSiteStays.map((segment) => (
                       <li key={segment.id}>
                         Site {segment.site_number}: {segment.arrival_date} to {segment.leave_date} •{" "}
                         {segment.numberOfNights} nights •{" "}
@@ -971,7 +1004,65 @@ export default function App() {
               ))}
             </div>
           ) : (
-            <p className="muted">No reservations yet.</p>
+            <p className="muted">No guests are currently in a site today.</p>
+          )}
+
+          <div className="timeline-controls">
+            <label>
+              Site
+              <select
+                value={timelineSiteId}
+                onChange={(event) => setTimelineSiteId(event.target.value)}
+              >
+                {sites.map((site) => (
+                  <option key={site.id} value={site.id}>
+                    Site {site.site_number}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Timeline start
+              <input
+                type="date"
+                value={timelineStartDate}
+                onChange={(event) => setTimelineStartDate(event.target.value)}
+              />
+            </label>
+            <label>
+              Days
+              <input
+                type="number"
+                min="1"
+                value={timelineDays}
+                onChange={(event) => setTimelineDays(event.target.value)}
+              />
+            </label>
+          </div>
+
+          <div className="timeline-card">
+            <h3>
+              {selectedTimelineSite
+                ? `Site ${selectedTimelineSite.site_number} timeline`
+                : "Site timeline"}
+            </h3>
+            <p className="muted">
+              {timelineStartDate} through {timelineEndDate}
+            </p>
+            {selectedSiteTimeline.length ? (
+              <ol className="timeline-list">
+                {selectedSiteTimeline.map((entry, index) => (
+                  <li key={`${entry.reservationId}-${entry.segment.id}-${index}`}>
+                    {entry.customerName} • {entry.segment.arrival_date} to {entry.segment.leave_date}
+                    {" "}• {entry.rvKind}
+                    {entry.rigLengthFeet ? ` • ${entry.rigLengthFeet} ft rig` : ""}
+                    {" "}• Reservation #{entry.reservationId}
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="muted">No reservation segments overlap this site and date window.</p>
+            )}
           )}
         </section>
 

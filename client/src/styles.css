@@ -234,6 +234,13 @@ textarea {
   margin-top: 16px;
 }
 
+.timeline-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 220px));
+  gap: 16px;
+  margin-top: 24px;
+}
+
 .pricing-summary {
   margin-top: 14px;
   grid-template-columns: repeat(auto-fit, minmax(180px, max-content));
@@ -367,7 +374,8 @@ textarea {
   .results-grid,
   .field-grid,
   .compact-grid,
-  .site-filter-bar {
+  .site-filter-bar,
+  .timeline-controls {
     grid-template-columns: 1fr;
   }
 
