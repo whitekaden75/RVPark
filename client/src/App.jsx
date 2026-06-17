@@ -71,6 +71,23 @@ function addDays(dateString, numberOfDays) {
   return formatDateInput(date);
 }
 
+function startOfMonth(dateString) {
+  const date = new Date(`${dateString}T00:00:00Z`);
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+}
+
+function formatMonthLabel(date) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(date);
+}
+
+function isDateWithinRange(dateString, startDate, endDate) {
+  return dateString >= startDate && dateString < endDate;
+}
+
 function formatCurrency(value) {
   if (value === null || value === undefined) {
     return "Not set";
@@ -213,6 +230,75 @@ function SiteStayFields({ segment, index, sites, onChange, onRemove, canRemove }
   );
 }
 
+function SiteTimelineCalendar({
+  monthCursor,
+  selectedStartDate,
+  selectedEndDate,
+  bookedRanges,
+  onChangeMonth,
+  onSelectDate
+}) {
+  const monthStart = new Date(monthCursor);
+  const monthLabel = formatMonthLabel(monthStart);
+  const calendarStart = new Date(monthStart);
+  calendarStart.setUTCDate(calendarStart.getUTCDate() - calendarStart.getUTCDay());
+  const days = Array.from({ length: 42 }, (_, index) => {
+    const current = new Date(calendarStart);
+    current.setUTCDate(calendarStart.getUTCDate() + index);
+    const dateString = formatDateInput(current);
+    const isCurrentMonth = current.getUTCMonth() === monthStart.getUTCMonth();
+    const isSelectedWindow = dateString >= selectedStartDate && dateString < selectedEndDate;
+    const isBooked = bookedRanges.some((range) =>
+      isDateWithinRange(dateString, range.arrival_date, range.leave_date)
+    );
+
+    return {
+      dateString,
+      dayNumber: current.getUTCDate(),
+      isCurrentMonth,
+      isSelectedWindow,
+      isBooked
+    };
+  });
+
+  return (
+    <div className="calendar-card">
+      <div className="result-header">
+        <button type="button" className="ghost-button" onClick={() => onChangeMonth(-1)}>
+          Previous
+        </button>
+        <h3>{monthLabel}</h3>
+        <button type="button" className="ghost-button" onClick={() => onChangeMonth(1)}>
+          Next
+        </button>
+      </div>
+      <div className="calendar-grid calendar-weekdays">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+          <span key={day}>{day}</span>
+        ))}
+      </div>
+      <div className="calendar-grid">
+        {days.map((day, index) => (
+          <button
+            key={`${day.dateString}-${index}`}
+            type="button"
+            className={`calendar-day ${day.isCurrentMonth ? "" : "outside"} ${
+              day.isSelectedWindow ? "selected" : ""
+            } ${day.isBooked ? "booked" : ""}`}
+            onClick={() => onSelectDate(day.dateString)}
+          >
+            <span>{day.dayNumber}</span>
+          </button>
+        ))}
+      </div>
+      <div className="calendar-legend">
+        <span><i className="legend-box selected" /> selected window</span>
+        <span><i className="legend-box booked" /> booked</span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [isUnlocked, setIsUnlocked] = useState(() => {
     if (typeof window === "undefined") {
@@ -229,7 +315,11 @@ export default function App() {
   const [timelineSiteId, setTimelineSiteId] = useState("");
   const [timelineStartDate, setTimelineStartDate] = useState(formatDateInput(new Date()));
   const [timelineDays, setTimelineDays] = useState("14");
+  const [timelineMonthCursor, setTimelineMonthCursor] = useState(() =>
+    startOfMonth(formatDateInput(new Date()))
+  );
   const [customerSearch, setCustomerSearch] = useState("");
+  const [scheduleNameSearch, setScheduleNameSearch] = useState("");
   const [isTypeMenuOpen, setIsTypeMenuOpen] = useState(false);
   const [siteFilters, setSiteFilters] = useState(emptySiteFilters);
   const [openSitePricing, setOpenSitePricing] = useState({});
@@ -242,6 +332,8 @@ export default function App() {
   const [createdReservation, setCreatedReservation] = useState(null);
   const [editingReservationId, setEditingReservationId] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [reservationErrorMessage, setReservationErrorMessage] = useState("");
+  const [reservationSuccessMessage, setReservationSuccessMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
   useEffect(() => {
@@ -269,6 +361,10 @@ export default function App() {
       setTimelineSiteId(String(sites[0].id));
     }
   }, [sites, timelineSiteId]);
+
+  useEffect(() => {
+    setTimelineMonthCursor(startOfMonth(timelineStartDate));
+  }, [timelineStartDate]);
 
   const visibleSites = [...sites]
     .sort((left, right) => siteNumberCollator.compare(left.site_number, right.site_number))
@@ -362,9 +458,23 @@ export default function App() {
         activeSiteStays
       };
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((reservation) => {
+      const searchValue = scheduleNameSearch.trim().toLowerCase();
+
+      if (!searchValue) {
+        return true;
+      }
+
+      return `${reservation.first_name} ${reservation.last_name}`
+        .toLowerCase()
+        .includes(searchValue);
+    });
   const timelineEndDate = addDays(timelineStartDate, Number(timelineDays || 14));
   const selectedTimelineSite = sites.find((site) => String(site.id) === timelineSiteId) || null;
+  const selectedSiteBookedRanges = scheduleReservations.flatMap((reservation) =>
+    reservation.siteStays.filter((segment) => String(segment.site_id) === timelineSiteId)
+  );
   const selectedSiteTimeline = scheduleReservations
     .flatMap((reservation) =>
       reservation.siteStays
@@ -382,6 +492,10 @@ export default function App() {
           segment
         }))
     )
+    .filter((entry) => {
+      const searchValue = scheduleNameSearch.trim().toLowerCase();
+      return searchValue ? entry.customerName.toLowerCase().includes(searchValue) : true;
+    })
     .sort((left, right) => left.segment.arrival_date.localeCompare(right.segment.arrival_date));
 
   async function refreshReservations() {
@@ -494,6 +608,8 @@ export default function App() {
     event.preventDefault();
     setErrorMessage("");
     setSuccessMessage("");
+    setReservationErrorMessage("");
+    setReservationSuccessMessage("");
     setCreatedReservation(null);
     setDirectMatches([]);
     setSwitchPlan(null);
@@ -523,6 +639,8 @@ export default function App() {
     event.preventDefault();
     setErrorMessage("");
     setSuccessMessage("");
+    setReservationErrorMessage("");
+    setReservationSuccessMessage("");
 
     try {
       let customerId = reservationForm.customerId
@@ -555,15 +673,17 @@ export default function App() {
       if (editingReservationId) {
         setCreatedReservation(created);
         setSuccessMessage(`Updated reservation #${created.id}.`);
+        setReservationSuccessMessage(`Updated reservation #${created.id}.`);
       } else {
         setCreatedReservation(created);
         setSuccessMessage(`Created reservation #${created.id}.`);
+        setReservationSuccessMessage(`Created reservation #${created.id}.`);
       }
 
       await refreshReservations();
       resetReservationForm();
     } catch (error) {
-      setErrorMessage(error.message);
+      setReservationErrorMessage(error.message);
     }
   }
 
@@ -628,6 +748,14 @@ export default function App() {
         leaveDate: segment.leaveDate
       }))
     }));
+  }
+
+  function changeTimelineMonth(offset) {
+    setTimelineMonthCursor((current) => {
+      const next = new Date(current);
+      next.setUTCMonth(next.getUTCMonth() + offset);
+      return new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth(), 1));
+    });
   }
 
   if (!isUnlocked) {
@@ -945,6 +1073,12 @@ export default function App() {
                   {editingReservationId ? "Save reservation" : "Create reservation"}
                 </button>
               </div>
+              {reservationErrorMessage ? (
+                <div className="message error">{reservationErrorMessage}</div>
+              ) : null}
+              {reservationSuccessMessage ? (
+                <div className="message success">{reservationSuccessMessage}</div>
+              ) : null}
             </form>
           </div>
         </section>
@@ -959,6 +1093,16 @@ export default function App() {
             <button type="button" className="ghost-button" onClick={handleReservationRefresh}>
               Refresh schedule
             </button>
+          </div>
+          <div className="timeline-controls">
+            <label>
+              Search name
+              <input
+                placeholder="Type a customer name"
+                value={scheduleNameSearch}
+                onChange={(event) => setScheduleNameSearch(event.target.value)}
+              />
+            </label>
           </div>
           {currentOccupancy.length ? (
             <div className="schedule-list">
@@ -1027,14 +1171,6 @@ export default function App() {
               </select>
             </label>
             <label>
-              Timeline start
-              <input
-                type="date"
-                value={timelineStartDate}
-                onChange={(event) => setTimelineStartDate(event.target.value)}
-              />
-            </label>
-            <label>
               Days
               <input
                 type="number"
@@ -1044,6 +1180,15 @@ export default function App() {
               />
             </label>
           </div>
+
+          <SiteTimelineCalendar
+            monthCursor={timelineMonthCursor}
+            selectedStartDate={timelineStartDate}
+            selectedEndDate={timelineEndDate}
+            bookedRanges={selectedSiteBookedRanges}
+            onChangeMonth={changeTimelineMonth}
+            onSelectDate={setTimelineStartDate}
+          />
 
           <div className="timeline-card">
             <h3>
