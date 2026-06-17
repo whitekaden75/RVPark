@@ -76,12 +76,49 @@ function startOfMonth(dateString) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
 }
 
+function startOfNextMonth(date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1));
+}
+
 function formatMonthLabel(date) {
   return new Intl.DateTimeFormat("en-US", {
     month: "long",
     year: "numeric",
     timeZone: "UTC"
   }).format(date);
+}
+
+function getOrdinalSuffix(day) {
+  if (day >= 11 && day <= 13) {
+    return "th";
+  }
+
+  switch (day % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+
+function formatDisplayDate(dateString) {
+  if (!dateString) {
+    return "";
+  }
+
+  const date = new Date(`${dateString}T00:00:00Z`);
+  const month = new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    timeZone: "UTC"
+  }).format(date);
+  const day = date.getUTCDate();
+  const year = date.getUTCFullYear();
+
+  return `${month} ${day}${getOrdinalSuffix(day)} ${year}`;
 }
 
 function isDateWithinRange(dateString, startDate, endDate) {
@@ -169,11 +206,124 @@ async function apiRequest(path, options = {}) {
   return data;
 }
 
-function SiteStayFields({ segment, index, sites, onChange, onRemove, canRemove }) {
+function BookingSiteCalendar({ segment, bookedRanges, onSelectRange }) {
+  const [monthCursor, setMonthCursor] = useState(() =>
+    startOfMonth(segment.arrivalDate || formatDateInput(new Date()))
+  );
+
+  useEffect(() => {
+    if (segment.arrivalDate) {
+      setMonthCursor(startOfMonth(segment.arrivalDate));
+    }
+  }, [segment.arrivalDate]);
+
+  const monthStart = new Date(monthCursor);
+  const monthLabel = formatMonthLabel(monthStart);
+  const calendarStart = new Date(monthStart);
+  calendarStart.setUTCDate(calendarStart.getUTCDate() - calendarStart.getUTCDay());
+  const selectedEndDate =
+    segment.leaveDate || (segment.arrivalDate ? addDays(segment.arrivalDate, 1) : "");
+  const days = Array.from({ length: 42 }, (_, index) => {
+    const current = new Date(calendarStart);
+    current.setUTCDate(calendarStart.getUTCDate() + index);
+    const dateString = formatDateInput(current);
+    const isDepartureDate = Boolean(segment.leaveDate) && dateString === segment.leaveDate;
+
+    return {
+      dateString,
+      dayNumber: current.getUTCDate(),
+      isCurrentMonth: current.getUTCMonth() === monthStart.getUTCMonth(),
+      isSelectedWindow:
+        segment.arrivalDate &&
+        selectedEndDate &&
+        dateString >= segment.arrivalDate &&
+        dateString < selectedEndDate,
+      isDepartureDate,
+      isBooked: bookedRanges.some((range) =>
+        isDateWithinRange(dateString, range.arrival_date, range.leave_date)
+      )
+    };
+  });
+
+  function changeMonth(offset) {
+    setMonthCursor((current) => {
+      const next = new Date(current);
+      next.setUTCMonth(next.getUTCMonth() + offset);
+      return new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth(), 1));
+    });
+  }
+
+  function handleDaySelect(dateString) {
+    if (!segment.arrivalDate || segment.leaveDate) {
+      onSelectRange(dateString, "");
+      return;
+    }
+
+    if (dateString <= segment.arrivalDate) {
+      onSelectRange(dateString, "");
+      return;
+    }
+
+    onSelectRange(segment.arrivalDate, dateString);
+  }
+
+  return (
+    <div className="calendar-card compact-calendar">
+      <div className="result-header">
+        <button type="button" className="ghost-button" onClick={() => changeMonth(-1)}>
+          Previous
+        </button>
+        <h3>{monthLabel}</h3>
+        <button type="button" className="ghost-button" onClick={() => changeMonth(1)}>
+          Next
+        </button>
+      </div>
+      <p className="muted calendar-hint">
+        Click once for arrival. Click a later day for the departure date.
+      </p>
+      <div className="calendar-grid calendar-weekdays">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+          <span key={day}>{day}</span>
+        ))}
+      </div>
+      <div className="calendar-grid">
+        {days.map((day, index) => (
+          <button
+            key={`${day.dateString}-${index}`}
+            type="button"
+            className={`calendar-day ${day.isCurrentMonth ? "" : "outside"} ${
+              day.isSelectedWindow ? "selected" : ""
+            } ${day.isDepartureDate ? "departure" : ""} ${day.isBooked ? "booked" : ""}`}
+            onClick={() => handleDaySelect(day.dateString)}
+          >
+            <span>{day.dayNumber}</span>
+            {day.isDepartureDate ? <small className="calendar-day-tag">Depart</small> : null}
+          </button>
+        ))}
+      </div>
+      <div className="calendar-legend">
+        <span><i className="legend-box selected" /> selected stay</span>
+        <span><i className="legend-box departure" /> depart</span>
+        <span><i className="legend-box booked" /> booked</span>
+      </div>
+    </div>
+  );
+}
+
+function SiteStayFields({
+  segment,
+  index,
+  sites,
+  bookedRangesBySite,
+  onChange,
+  onRemove,
+  canRemove
+}) {
   const siteSearch = segment.siteSearch?.trim().toLowerCase() || "";
   const filteredSites = sites.filter((site) =>
     siteSearch ? site.site_number.toLowerCase().includes(siteSearch) : true
   );
+  const bookedRanges = bookedRangesBySite[String(segment.siteId)] || [];
 
   return (
     <div className="segment-card">
@@ -209,23 +359,28 @@ function SiteStayFields({ segment, index, sites, onChange, onRemove, canRemove }
             ))}
           </select>
         </label>
-        <label>
-          Arrival
-          <input
-            type="date"
-            value={segment.arrivalDate}
-            onChange={(event) => onChange(index, "arrivalDate", event.target.value)}
-          />
-        </label>
-        <label>
-          Leave
-          <input
-            type="date"
-            value={segment.leaveDate}
-            onChange={(event) => onChange(index, "leaveDate", event.target.value)}
-          />
-        </label>
       </div>
+      {segment.arrivalDate ? (
+        <p className="muted">
+          {segment.leaveDate
+            ? `Selected stay: ${formatDisplayDate(segment.arrivalDate)} through ${formatDisplayDate(
+                segment.leaveDate
+              )} (${nightsBetween(segment.arrivalDate, segment.leaveDate)} nights)`
+            : `Arrival selected: ${formatDisplayDate(
+                segment.arrivalDate
+              )}. Pick a later day to finish the stay.`}
+        </p>
+      ) : null}
+      {segment.siteId ? (
+        <BookingSiteCalendar
+          segment={segment}
+          bookedRanges={bookedRanges}
+          onSelectRange={(arrivalDate, leaveDate) => {
+            onChange(index, "arrivalDate", arrivalDate);
+            onChange(index, "leaveDate", leaveDate);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -248,16 +403,18 @@ function SiteTimelineCalendar({
     const dateString = formatDateInput(current);
     const isCurrentMonth = current.getUTCMonth() === monthStart.getUTCMonth();
     const isSelectedWindow = dateString >= selectedStartDate && dateString < selectedEndDate;
-    const isBooked = bookedRanges.some((range) =>
+    const matchingBookings = bookedRanges.filter((range) =>
       isDateWithinRange(dateString, range.arrival_date, range.leave_date)
     );
+    const isBooked = matchingBookings.length > 0;
 
     return {
       dateString,
       dayNumber: current.getUTCDate(),
       isCurrentMonth,
       isSelectedWindow,
-      isBooked
+      isBooked,
+      bookingNames: [...new Set(matchingBookings.map((range) => range.customerName))]
     };
   });
 
@@ -286,8 +443,19 @@ function SiteTimelineCalendar({
               day.isSelectedWindow ? "selected" : ""
             } ${day.isBooked ? "booked" : ""}`}
             onClick={() => onSelectDate(day.dateString)}
+            title={day.bookingNames.join(", ")}
           >
             <span>{day.dayNumber}</span>
+            {day.bookingNames.length ? (
+              <div className="calendar-day-names">
+                {day.bookingNames.slice(0, 2).map((name) => (
+                  <small key={name}>{name}</small>
+                ))}
+                {day.bookingNames.length > 2 ? (
+                  <small>+{day.bookingNames.length - 2} more</small>
+                ) : null}
+              </div>
+            ) : null}
           </button>
         ))}
       </div>
@@ -313,8 +481,7 @@ export default function App() {
   const [customers, setCustomers] = useState([]);
   const [reservations, setReservations] = useState([]);
   const [timelineSiteId, setTimelineSiteId] = useState("");
-  const [timelineStartDate, setTimelineStartDate] = useState(formatDateInput(new Date()));
-  const [timelineDays, setTimelineDays] = useState("14");
+  const [selectedTimelineDate, setSelectedTimelineDate] = useState(formatDateInput(new Date()));
   const [timelineMonthCursor, setTimelineMonthCursor] = useState(() =>
     startOfMonth(formatDateInput(new Date()))
   );
@@ -361,10 +528,6 @@ export default function App() {
       setTimelineSiteId(String(sites[0].id));
     }
   }, [sites, timelineSiteId]);
-
-  useEffect(() => {
-    setTimelineMonthCursor(startOfMonth(timelineStartDate));
-  }, [timelineStartDate]);
 
   const visibleSites = [...sites]
     .sort((left, right) => siteNumberCollator.compare(left.site_number, right.site_number))
@@ -442,6 +605,19 @@ export default function App() {
     const rightDate = right.siteStays[0]?.arrival_date || "";
     return leftDate.localeCompare(rightDate);
   });
+  const bookedRangesBySite = scheduleReservations.reduce((rangesBySite, reservation) => {
+    reservation.siteStays.forEach((segment) => {
+      const siteId = String(segment.site_id);
+
+      if (!rangesBySite[siteId]) {
+        rangesBySite[siteId] = [];
+      }
+
+      rangesBySite[siteId].push(segment);
+    });
+
+    return rangesBySite;
+  }, {});
   const today = formatDateInput(new Date());
   const currentOccupancy = scheduleReservations
     .map((reservation) => {
@@ -470,10 +646,16 @@ export default function App() {
         .toLowerCase()
         .includes(searchValue);
     });
-  const timelineEndDate = addDays(timelineStartDate, Number(timelineDays || 14));
+  const timelineStartDate = formatDateInput(timelineMonthCursor);
+  const timelineEndDate = formatDateInput(startOfNextMonth(timelineMonthCursor));
   const selectedTimelineSite = sites.find((site) => String(site.id) === timelineSiteId) || null;
   const selectedSiteBookedRanges = scheduleReservations.flatMap((reservation) =>
-    reservation.siteStays.filter((segment) => String(segment.site_id) === timelineSiteId)
+    reservation.siteStays
+      .filter((segment) => String(segment.site_id) === timelineSiteId)
+      .map((segment) => ({
+        ...segment,
+        customerName: `${reservation.first_name} ${reservation.last_name}`
+      }))
   );
   const selectedSiteTimeline = scheduleReservations
     .flatMap((reservation) =>
@@ -497,6 +679,9 @@ export default function App() {
       return searchValue ? entry.customerName.toLowerCase().includes(searchValue) : true;
     })
     .sort((left, right) => left.segment.arrival_date.localeCompare(right.segment.arrival_date));
+  const selectedDateReservations = selectedSiteTimeline.filter((entry) =>
+    isDateWithinRange(selectedTimelineDate, entry.segment.arrival_date, entry.segment.leave_date)
+  );
 
   async function refreshReservations() {
     const reservationData = await apiRequest("/reservations");
@@ -1007,6 +1192,7 @@ export default function App() {
                     segment={segment}
                     index={index}
                     sites={sites}
+                    bookedRangesBySite={bookedRangesBySite}
                     onChange={updateSiteStay}
                     onRemove={removeSiteStay}
                     canRemove={reservationForm.siteStays.length > 1}
@@ -1121,13 +1307,15 @@ export default function App() {
                     </button>
                   </div>
                   <p className="muted">
-                    Booked {reservation.booked_date} • {reservation.rv_kind}
+                    Booked {formatDisplayDate(reservation.booked_date)} • {reservation.rv_kind}
                     {reservation.rig_length_feet ? ` • ${reservation.rig_length_feet} ft rig` : ""}
                   </p>
                   <ol className="timeline-list">
                     {reservation.activeSiteStays.map((segment) => (
                       <li key={segment.id}>
-                        Site {segment.site_number}: {segment.arrival_date} to {segment.leave_date} •{" "}
+                        Site {segment.site_number}: {formatDisplayDate(
+                          segment.arrival_date
+                        )} to {formatDisplayDate(segment.leave_date)} •{" "}
                         {segment.numberOfNights} nights •{" "}
                         {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
                         {formatCurrency(segment.normalPrice)} • Discount{" "}
@@ -1170,38 +1358,30 @@ export default function App() {
                 ))}
               </select>
             </label>
-            <label>
-              Days
-              <input
-                type="number"
-                min="1"
-                value={timelineDays}
-                onChange={(event) => setTimelineDays(event.target.value)}
-              />
-            </label>
           </div>
 
           <SiteTimelineCalendar
             monthCursor={timelineMonthCursor}
-            selectedStartDate={timelineStartDate}
-            selectedEndDate={timelineEndDate}
+            selectedStartDate={selectedTimelineDate}
+            selectedEndDate={addDays(selectedTimelineDate, 1)}
             bookedRanges={selectedSiteBookedRanges}
             onChangeMonth={changeTimelineMonth}
-            onSelectDate={setTimelineStartDate}
+            onSelectDate={(dateString) => {
+              setSelectedTimelineDate(dateString);
+              setTimelineMonthCursor(startOfMonth(dateString));
+            }}
           />
 
           <div className="timeline-card">
             <h3>
               {selectedTimelineSite
-                ? `Site ${selectedTimelineSite.site_number} timeline`
-                : "Site timeline"}
+                ? `Site ${selectedTimelineSite.site_number} booking details`
+                : "Site booking details"}
             </h3>
-            <p className="muted">
-              {timelineStartDate} through {timelineEndDate}
-            </p>
-            {selectedSiteTimeline.length ? (
+            <p className="muted">{formatDisplayDate(selectedTimelineDate)}</p>
+            {selectedDateReservations.length ? (
               <div className="schedule-list">
-                {selectedSiteTimeline.map((entry, index) => (
+                {selectedDateReservations.map((entry, index) => (
                   <article
                     key={`${entry.reservationId}-${entry.segment.id}-${index}`}
                     className="timeline-entry-card"
@@ -1219,14 +1399,15 @@ export default function App() {
                       </button>
                     </div>
                     <p className="muted">
-                      {entry.segment.arrival_date} to {entry.segment.leave_date} • {entry.rvKind}
+                      {formatDisplayDate(entry.segment.arrival_date)} to{" "}
+                      {formatDisplayDate(entry.segment.leave_date)} • {entry.rvKind}
                       {entry.rigLengthFeet ? ` • ${entry.rigLengthFeet} ft rig` : ""}
                     </p>
                   </article>
                 ))}
               </div>
             ) : (
-              <p className="muted">No reservation segments overlap this site and date window.</p>
+              <p className="muted">No booking is assigned to this site on the selected date.</p>
             )}
           </div>
         </section>

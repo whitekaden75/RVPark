@@ -249,6 +249,18 @@ textarea {
   padding: 18px;
 }
 
+.compact-calendar {
+  margin-top: 16px;
+}
+
+.compact-calendar h3 {
+  margin-bottom: 0;
+}
+
+.calendar-hint {
+  margin: 8px 0 14px;
+}
+
 .calendar-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -282,6 +294,34 @@ textarea {
   font-weight: 700;
 }
 
+.calendar-day-tag {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(44, 93, 118, 0.14);
+  color: #1f566f;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.calendar-day-names {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.calendar-day-names small {
+  display: block;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  color: #4a5c4f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .calendar-day.outside {
   opacity: 0.45;
 }
@@ -291,9 +331,26 @@ textarea {
   border-color: rgba(36, 74, 49, 0.3);
 }
 
+.calendar-day.departure {
+  background: rgba(44, 93, 118, 0.1);
+  border-color: rgba(44, 93, 118, 0.28);
+}
+
 .calendar-day.booked {
   background: rgba(184, 123, 69, 0.18);
   border-color: rgba(160, 102, 47, 0.28);
+}
+
+.calendar-day.selected.departure {
+  background:
+    linear-gradient(135deg, rgba(36, 74, 49, 0.16), rgba(36, 74, 49, 0.16) 50%),
+    linear-gradient(315deg, rgba(44, 93, 118, 0.14), rgba(44, 93, 118, 0.14) 50%);
+}
+
+.calendar-day.departure.booked {
+  background:
+    linear-gradient(135deg, rgba(44, 93, 118, 0.14), rgba(44, 93, 118, 0.14) 50%),
+    linear-gradient(315deg, rgba(184, 123, 69, 0.22), rgba(184, 123, 69, 0.22) 50%);
 }
 
 .calendar-day.selected.booked {
@@ -328,6 +385,11 @@ textarea {
 .legend-box.selected {
   background: rgba(36, 74, 49, 0.14);
   border-color: rgba(36, 74, 49, 0.3);
+}
+
+.legend-box.departure {
+  background: rgba(44, 93, 118, 0.1);
+  border-color: rgba(44, 93, 118, 0.28);
 }
 
 .legend-box.booked {
