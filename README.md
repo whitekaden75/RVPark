@@ -19,6 +19,7 @@ React + Node.js app for managing RV park registrations with:
 - `sql/002_seed_rv_sites_example.sql` optional starter site data you can edit first
 - `sql/003_pricing_and_site_categories_upgrade.sql` site-category and pricing upgrade
 - `sql/004_add_amount_paid_to_reservations.sql` tracks payments against a reservation
+- `sql/005_make_customer_contact_fields_optional.sql` allows email or phone to be blank
 
 ## Database Setup
 
@@ -37,6 +38,8 @@ If you want starter site records, edit and run [sql/002_seed_rv_sites_example.sq
 If your database is moving to the expanded pricing model, run [sql/003_pricing_and_site_categories_upgrade.sql](/Users/kadenwhite/Desktop/RVPark/sql/003_pricing_and_site_categories_upgrade.sql) too.
 
 If you want to track payments and remaining balance, run [sql/004_add_amount_paid_to_reservations.sql](/Users/kadenwhite/Desktop/RVPark/sql/004_add_amount_paid_to_reservations.sql) too.
+
+If you want customers to be allowed with only an email or only a phone number, run [sql/005_make_customer_contact_fields_optional.sql](/Users/kadenwhite/Desktop/RVPark/sql/005_make_customer_contact_fields_optional.sql) too.
 
 ## Local Setup
 

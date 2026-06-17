@@ -295,8 +295,12 @@ app.get("/api/customers", async (_req, res) => {
 app.post("/api/customers", async (req, res) => {
   const { firstName, lastName, email, phoneNumber } = req.body;
 
-  if (!firstName || !lastName || !email || !phoneNumber) {
-    return res.status(400).json({ message: "All customer fields are required." });
+  if (!firstName || !lastName) {
+    return res.status(400).json({ message: "First name and last name are required." });
+  }
+
+  if (!email && !phoneNumber) {
+    return res.status(400).json({ message: "Provide at least an email or phone number." });
   }
 
   try {
@@ -306,7 +310,7 @@ app.post("/api/customers", async (req, res) => {
         VALUES ($1, $2, $3, $4)
         RETURNING id, first_name, last_name, email, phone_number
       `,
-      [firstName, lastName, email, phoneNumber]
+      [firstName, lastName, email || null, phoneNumber || null]
     );
 
     res.status(201).json(result.rows[0]);
