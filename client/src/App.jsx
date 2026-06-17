@@ -26,7 +26,7 @@ const emptyReservation = {
   rvKind: "camper",
   amountPaid: "",
   notes: "",
-  siteStays: [{ siteId: "", arrivalDate: "", leaveDate: "" }]
+  siteStays: [{ siteId: "", siteSearch: "", arrivalDate: "", leaveDate: "" }]
 };
 
 const rvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
@@ -142,6 +142,11 @@ async function apiRequest(path, options = {}) {
 }
 
 function SiteStayFields({ segment, index, sites, onChange, onRemove, canRemove }) {
+  const siteSearch = segment.siteSearch?.trim().toLowerCase() || "";
+  const filteredSites = sites.filter((site) =>
+    siteSearch ? site.site_number.toLowerCase().includes(siteSearch) : true
+  );
+
   return (
     <div className="segment-card">
       <div className="segment-header">
@@ -154,13 +159,21 @@ function SiteStayFields({ segment, index, sites, onChange, onRemove, canRemove }
       </div>
       <div className="field-grid compact-grid">
         <label>
+          Search site
+          <input
+            placeholder="Type site number or letter"
+            value={segment.siteSearch || ""}
+            onChange={(event) => onChange(index, "siteSearch", event.target.value)}
+          />
+        </label>
+        <label>
           Site
           <select
             value={segment.siteId}
             onChange={(event) => onChange(index, "siteId", event.target.value)}
           >
             <option value="">Select a site</option>
-            {sites.map((site) => (
+            {filteredSites.map((site) => (
               <option key={site.id} value={site.id}>
                 Site {site.site_number} • {site.size_feet} ft •{" "}
                 {formatPricingCategory(site.pricing_category)}
@@ -201,6 +214,7 @@ export default function App() {
   const [passcodeError, setPasscodeError] = useState("");
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [customerSearch, setCustomerSearch] = useState("");
   const [isTypeMenuOpen, setIsTypeMenuOpen] = useState(false);
   const [siteFilters, setSiteFilters] = useState(emptySiteFilters);
   const [openSitePricing, setOpenSitePricing] = useState({});
@@ -293,6 +307,16 @@ export default function App() {
     }),
     { normalPrice: 0, discountPrice: 0 }
   );
+  const visibleCustomers = customers.filter((customer) => {
+    const searchValue = customerSearch.trim().toLowerCase();
+
+    if (!searchValue) {
+      return true;
+    }
+
+    const fullName = `${customer.first_name} ${customer.last_name}`.toLowerCase();
+    return fullName.includes(searchValue);
+  });
 
   function updateSearchField(field, value) {
     setSearchForm((current) => ({ ...current, [field]: value }));
@@ -374,7 +398,10 @@ export default function App() {
   function addSiteStay() {
     setReservationForm((current) => ({
       ...current,
-      siteStays: [...current.siteStays, { siteId: "", arrivalDate: "", leaveDate: "" }]
+      siteStays: [
+        ...current.siteStays,
+        { siteId: "", siteSearch: "", arrivalDate: "", leaveDate: "" }
+      ]
     }));
   }
 
@@ -430,6 +457,7 @@ export default function App() {
         ...current,
         customerId: String(createdCustomer.id)
       }));
+      setCustomerSearch(`${createdCustomer.first_name} ${createdCustomer.last_name}`);
       setCustomerForm(emptyCustomer);
       setSuccessMessage(`Created customer #${createdCustomer.id}.`);
     } catch (error) {
@@ -468,6 +496,7 @@ export default function App() {
       ...current,
       siteStays: switchPlan.map((segment) => ({
         siteId: String(segment.siteId),
+        siteSearch: segment.siteNumber,
         arrivalDate: segment.arrivalDate,
         leaveDate: segment.leaveDate
       }))
@@ -655,13 +684,21 @@ export default function App() {
             <form onSubmit={handleReservationCreate}>
               <div className="field-grid">
                 <label>
+                  Search customer
+                  <input
+                    placeholder="Type a customer name"
+                    value={customerSearch}
+                    onChange={(event) => setCustomerSearch(event.target.value)}
+                  />
+                </label>
+                <label>
                   Customer
                   <select
                     value={reservationForm.customerId}
                     onChange={(event) => updateReservationField("customerId", event.target.value)}
                   >
                     <option value="">Select a customer</option>
-                    {customers.map((customer) => (
+                    {visibleCustomers.map((customer) => (
                       <option key={customer.id} value={customer.id}>
                         #{customer.id} {customer.first_name} {customer.last_name}
                       </option>
