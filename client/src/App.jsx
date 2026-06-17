@@ -1063,7 +1063,6 @@ export default function App() {
             ) : (
               <p className="muted">No reservation segments overlap this site and date window.</p>
             )}
-          )}
         </section>
 
         <section className="card">
