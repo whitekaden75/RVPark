@@ -20,6 +20,8 @@ React + Node.js app for managing RV park registrations with:
 - `sql/003_pricing_and_site_categories_upgrade.sql` site-category and pricing upgrade
 - `sql/004_add_amount_paid_to_reservations.sql` tracks payments against a reservation
 - `sql/005_make_customer_contact_fields_optional.sql` allows email or phone to be blank
+- `sql/006_add_missing_reservation_notes_column.sql` adds the reservation notes field if your live table is missing it
+- `sql/007_add_rig_size_to_reservations.sql` stores the guest RV length in feet
 
 ## Database Setup
 
@@ -40,6 +42,10 @@ If your database is moving to the expanded pricing model, run [sql/003_pricing_a
 If you want to track payments and remaining balance, run [sql/004_add_amount_paid_to_reservations.sql](/Users/kadenwhite/Desktop/RVPark/sql/004_add_amount_paid_to_reservations.sql) too.
 
 If you want customers to be allowed with only an email or only a phone number, run [sql/005_make_customer_contact_fields_optional.sql](/Users/kadenwhite/Desktop/RVPark/sql/005_make_customer_contact_fields_optional.sql) too.
+
+If your live `reservations` table is missing the `notes` column, run [sql/006_add_missing_reservation_notes_column.sql](/Users/kadenwhite/Desktop/RVPark/sql/006_add_missing_reservation_notes_column.sql) too.
+
+If you want to track how big each guest rig is, run [sql/007_add_rig_size_to_reservations.sql](/Users/kadenwhite/Desktop/RVPark/sql/007_add_rig_size_to_reservations.sql) too.
 
 ## Local Setup
 

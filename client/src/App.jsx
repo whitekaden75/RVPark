@@ -24,6 +24,7 @@ const emptyReservation = {
   customerId: "",
   bookedDate: "",
   rvKind: "camper",
+  rigLengthFeet: "",
   amountPaid: "",
   notes: "",
   siteStays: [{ siteId: "", siteSearch: "", arrivalDate: "", leaveDate: "" }]
@@ -214,6 +215,7 @@ export default function App() {
   const [passcodeError, setPasscodeError] = useState("");
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [reservations, setReservations] = useState([]);
   const [customerSearch, setCustomerSearch] = useState("");
   const [isTypeMenuOpen, setIsTypeMenuOpen] = useState(false);
   const [siteFilters, setSiteFilters] = useState(emptySiteFilters);
@@ -225,19 +227,22 @@ export default function App() {
   const [switchPlan, setSwitchPlan] = useState(null);
   const [switchPlanTotals, setSwitchPlanTotals] = useState(null);
   const [createdReservation, setCreatedReservation] = useState(null);
+  const [editingReservationId, setEditingReservationId] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
   useEffect(() => {
     async function loadInitialData() {
       try {
-        const [siteData, customerData] = await Promise.all([
+        const [siteData, customerData, reservationData] = await Promise.all([
           apiRequest("/sites"),
-          apiRequest("/customers")
+          apiRequest("/customers"),
+          apiRequest("/reservations")
         ]);
 
         setSites(ensureArray(siteData, "Sites"));
         setCustomers(ensureArray(customerData, "Customers"));
+        setReservations(ensureArray(reservationData, "Reservations"));
       } catch (error) {
         setErrorMessage(error.message);
       }
@@ -317,6 +322,18 @@ export default function App() {
     const fullName = `${customer.first_name} ${customer.last_name}`.toLowerCase();
     return fullName.includes(searchValue);
   });
+
+  async function refreshReservations() {
+    const reservationData = await apiRequest("/reservations");
+    setReservations(ensureArray(reservationData, "Reservations"));
+  }
+
+  function resetReservationForm() {
+    setReservationForm(emptyReservation);
+    setCustomerSearch("");
+    setEditingReservationId(null);
+    setCreatedReservation(null);
+  }
 
   function updateSearchField(field, value) {
     setSearchForm((current) => ({ ...current, [field]: value }));
@@ -471,17 +488,69 @@ export default function App() {
     setSuccessMessage("");
 
     try {
-      const created = await apiRequest("/reservations", {
-        method: "POST",
-        body: JSON.stringify({
-          ...reservationForm,
-          customerId: Number(reservationForm.customerId)
-        })
-      });
+      const payload = {
+        ...reservationForm,
+        customerId: Number(reservationForm.customerId)
+      };
+      const created = await apiRequest(
+        editingReservationId ? `/reservations/${editingReservationId}` : "/reservations",
+        {
+          method: editingReservationId ? "PUT" : "POST",
+          body: JSON.stringify(payload)
+        }
+      );
 
-      setCreatedReservation(created);
-      setSuccessMessage(`Created reservation #${created.id}.`);
-      setReservationForm(emptyReservation);
+      if (editingReservationId) {
+        setCreatedReservation(created);
+        setSuccessMessage(`Updated reservation #${created.id}.`);
+      } else {
+        setCreatedReservation(created);
+        setSuccessMessage(`Created reservation #${created.id}.`);
+      }
+
+      await refreshReservations();
+      resetReservationForm();
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function startEditingReservation(reservationId) {
+    setErrorMessage("");
+
+    try {
+      const reservation = await apiRequest(`/reservations/${reservationId}`);
+      setEditingReservationId(reservation.id);
+      setReservationForm({
+        customerId: String(reservation.customer_id),
+        bookedDate: reservation.booked_date,
+        rvKind: reservation.rv_kind,
+        rigLengthFeet: String(reservation.rig_length_feet ?? ""),
+        amountPaid: String(reservation.amountPaid ?? ""),
+        notes: reservation.notes || "",
+        siteStays: reservation.siteStays.map((segment) => ({
+          siteId: String(segment.site_id),
+          siteSearch: segment.site_number,
+          arrivalDate: segment.arrival_date,
+          leaveDate: segment.leave_date
+        }))
+      });
+      setCustomerSearch(`${reservation.first_name} ${reservation.last_name}`);
+      setCreatedReservation(reservation);
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  function cancelEditingReservation() {
+    resetReservationForm();
+  }
+
+  async function handleReservationRefresh() {
+    setErrorMessage("");
+
+    try {
+      await refreshReservations();
     } catch (error) {
       setErrorMessage(error.message);
     }
@@ -502,6 +571,12 @@ export default function App() {
       }))
     }));
   }
+
+  const scheduleReservations = [...reservations].sort((left, right) => {
+    const leftDate = left.siteStays[0]?.arrival_date || "";
+    const rightDate = right.siteStays[0]?.arrival_date || "";
+    return leftDate.localeCompare(rightDate);
+  });
 
   if (!isUnlocked) {
     return (
@@ -678,7 +753,7 @@ export default function App() {
 
           <div>
             <div className="section-heading">
-              <h2>Create Reservation</h2>
+              <h2>{editingReservationId ? `Edit Reservation #${editingReservationId}` : "Create Reservation"}</h2>
               <p>One reservation can contain one or more contiguous site stays.</p>
             </div>
             <form onSubmit={handleReservationCreate}>
@@ -725,6 +800,18 @@ export default function App() {
                       </option>
                     ))}
                   </select>
+                </label>
+                <label>
+                  Rig size (feet)
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="Example: 32"
+                    value={reservationForm.rigLengthFeet}
+                    onChange={(event) =>
+                      updateReservationField("rigLengthFeet", event.target.value)
+                    }
+                  />
                 </label>
                 <label>
                   Amount paid
@@ -811,8 +898,13 @@ export default function App() {
                 <button type="button" className="ghost-button" onClick={addSiteStay}>
                   Add site stay
                 </button>
+                {editingReservationId ? (
+                  <button type="button" className="ghost-button" onClick={cancelEditingReservation}>
+                    Cancel edit
+                  </button>
+                ) : null}
                 <button type="submit" className="primary-button">
-                  Create reservation
+                  {editingReservationId ? "Save reservation" : "Create reservation"}
                 </button>
               </div>
             </form>
@@ -821,39 +913,65 @@ export default function App() {
 
         <section className="card">
           <div className="section-heading">
-            <h2>Reservation Timeline</h2>
-            <p>The reservation response returns the saved site segments in order.</p>
+            <h2>Schedule</h2>
+            <p>View saved reservations and load any one into the form for editing.</p>
           </div>
-          {createdReservation ? (
-            <div className="timeline-card">
-              <h3>Reservation #{createdReservation.id}</h3>
-              <ol className="timeline-list">
-                {createdReservation.siteStays.map((segment) => (
-                  <li key={segment.id}>
-                    Site {segment.site_number}: {segment.arrival_date} to {segment.leave_date} •{" "}
-                    {segment.numberOfNights} nights •{" "}
-                    {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
-                    {formatCurrency(segment.normalPrice)} • Discount{" "}
-                    {formatCurrency(segment.discountPrice)}
-                  </li>
-                ))}
-              </ol>
-              <div className="pricing-summary">
-                <span>Total normal: {formatCurrency(createdReservation.totals?.normalPrice)}</span>
-                <span>
-                  Total discount: {formatCurrency(createdReservation.totals?.discountPrice)}
-                </span>
-                <span>Amount paid: {formatCurrency(createdReservation.amountPaid)}</span>
-                <span>
-                  Remaining normal: {formatCurrency(createdReservation.remainingNormalPrice)}
-                </span>
-                <span>
-                  Remaining discount: {formatCurrency(createdReservation.remainingDiscountPrice)}
-                </span>
-              </div>
+          <div className="button-row">
+            <span className="muted">{scheduleReservations.length} reservations</span>
+            <button type="button" className="ghost-button" onClick={handleReservationRefresh}>
+              Refresh schedule
+            </button>
+          </div>
+          {scheduleReservations.length ? (
+            <div className="schedule-list">
+              {scheduleReservations.map((reservation) => (
+                <article key={reservation.id} className="timeline-card">
+                  <div className="result-header">
+                    <h3>
+                      Reservation #{reservation.id} • {reservation.first_name} {reservation.last_name}
+                    </h3>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => startEditingReservation(reservation.id)}
+                    >
+                      Edit
+                    </button>
+                  </div>
+                  <p className="muted">
+                    Booked {reservation.booked_date} • {reservation.rv_kind}
+                    {reservation.rig_length_feet ? ` • ${reservation.rig_length_feet} ft rig` : ""}
+                  </p>
+                  <ol className="timeline-list">
+                    {reservation.siteStays.map((segment) => (
+                      <li key={segment.id}>
+                        Site {segment.site_number}: {segment.arrival_date} to {segment.leave_date} •{" "}
+                        {segment.numberOfNights} nights •{" "}
+                        {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
+                        {formatCurrency(segment.normalPrice)} • Discount{" "}
+                        {formatCurrency(segment.discountPrice)}
+                      </li>
+                    ))}
+                  </ol>
+                  <div className="pricing-summary">
+                    <span>Total normal: {formatCurrency(reservation.totals?.normalPrice)}</span>
+                    <span>
+                      Total discount: {formatCurrency(reservation.totals?.discountPrice)}
+                    </span>
+                    <span>Amount paid: {formatCurrency(reservation.amountPaid)}</span>
+                    <span>
+                      Remaining normal: {formatCurrency(reservation.remainingNormalPrice)}
+                    </span>
+                    <span>
+                      Remaining discount: {formatCurrency(reservation.remainingDiscountPrice)}
+                    </span>
+                  </div>
+                  {reservation.notes ? <p className="muted">Notes: {reservation.notes}</p> : null}
+                </article>
+              ))}
             </div>
           ) : (
-            <p className="muted">Create a reservation to see its saved timeline here.</p>
+            <p className="muted">No reservations yet.</p>
           )}
         </section>
 

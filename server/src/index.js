@@ -137,6 +137,22 @@ function decorateSiteWithPricingTable(site, pricingRulesByCategory) {
   };
 }
 
+function sumReservationTotals(siteStays) {
+  return siteStays.reduce(
+    (summary, segment) => ({
+      normalPrice:
+        summary.normalPrice !== null && segment.normalPrice !== null
+          ? summary.normalPrice + segment.normalPrice
+          : null,
+      discountPrice:
+        summary.discountPrice !== null && segment.discountPrice !== null
+          ? summary.discountPrice + segment.discountPrice
+          : null
+    }),
+    { normalPrice: 0, discountPrice: 0 }
+  );
+}
+
 function parseAvailabilityFilters(body) {
   const arrivalDate = body.arrivalDate;
   const leaveDate = body.leaveDate;
@@ -239,6 +255,76 @@ async function loadConflictingStays(siteIds, arrivalDate, leaveDate) {
   return result.rows;
 }
 
+async function fetchReservationDetails(queryable, reservationId) {
+  const reservationResult = await queryable.query(
+    `
+      SELECT
+        r.id,
+        r.customer_id,
+        r.booked_date::text,
+        r.rv_kind,
+        r.rig_length_feet,
+        r.amount_paid,
+        r.notes,
+        r.created_at,
+        c.first_name,
+        c.last_name,
+        c.email,
+        c.phone_number
+      FROM reservations r
+      JOIN customers c ON c.id = r.customer_id
+      WHERE r.id = $1
+    `,
+    [reservationId]
+  );
+
+  if (reservationResult.rowCount === 0) {
+    return null;
+  }
+
+  const staysResult = await queryable.query(
+    `
+      SELECT
+        rss.id,
+        rss.site_id,
+        s.site_number,
+        s.river_category,
+        s.is_big_rig,
+        rss.arrival_date::text,
+        rss.leave_date::text
+      FROM reservation_site_stays rss
+      JOIN rv_sites s ON s.id = rss.site_id
+      WHERE rss.reservation_id = $1
+      ORDER BY rss.arrival_date
+    `,
+    [reservationId]
+  );
+
+  const uniqueNightCounts = [
+    ...new Set(
+      staysResult.rows.map((segment) => nightsBetween(segment.arrival_date, segment.leave_date))
+    )
+  ];
+  const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
+  const pricedSiteStays = staysResult.rows.map((segment) => ({
+    ...segment,
+    ...getPricingForSiteAndNights(
+      segment,
+      nightsBetween(segment.arrival_date, segment.leave_date),
+      pricingLookup
+    )
+  }));
+  const totals = sumReservationTotals(pricedSiteStays);
+  const balances = applyBalanceSummary(reservationResult.rows[0].amount_paid, totals);
+
+  return {
+    ...reservationResult.rows[0],
+    totals,
+    ...balances,
+    siteStays: pricedSiteStays
+  };
+}
+
 app.get("/api/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -287,6 +373,42 @@ app.get("/api/customers", async (_req, res) => {
     );
 
     res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.put("/api/customers/:id", async (req, res) => {
+  const { firstName, lastName, email, phoneNumber } = req.body;
+
+  if (!firstName || !lastName) {
+    return res.status(400).json({ message: "First name and last name are required." });
+  }
+
+  if (!email && !phoneNumber) {
+    return res.status(400).json({ message: "Provide at least an email or phone number." });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        UPDATE customers
+        SET
+          first_name = $2,
+          last_name = $3,
+          email = $4,
+          phone_number = $5
+        WHERE id = $1
+        RETURNING id, first_name, last_name, email, phone_number
+      `,
+      [req.params.id, firstName, lastName, email || null, phoneNumber || null]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Customer not found." });
+    }
+
+    res.json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -422,94 +544,44 @@ app.post("/api/availability/plan", async (req, res) => {
   }
 });
 
-app.get("/api/reservations/:id", async (req, res) => {
+app.get("/api/reservations", async (_req, res) => {
   try {
-    const reservationResult = await pool.query(
+    const reservationsResult = await pool.query(
       `
-        SELECT
-          r.id,
-          r.customer_id,
-          r.booked_date::text,
-          r.rv_kind,
-          r.amount_paid,
-          r.notes,
-          r.created_at,
-          c.first_name,
-          c.last_name,
-          c.email,
-          c.phone_number
+        SELECT r.id
         FROM reservations r
-        JOIN customers c ON c.id = r.customer_id
-        WHERE r.id = $1
-      `,
-      [req.params.id]
+        LEFT JOIN reservation_site_stays rss ON rss.reservation_id = r.id
+        GROUP BY r.id
+        ORDER BY MIN(rss.arrival_date) NULLS LAST, r.id DESC
+      `
     );
 
-    if (reservationResult.rowCount === 0) {
+    const reservations = await Promise.all(
+      reservationsResult.rows.map((row) => fetchReservationDetails(pool, row.id))
+    );
+
+    res.json(reservations.filter(Boolean));
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reservations/:id", async (req, res) => {
+  try {
+    const reservation = await fetchReservationDetails(pool, req.params.id);
+
+    if (!reservation) {
       return res.status(404).json({ message: "Reservation not found." });
     }
 
-    const staysResult = await pool.query(
-      `
-        SELECT
-          rss.id,
-          rss.site_id,
-          s.site_number,
-          s.river_category,
-          s.is_big_rig,
-          rss.arrival_date::text,
-          rss.leave_date::text
-        FROM reservation_site_stays rss
-        JOIN rv_sites s ON s.id = rss.site_id
-        WHERE rss.reservation_id = $1
-        ORDER BY rss.arrival_date
-      `,
-      [req.params.id]
-    );
-
-    const uniqueNightCounts = [
-      ...new Set(
-        staysResult.rows.map((segment) => nightsBetween(segment.arrival_date, segment.leave_date))
-      )
-    ];
-    const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
-    const pricedSiteStays = staysResult.rows.map((segment) => ({
-      ...segment,
-      ...getPricingForSiteAndNights(
-        segment,
-        nightsBetween(segment.arrival_date, segment.leave_date),
-        pricingLookup
-      )
-    }));
-
-    const totals = pricedSiteStays.reduce(
-      (summary, segment) => ({
-        normalPrice:
-          summary.normalPrice !== null && segment.normalPrice !== null
-            ? summary.normalPrice + segment.normalPrice
-            : null,
-        discountPrice:
-          summary.discountPrice !== null && segment.discountPrice !== null
-            ? summary.discountPrice + segment.discountPrice
-            : null
-      }),
-      { normalPrice: 0, discountPrice: 0 }
-    );
-    const balances = applyBalanceSummary(reservationResult.rows[0].amount_paid, totals);
-
-    res.json({
-      ...reservationResult.rows[0],
-      totals,
-      ...balances,
-      siteStays: pricedSiteStays
-    });
+    res.json(reservation);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
 
 app.post("/api/reservations", async (req, res) => {
-  const { customerId, bookedDate, rvKind, amountPaid, notes, siteStays } = req.body;
+  const { customerId, bookedDate, rvKind, rigLengthFeet, amountPaid, notes, siteStays } = req.body;
 
   if (!customerId || !bookedDate || !rvKind) {
     return res.status(400).json({ message: "Customer, booked date, and RV kind are required." });
@@ -529,11 +601,25 @@ app.post("/api/reservations", async (req, res) => {
 
     const reservationResult = await client.query(
       `
-        INSERT INTO reservations (customer_id, booked_date, rv_kind, amount_paid, notes)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO reservations (
+          customer_id,
+          booked_date,
+          rv_kind,
+          rig_length_feet,
+          amount_paid,
+          notes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
       `,
-      [customerId, bookedDate, rvKind, toPriceNumber(amountPaid) ?? 0, notes || ""]
+      [
+        customerId,
+        bookedDate,
+        rvKind,
+        rigLengthFeet ? Number(rigLengthFeet) : null,
+        toPriceNumber(amountPaid) ?? 0,
+        notes || ""
+      ]
     );
 
     const reservationId = reservationResult.rows[0].id;
@@ -589,19 +675,7 @@ app.post("/api/reservations", async (req, res) => {
         pricingLookup
       )
     }));
-    const totals = pricedSiteStays.reduce(
-      (summary, segment) => ({
-        normalPrice:
-          summary.normalPrice !== null && segment.normalPrice !== null
-            ? summary.normalPrice + segment.normalPrice
-            : null,
-        discountPrice:
-          summary.discountPrice !== null && segment.discountPrice !== null
-            ? summary.discountPrice + segment.discountPrice
-            : null
-      }),
-      { normalPrice: 0, discountPrice: 0 }
-    );
+    const totals = sumReservationTotals(pricedSiteStays);
 
     res.status(201).json({
       id: reservationId,
@@ -609,6 +683,92 @@ app.post("/api/reservations", async (req, res) => {
       totals,
       siteStays: pricedSiteStays
     });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.code === "23P01") {
+      return res.status(409).json({
+        message: "One or more site stays overlap an existing reservation."
+      });
+    }
+
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.put("/api/reservations/:id", async (req, res) => {
+  const { customerId, bookedDate, rvKind, rigLengthFeet, amountPaid, notes, siteStays } = req.body;
+
+  if (!customerId || !bookedDate || !rvKind) {
+    return res.status(400).json({ message: "Customer, booked date, and RV kind are required." });
+  }
+
+  const validationMessage = validateReservationSegments(siteStays);
+
+  if (validationMessage) {
+    return res.status(400).json({ message: validationMessage });
+  }
+
+  const normalizedSegments = normalizeSegments(siteStays);
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const updateResult = await client.query(
+      `
+        UPDATE reservations
+        SET
+          customer_id = $2,
+          booked_date = $3,
+          rv_kind = $4,
+          rig_length_feet = $5,
+          amount_paid = $6,
+          notes = $7
+        WHERE id = $1
+        RETURNING id
+      `,
+      [
+        req.params.id,
+        customerId,
+        bookedDate,
+        rvKind,
+        rigLengthFeet ? Number(rigLengthFeet) : null,
+        toPriceNumber(amountPaid) ?? 0,
+        notes || ""
+      ]
+    );
+
+    if (updateResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    await client.query(`DELETE FROM reservation_site_stays WHERE reservation_id = $1`, [
+      req.params.id
+    ]);
+
+    for (const segment of normalizedSegments) {
+      await client.query(
+        `
+          INSERT INTO reservation_site_stays (
+            reservation_id,
+            site_id,
+            arrival_date,
+            leave_date
+          )
+          VALUES ($1, $2, $3, $4)
+        `,
+        [req.params.id, segment.siteId, segment.arrivalDate, segment.leaveDate]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    const reservation = await fetchReservationDetails(pool, req.params.id);
+    res.json(reservation);
   } catch (error) {
     await client.query("ROLLBACK");
 

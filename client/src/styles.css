@@ -228,6 +228,12 @@ textarea {
   margin-top: 0;
 }
 
+.schedule-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
 .pricing-summary {
   margin-top: 14px;
   grid-template-columns: repeat(auto-fit, minmax(180px, max-content));
