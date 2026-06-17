@@ -394,7 +394,6 @@ export default function App() {
     setCustomerSearch("");
     setCustomerForm(emptyCustomer);
     setEditingReservationId(null);
-    setCreatedReservation(null);
   }
 
   function updateSearchField(field, value) {
@@ -574,6 +573,12 @@ export default function App() {
     try {
       const reservation = await apiRequest(`/reservations/${reservationId}`);
       setEditingReservationId(reservation.id);
+      setCustomerForm({
+        firstName: reservation.first_name || "",
+        lastName: reservation.last_name || "",
+        email: reservation.email || "",
+        phoneNumber: reservation.phone_number || ""
+      });
       setReservationForm({
         customerId: String(reservation.customer_id),
         bookedDate: reservation.booked_date,
@@ -1063,6 +1068,7 @@ export default function App() {
             ) : (
               <p className="muted">No reservation segments overlap this site and date window.</p>
             )}
+          </div>
         </section>
 
         <section className="card">
