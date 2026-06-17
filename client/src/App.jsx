@@ -1055,16 +1055,31 @@ export default function App() {
               {timelineStartDate} through {timelineEndDate}
             </p>
             {selectedSiteTimeline.length ? (
-              <ol className="timeline-list">
+              <div className="schedule-list">
                 {selectedSiteTimeline.map((entry, index) => (
-                  <li key={`${entry.reservationId}-${entry.segment.id}-${index}`}>
-                    {entry.customerName} • {entry.segment.arrival_date} to {entry.segment.leave_date}
-                    {" "}• {entry.rvKind}
-                    {entry.rigLengthFeet ? ` • ${entry.rigLengthFeet} ft rig` : ""}
-                    {" "}• Reservation #{entry.reservationId}
-                  </li>
+                  <article
+                    key={`${entry.reservationId}-${entry.segment.id}-${index}`}
+                    className="timeline-entry-card"
+                  >
+                    <div className="result-header">
+                      <h4>
+                        {entry.customerName} • Reservation #{entry.reservationId}
+                      </h4>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => startEditingReservation(entry.reservationId)}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                    <p className="muted">
+                      {entry.segment.arrival_date} to {entry.segment.leave_date} • {entry.rvKind}
+                      {entry.rigLengthFeet ? ` • ${entry.rigLengthFeet} ft rig` : ""}
+                    </p>
+                  </article>
                 ))}
-              </ol>
+              </div>
             ) : (
               <p className="muted">No reservation segments overlap this site and date window.</p>
             )}

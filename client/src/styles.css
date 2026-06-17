@@ -328,6 +328,17 @@ textarea {
   padding: 18px;
 }
 
+.timeline-entry-card {
+  border-radius: 16px;
+  border: 1px solid rgba(57, 81, 58, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 16px;
+}
+
+.timeline-entry-card h4 {
+  margin: 0;
+}
+
 .result-header,
 .segment-header,
 .button-row {
