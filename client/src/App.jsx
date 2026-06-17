@@ -24,6 +24,7 @@ const emptyReservation = {
   customerId: "",
   bookedDate: "",
   rvKind: "camper",
+  amountPaid: "",
   notes: "",
   siteStays: [{ siteId: "", arrivalDate: "", leaveDate: "" }]
 };
@@ -33,9 +34,18 @@ const siteNumberCollator = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: "base"
 });
+const siteTypeOptions = [
+  { value: "riverfront", label: "Riverfront" },
+  { value: "standard", label: "Standard" },
+  { value: "prime_river", label: "Prime river" },
+  { value: "normal_river", label: "Non-prime river" },
+  { value: "big_rig", label: "Big rig" },
+  { value: "small_rig", label: "Small rig" }
+];
 
 const emptySiteFilters = {
-  type: "all",
+  siteLookup: "",
+  types: siteTypeOptions.map((option) => option.value),
   minSizeFeet: "",
   maxSizeFeet: ""
 };
@@ -71,6 +81,19 @@ function formatPricingCategory(value) {
 
 function getSiteTypeLabel(site) {
   return site.is_on_river || site.isOnRiver ? "Riverfront" : "Standard";
+}
+
+function matchesSiteTypeFilter(site, selectedTypes) {
+  const matches = {
+    riverfront: site.is_on_river,
+    standard: !site.is_on_river,
+    prime_river: site.river_category === "prime_river",
+    normal_river: site.river_category === "normal_river",
+    big_rig: site.is_big_rig,
+    small_rig: !site.is_big_rig
+  };
+
+  return selectedTypes.some((type) => matches[type]);
 }
 
 function getPricingRuleForNights(site, numberOfNights) {
@@ -178,7 +201,9 @@ export default function App() {
   const [passcodeError, setPasscodeError] = useState("");
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [isTypeMenuOpen, setIsTypeMenuOpen] = useState(false);
   const [siteFilters, setSiteFilters] = useState(emptySiteFilters);
+  const [openSitePricing, setOpenSitePricing] = useState({});
   const [searchForm, setSearchForm] = useState(emptySearch);
   const [customerForm, setCustomerForm] = useState(emptyCustomer);
   const [reservationForm, setReservationForm] = useState(emptyReservation);
@@ -210,11 +235,13 @@ export default function App() {
   const visibleSites = [...sites]
     .sort((left, right) => siteNumberCollator.compare(left.site_number, right.site_number))
     .filter((site) => {
-      if (siteFilters.type === "riverfront" && !site.is_on_river) {
+      const siteLookup = siteFilters.siteLookup.trim().toLowerCase();
+
+      if (siteLookup && !site.site_number.toLowerCase().includes(siteLookup)) {
         return false;
       }
 
-      if (siteFilters.type === "standard" && site.is_on_river) {
+      if (siteFilters.types.length > 0 && !matchesSiteTypeFilter(site, siteFilters.types)) {
         return false;
       }
 
@@ -286,6 +313,45 @@ export default function App() {
 
   function updateSiteFilter(field, value) {
     setSiteFilters((current) => ({ ...current, [field]: value }));
+  }
+
+  function toggleSiteTypeFilter(type) {
+    setSiteFilters((current) => {
+      const nextTypes = current.types.includes(type)
+        ? current.types.filter((value) => value !== type)
+        : [...current.types, type];
+
+      return {
+        ...current,
+        types: nextTypes
+      };
+    });
+  }
+
+  function toggleSitePricing(siteId) {
+    setOpenSitePricing((current) => {
+      if (current[siteId]) {
+        const next = { ...current };
+        delete next[siteId];
+        return next;
+      }
+
+      return { ...current, [siteId]: [] };
+    });
+  }
+
+  function toggleSitePricingDay(siteId, numberOfDays) {
+    setOpenSitePricing((current) => {
+      const selectedDays = current[siteId] || [];
+      const nextDays = selectedDays.includes(numberOfDays)
+        ? selectedDays.filter((value) => value !== numberOfDays)
+        : [...selectedDays, numberOfDays].sort((left, right) => left - right);
+
+      return {
+        ...current,
+        [siteId]: nextDays
+      };
+    });
   }
 
   function updateCustomerField(field, value) {
@@ -623,6 +689,17 @@ export default function App() {
                     ))}
                   </select>
                 </label>
+                <label>
+                  Amount paid
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="0.00"
+                    value={reservationForm.amountPaid}
+                    onChange={(event) => updateReservationField("amountPaid", event.target.value)}
+                  />
+                </label>
                 <label className="notes-field">
                   Notes
                   <textarea
@@ -665,6 +742,30 @@ export default function App() {
                     <span>
                       Total discount: {formatCurrency(reservationPricingTotals.discountPrice)}
                     </span>
+                    <span>
+                      Remaining normal:{" "}
+                      {formatCurrency(
+                        reservationPricingTotals.normalPrice !== null
+                          ? Math.max(
+                              reservationPricingTotals.normalPrice -
+                                (Number(reservationForm.amountPaid || 0) || 0),
+                              0
+                            )
+                          : null
+                      )}
+                    </span>
+                    <span>
+                      Remaining discount:{" "}
+                      {formatCurrency(
+                        reservationPricingTotals.discountPrice !== null
+                          ? Math.max(
+                              reservationPricingTotals.discountPrice -
+                                (Number(reservationForm.amountPaid || 0) || 0),
+                              0
+                            )
+                          : null
+                      )}
+                    </span>
                   </div>
                 </div>
               ) : null}
@@ -705,6 +806,13 @@ export default function App() {
                 <span>
                   Total discount: {formatCurrency(createdReservation.totals?.discountPrice)}
                 </span>
+                <span>Amount paid: {formatCurrency(createdReservation.amountPaid)}</span>
+                <span>
+                  Remaining normal: {formatCurrency(createdReservation.remainingNormalPrice)}
+                </span>
+                <span>
+                  Remaining discount: {formatCurrency(createdReservation.remainingDiscountPrice)}
+                </span>
               </div>
             </div>
           ) : (
@@ -719,15 +827,45 @@ export default function App() {
           </div>
           <div className="site-filter-bar">
             <label>
-              Type
-              <select
-                value={siteFilters.type}
-                onChange={(event) => updateSiteFilter("type", event.target.value)}
-              >
-                <option value="all">All sites</option>
-                <option value="riverfront">Riverfront only</option>
-                <option value="standard">Standard only</option>
-              </select>
+              Site lookup
+              <input
+                placeholder="Type a site number or letter"
+                value={siteFilters.siteLookup}
+                onChange={(event) => updateSiteFilter("siteLookup", event.target.value)}
+              />
+            </label>
+            <label>
+              Site types
+              <div className="type-dropdown">
+                <button
+                  type="button"
+                  className="type-dropdown-trigger"
+                  onClick={() => setIsTypeMenuOpen((current) => !current)}
+                >
+                  {siteFilters.types.length === siteTypeOptions.length
+                    ? "All site types"
+                    : `${siteFilters.types.length} selected`}
+                </button>
+                {isTypeMenuOpen ? (
+                  <div className="type-dropdown-menu">
+                    {siteTypeOptions.map((option) => (
+                      <label key={option.value} className="type-dropdown-option">
+                        <input
+                          type="checkbox"
+                          checked={siteFilters.types.includes(option.value)}
+                          onChange={() => toggleSiteTypeFilter(option.value)}
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <span className="muted small-text">
+                {siteFilters.types.length
+                  ? `${siteFilters.types.length} type filters active`
+                  : "No type filters selected"}
+              </span>
             </label>
             <label>
               Min size
@@ -752,22 +890,58 @@ export default function App() {
           </div>
           <div className="site-grid">
             {visibleSites.map((site) => (
-              <article key={site.id} className={`site-tile ${site.is_on_river ? "river" : ""}`}>
+              <article
+                key={site.id}
+                className={`site-tile ${site.is_on_river ? "river" : ""} ${
+                  openSitePricing[site.id] ? "expanded" : ""
+                }`}
+              >
                 <h3>Site {site.site_number}</h3>
                 <p>{site.size_feet} feet</p>
                 <p>{getSiteTypeLabel(site)}</p>
                 <p>River category: {formatPricingCategory(site.river_category)}</p>
                 <p>Big rig: {site.is_big_rig ? "Yes" : "No"}</p>
                 <p>Pricing category: {formatPricingCategory(site.pricing_category)}</p>
-                <div className="pricing-table">
-                  {site.pricing_rules.map((rule) => (
-                    <div key={rule.numberOfDays} className="pricing-row">
-                      <span>{rule.numberOfDays} nights</span>
-                      <span>Normal {formatCurrency(rule.normalPrice)}</span>
-                      <span>Discount {formatCurrency(rule.discountPrice)}</span>
+                <button
+                  type="button"
+                  className="ghost-button site-price-button"
+                  onClick={() => toggleSitePricing(site.id)}
+                >
+                  {openSitePricing[site.id] ? "Hide prices" : "Prices"}
+                </button>
+                {openSitePricing[site.id] ? (
+                  <>
+                    <div className="day-chip-row">
+                      {site.pricing_rules.map((rule) => (
+                        <button
+                          key={rule.numberOfDays}
+                          type="button"
+                          className={`day-chip ${
+                            openSitePricing[site.id].includes(rule.numberOfDays) ? "active" : ""
+                          }`}
+                          onClick={() => toggleSitePricingDay(site.id, rule.numberOfDays)}
+                        >
+                          {rule.numberOfDays} day{rule.numberOfDays === 1 ? "" : "s"}
+                        </button>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                    <div className="pricing-table">
+                      {openSitePricing[site.id].length ? (
+                        site.pricing_rules
+                          .filter((rule) => openSitePricing[site.id].includes(rule.numberOfDays))
+                          .map((rule) => (
+                            <div key={rule.numberOfDays} className="pricing-row">
+                              <span>{rule.numberOfDays} nights</span>
+                              <span>Normal {formatCurrency(rule.normalPrice)}</span>
+                              <span>Discount {formatCurrency(rule.discountPrice)}</span>
+                            </div>
+                          ))
+                      ) : (
+                        <p className="muted">Select one or more day counts to view pricing.</p>
+                      )}
+                    </div>
+                  </>
+                ) : null}
                 <span>{site.is_on_river ? "Riverfront" : "Standard"}</span>
               </article>
             ))}

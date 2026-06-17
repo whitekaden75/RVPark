@@ -98,6 +98,22 @@ function buildPricingRulesByCategory(pricingRules) {
   return byCategory;
 }
 
+function applyBalanceSummary(amountPaid, totals) {
+  const paid = toPriceNumber(amountPaid) ?? 0;
+
+  return {
+    amountPaid: paid,
+    remainingNormalPrice:
+      totals?.normalPrice !== null && totals?.normalPrice !== undefined
+        ? Math.max(totals.normalPrice - paid, 0)
+        : null,
+    remainingDiscountPrice:
+      totals?.discountPrice !== null && totals?.discountPrice !== undefined
+        ? Math.max(totals.discountPrice - paid, 0)
+        : null
+  };
+}
+
 function getPricingForSiteAndNights(site, numberOfNights, pricingLookup) {
   const pricingCategory = getPricingCategory(site);
   const rule = pricingLookup.get(`${pricingCategory}:${numberOfNights}`) || null;
@@ -411,6 +427,7 @@ app.get("/api/reservations/:id", async (req, res) => {
           r.customer_id,
           r.booked_date::text,
           r.rv_kind,
+          r.amount_paid,
           r.notes,
           r.created_at,
           c.first_name,
@@ -461,8 +478,25 @@ app.get("/api/reservations/:id", async (req, res) => {
       )
     }));
 
+    const totals = pricedSiteStays.reduce(
+      (summary, segment) => ({
+        normalPrice:
+          summary.normalPrice !== null && segment.normalPrice !== null
+            ? summary.normalPrice + segment.normalPrice
+            : null,
+        discountPrice:
+          summary.discountPrice !== null && segment.discountPrice !== null
+            ? summary.discountPrice + segment.discountPrice
+            : null
+      }),
+      { normalPrice: 0, discountPrice: 0 }
+    );
+    const balances = applyBalanceSummary(reservationResult.rows[0].amount_paid, totals);
+
     res.json({
       ...reservationResult.rows[0],
+      totals,
+      ...balances,
       siteStays: pricedSiteStays
     });
   } catch (error) {
@@ -471,7 +505,7 @@ app.get("/api/reservations/:id", async (req, res) => {
 });
 
 app.post("/api/reservations", async (req, res) => {
-  const { customerId, bookedDate, rvKind, notes, siteStays } = req.body;
+  const { customerId, bookedDate, rvKind, amountPaid, notes, siteStays } = req.body;
 
   if (!customerId || !bookedDate || !rvKind) {
     return res.status(400).json({ message: "Customer, booked date, and RV kind are required." });
@@ -491,11 +525,11 @@ app.post("/api/reservations", async (req, res) => {
 
     const reservationResult = await client.query(
       `
-        INSERT INTO reservations (customer_id, booked_date, rv_kind, notes)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO reservations (customer_id, booked_date, rv_kind, amount_paid, notes)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id
       `,
-      [customerId, bookedDate, rvKind, notes || ""]
+      [customerId, bookedDate, rvKind, toPriceNumber(amountPaid) ?? 0, notes || ""]
     );
 
     const reservationId = reservationResult.rows[0].id;
@@ -567,6 +601,7 @@ app.post("/api/reservations", async (req, res) => {
 
     res.status(201).json({
       id: reservationId,
+      ...applyBalanceSummary(toPriceNumber(amountPaid) ?? 0, totals),
       totals,
       siteStays: pricedSiteStays
     });

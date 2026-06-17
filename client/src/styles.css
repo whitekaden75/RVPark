@@ -86,6 +86,11 @@ textarea {
   color: #5b6d60;
 }
 
+.small-text {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
 .site-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -94,9 +99,49 @@ textarea {
 
 .site-filter-bar {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 220px));
+  grid-template-columns: repeat(4, minmax(0, 220px));
   gap: 16px;
   margin-bottom: 20px;
+}
+
+.type-dropdown {
+  position: relative;
+}
+
+.type-dropdown-trigger {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(61, 81, 60, 0.18);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1f2a21;
+}
+
+.type-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(77, 104, 79, 0.12);
+  background: rgba(255, 252, 246, 0.98);
+  box-shadow: 0 18px 32px rgba(48, 68, 47, 0.12);
+}
+
+.type-dropdown-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+}
+
+.type-dropdown-option input {
+  width: auto;
 }
 
 .site-tile {
@@ -104,10 +149,16 @@ textarea {
   border-radius: 18px;
   background: #f4efe2;
   border: 1px solid rgba(79, 89, 65, 0.12);
+  transition: grid-column 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 
 .site-tile.river {
   background: linear-gradient(180deg, #dff2eb, #eef8f0);
+}
+
+.site-tile.expanded {
+  grid-column: span 2;
+  box-shadow: 0 18px 36px rgba(36, 74, 49, 0.12);
 }
 
 .site-tile span {
@@ -124,6 +175,32 @@ textarea {
   display: grid;
   gap: 8px;
   margin-top: 12px;
+}
+
+.day-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.day-chip,
+.site-price-button {
+  align-self: start;
+}
+
+.day-chip {
+  border: 1px solid rgba(36, 74, 49, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #244a31;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.day-chip.active {
+  background: #244a31;
+  color: #f7fbf6;
 }
 
 .pricing-row,
@@ -286,6 +363,10 @@ textarea {
   .compact-grid,
   .site-filter-bar {
     grid-template-columns: 1fr;
+  }
+
+  .site-tile.expanded {
+    grid-column: span 1;
   }
 
   .checkbox-row {

@@ -18,6 +18,7 @@ React + Node.js app for managing RV park registrations with:
 - `sql/001_rv_park_schema.sql` copy/paste SQL for your Railway Postgres database
 - `sql/002_seed_rv_sites_example.sql` optional starter site data you can edit first
 - `sql/003_pricing_and_site_categories_upgrade.sql` site-category and pricing upgrade
+- `sql/004_add_amount_paid_to_reservations.sql` tracks payments against a reservation
 
 ## Database Setup
 
@@ -34,6 +35,8 @@ It creates:
 If you want starter site records, edit and run [sql/002_seed_rv_sites_example.sql](/Users/kadenwhite/Desktop/RVPark/sql/002_seed_rv_sites_example.sql) after the schema file.
 
 If your database is moving to the expanded pricing model, run [sql/003_pricing_and_site_categories_upgrade.sql](/Users/kadenwhite/Desktop/RVPark/sql/003_pricing_and_site_categories_upgrade.sql) too.
+
+If you want to track payments and remaining balance, run [sql/004_add_amount_paid_to_reservations.sql](/Users/kadenwhite/Desktop/RVPark/sql/004_add_amount_paid_to_reservations.sql) too.
 
 ## Local Setup
 
