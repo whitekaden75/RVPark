@@ -22,6 +22,8 @@ React + Node.js app for managing RV park registrations with:
 - `sql/005_make_customer_contact_fields_optional.sql` allows email or phone to be blank
 - `sql/006_add_missing_reservation_notes_column.sql` adds the reservation notes field if your live table is missing it
 - `sql/007_add_rig_size_to_reservations.sql` stores the guest RV length in feet
+- `sql/008_add_reservation_cancellation_and_history.sql` adds reservation status and canceled-booking history support
+- `sql/009_add_reservation_billing_fields.sql` adds manual total and monthly billing fields
 
 ## Database Setup
 
@@ -46,6 +48,10 @@ If you want customers to be allowed with only an email or only a phone number, r
 If your live `reservations` table is missing the `notes` column, run [sql/006_add_missing_reservation_notes_column.sql](/Users/kadenwhite/Desktop/RVPark/sql/006_add_missing_reservation_notes_column.sql) too.
 
 If you want to track how big each guest rig is, run [sql/007_add_rig_size_to_reservations.sql](/Users/kadenwhite/Desktop/RVPark/sql/007_add_rig_size_to_reservations.sql) too.
+
+If you want canceled reservations to stay in history without blocking sites, run [sql/008_add_reservation_cancellation_and_history.sql](/Users/kadenwhite/Desktop/RVPark/sql/008_add_reservation_cancellation_and_history.sql) too.
+
+If you want manual totals and monthly billing fields for long-term stays, run [sql/009_add_reservation_billing_fields.sql](/Users/kadenwhite/Desktop/RVPark/sql/009_add_reservation_billing_fields.sql) too.
 
 ## Local Setup
 

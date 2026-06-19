@@ -5,6 +5,7 @@ const apiBaseUrl = (
 ).replace(/\/+$/, "");
 const appPasscode = import.meta.env.VITE_APP_PASSCODE || "rvpark2026";
 const unlockStorageKey = "rvpark-unlocked";
+const lastBookedSiteStorageKey = "rvpark-last-booked-site";
 
 const emptySearch = {
   arrivalDate: "",
@@ -20,15 +21,31 @@ const emptyCustomer = {
   phoneNumber: ""
 };
 
-const emptyReservation = {
-  customerId: "",
-  bookedDate: "",
-  rvKind: "camper",
-  rigLengthFeet: "",
-  amountPaid: "",
-  notes: "",
-  siteStays: [{ siteId: "", siteSearch: "", arrivalDate: "", leaveDate: "" }]
-};
+function createEmptySiteStay(defaultSite = null) {
+  return {
+    siteId: defaultSite?.siteId || "",
+    siteSearch: defaultSite?.siteSearch || "",
+    arrivalDate: "",
+    leaveDate: ""
+  };
+}
+
+function createEmptyReservation(defaultSite = null) {
+  return {
+    customerId: "",
+    bookedDate: "",
+    status: "active",
+    billingMode: "standard",
+    totalPrice: "",
+    monthlyRentPrice: "",
+    electricMeterReading: "",
+    rvKind: "camper",
+    rigLengthFeet: "",
+    amountPaid: "",
+    notes: "",
+    siteStays: [createEmptySiteStay(defaultSite)]
+  };
+}
 
 const rvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
 const siteNumberCollator = new Intl.Collator(undefined, {
@@ -144,6 +161,44 @@ function formatPricingCategory(value) {
   return value.replaceAll("_", " ");
 }
 
+function formatReservationStatus(value) {
+  return value === "canceled" ? "Canceled" : "Active";
+}
+
+function formatPhoneNumber(value) {
+  const digits = String(value || "").replaceAll(/\D/g, "").slice(0, 10);
+
+  if (digits.length <= 3) {
+    return digits.length ? `(${digits}` : "";
+  }
+
+  if (digits.length <= 6) {
+    return `(${digits.slice(0, 3)})${digits.slice(3)}`;
+  }
+
+  return `(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+function formatBillingMode(value) {
+  if (value === "manual_total") {
+    return "Manual total";
+  }
+
+  if (value === "monthly") {
+    return "Monthly";
+  }
+
+  return "Standard";
+}
+
+function calculateUtilityPrice(electricMeterReading) {
+  if (electricMeterReading === "" || electricMeterReading === null || electricMeterReading === undefined) {
+    return null;
+  }
+
+  return Number(electricMeterReading) * 0.17 - 75;
+}
+
 function getSiteTypeLabel(site) {
   return site.is_on_river || site.isOnRiver ? "Riverfront" : "Standard";
 }
@@ -204,6 +259,41 @@ async function apiRequest(path, options = {}) {
   }
 
   return data;
+}
+
+function readLastBookedSite() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(lastBookedSiteStorageKey);
+
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue);
+
+    if (!parsed?.siteId || !parsed?.siteSearch) {
+      return null;
+    }
+
+    return {
+      siteId: String(parsed.siteId),
+      siteSearch: String(parsed.siteSearch)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeLastBookedSite(site) {
+  if (typeof window === "undefined" || !site?.siteId || !site?.siteSearch) {
+    return;
+  }
+
+  window.localStorage.setItem(lastBookedSiteStorageKey, JSON.stringify(site));
 }
 
 function BookingSiteCalendar({ segment, bookedRanges, onSelectRange }) {
@@ -467,6 +557,81 @@ function SiteTimelineCalendar({
   );
 }
 
+function BookingHistoryCalendar({
+  monthCursor,
+  selectedDate,
+  reservationsByDate,
+  onChangeMonth,
+  onSelectDate
+}) {
+  const monthStart = new Date(monthCursor);
+  const monthLabel = formatMonthLabel(monthStart);
+  const calendarStart = new Date(monthStart);
+  calendarStart.setUTCDate(calendarStart.getUTCDate() - calendarStart.getUTCDay());
+  const days = Array.from({ length: 42 }, (_, index) => {
+    const current = new Date(calendarStart);
+    current.setUTCDate(calendarStart.getUTCDate() + index);
+    const dateString = formatDateInput(current);
+    const dayReservations = reservationsByDate.get(dateString) || [];
+
+    return {
+      dateString,
+      dayNumber: current.getUTCDate(),
+      isCurrentMonth: current.getUTCMonth() === monthStart.getUTCMonth(),
+      isSelected: dateString === selectedDate,
+      totalCount: dayReservations.length,
+      canceledCount: dayReservations.filter((reservation) => reservation.status === "canceled")
+        .length
+    };
+  });
+
+  return (
+    <div className="calendar-card">
+      <div className="result-header">
+        <button type="button" className="ghost-button" onClick={() => onChangeMonth(-1)}>
+          Previous
+        </button>
+        <h3>{monthLabel}</h3>
+        <button type="button" className="ghost-button" onClick={() => onChangeMonth(1)}>
+          Next
+        </button>
+      </div>
+      <div className="calendar-grid calendar-weekdays">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+          <span key={day}>{day}</span>
+        ))}
+      </div>
+      <div className="calendar-grid">
+        {days.map((day, index) => (
+          <button
+            key={`${day.dateString}-${index}`}
+            type="button"
+            className={`calendar-day ${day.isCurrentMonth ? "" : "outside"} ${
+              day.isSelected ? "selected" : ""
+            } ${day.totalCount ? "history-booked" : ""} ${
+              day.totalCount && day.canceledCount === day.totalCount ? "history-canceled" : ""
+            }`}
+            onClick={() => onSelectDate(day.dateString)}
+          >
+            <span>{day.dayNumber}</span>
+            {day.totalCount ? (
+              <div className="calendar-day-names">
+                <small>{day.totalCount} booked</small>
+                {day.canceledCount ? <small>{day.canceledCount} canceled</small> : null}
+              </div>
+            ) : null}
+          </button>
+        ))}
+      </div>
+      <div className="calendar-legend">
+        <span><i className="legend-box selected" /> selected day</span>
+        <span><i className="legend-box history-booked" /> has bookings</span>
+        <span><i className="legend-box history-canceled" /> only canceled</span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [isUnlocked, setIsUnlocked] = useState(() => {
     if (typeof window === "undefined") {
@@ -481,18 +646,29 @@ export default function App() {
   const [customers, setCustomers] = useState([]);
   const [reservations, setReservations] = useState([]);
   const [timelineSiteId, setTimelineSiteId] = useState("");
+  const [timelineSiteSearch, setTimelineSiteSearch] = useState("");
   const [selectedTimelineDate, setSelectedTimelineDate] = useState(formatDateInput(new Date()));
   const [timelineMonthCursor, setTimelineMonthCursor] = useState(() =>
+    startOfMonth(formatDateInput(new Date()))
+  );
+  const [selectedHistoryDate, setSelectedHistoryDate] = useState(formatDateInput(new Date()));
+  const [historyMonthCursor, setHistoryMonthCursor] = useState(() =>
     startOfMonth(formatDateInput(new Date()))
   );
   const [customerSearch, setCustomerSearch] = useState("");
   const [scheduleNameSearch, setScheduleNameSearch] = useState("");
   const [isTypeMenuOpen, setIsTypeMenuOpen] = useState(false);
+  const [isWholeScheduleOpen, setIsWholeScheduleOpen] = useState(false);
+  const [isArrivalsTodayOpen, setIsArrivalsTodayOpen] = useState(false);
+  const [activeScheduleReservation, setActiveScheduleReservation] = useState(null);
   const [siteFilters, setSiteFilters] = useState(emptySiteFilters);
   const [openSitePricing, setOpenSitePricing] = useState({});
   const [searchForm, setSearchForm] = useState(emptySearch);
   const [customerForm, setCustomerForm] = useState(emptyCustomer);
-  const [reservationForm, setReservationForm] = useState(emptyReservation);
+  const [lastBookedSite, setLastBookedSite] = useState(() => readLastBookedSite());
+  const [reservationForm, setReservationForm] = useState(() =>
+    createEmptyReservation(readLastBookedSite())
+  );
   const [directMatches, setDirectMatches] = useState([]);
   const [switchPlan, setSwitchPlan] = useState(null);
   const [switchPlanTotals, setSwitchPlanTotals] = useState(null);
@@ -528,6 +704,21 @@ export default function App() {
       setTimelineSiteId(String(sites[0].id));
     }
   }, [sites, timelineSiteId]);
+
+  useEffect(() => {
+    if (!activeScheduleReservation) {
+      return undefined;
+    }
+
+    function handleEscape(event) {
+      if (event.key === "Escape") {
+        setActiveScheduleReservation(null);
+      }
+    }
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [activeScheduleReservation]);
 
   const visibleSites = [...sites]
     .sort((left, right) => siteNumberCollator.compare(left.site_number, right.site_number))
@@ -590,6 +781,17 @@ export default function App() {
     }),
     { normalPrice: 0, discountPrice: 0 }
   );
+  const utilityPricePreview = calculateUtilityPrice(reservationForm.electricMeterReading);
+  const effectiveTotalPreview =
+    reservationForm.billingMode === "manual_total"
+      ? (reservationForm.totalPrice === "" ? null : Number(reservationForm.totalPrice))
+      : reservationForm.billingMode === "monthly"
+        ? reservationForm.monthlyRentPrice === "" || utilityPricePreview === null
+          ? null
+          : Number(reservationForm.monthlyRentPrice) + utilityPricePreview
+        : reservationPricingTotals.discountPrice !== null
+          ? reservationPricingTotals.discountPrice
+          : reservationPricingTotals.normalPrice;
   const visibleCustomers = customers.filter((customer) => {
     const searchValue = customerSearch.trim().toLowerCase();
 
@@ -600,7 +802,8 @@ export default function App() {
     const fullName = `${customer.first_name} ${customer.last_name}`.toLowerCase();
     return fullName.includes(searchValue);
   });
-  const scheduleReservations = [...reservations].sort((left, right) => {
+  const activeReservations = reservations.filter((reservation) => reservation.status !== "canceled");
+  const scheduleReservations = [...activeReservations].sort((left, right) => {
     const leftDate = left.siteStays[0]?.arrival_date || "";
     const rightDate = right.siteStays[0]?.arrival_date || "";
     return leftDate.localeCompare(rightDate);
@@ -646,9 +849,40 @@ export default function App() {
         .toLowerCase()
         .includes(searchValue);
     });
+  const arrivalsToday = scheduleReservations
+    .map((reservation) => {
+      const arrivingSiteStays = reservation.siteStays.filter(
+        (segment) => segment.arrival_date === today
+      );
+
+      if (!arrivingSiteStays.length) {
+        return null;
+      }
+
+      return {
+        ...reservation,
+        arrivingSiteStays
+      };
+    })
+    .filter(Boolean)
+    .filter((reservation) => {
+      const searchValue = scheduleNameSearch.trim().toLowerCase();
+
+      if (!searchValue) {
+        return true;
+      }
+
+      return `${reservation.first_name} ${reservation.last_name}`
+        .toLowerCase()
+        .includes(searchValue);
+    });
   const timelineStartDate = formatDateInput(timelineMonthCursor);
   const timelineEndDate = formatDateInput(startOfNextMonth(timelineMonthCursor));
   const selectedTimelineSite = sites.find((site) => String(site.id) === timelineSiteId) || null;
+  const timelineSiteOptions = sites.filter((site) => {
+    const searchValue = timelineSiteSearch.trim().toLowerCase();
+    return searchValue ? site.site_number.toLowerCase().includes(searchValue) : true;
+  });
   const selectedSiteBookedRanges = scheduleReservations.flatMap((reservation) =>
     reservation.siteStays
       .filter((segment) => String(segment.site_id) === timelineSiteId)
@@ -682,14 +916,29 @@ export default function App() {
   const selectedDateReservations = selectedSiteTimeline.filter((entry) =>
     isDateWithinRange(selectedTimelineDate, entry.segment.arrival_date, entry.segment.leave_date)
   );
+  const reservationsByBookedDate = reservations.reduce((summary, reservation) => {
+    const bookedDate = reservation.booked_date;
+
+    if (!bookedDate) {
+      return summary;
+    }
+
+    const current = summary.get(bookedDate) || [];
+    current.push(reservation);
+    summary.set(bookedDate, current);
+    return summary;
+  }, new Map());
+  const selectedHistoryReservations = [...(reservationsByBookedDate.get(selectedHistoryDate) || [])].sort(
+    (left, right) => right.id - left.id
+  );
 
   async function refreshReservations() {
     const reservationData = await apiRequest("/reservations");
     setReservations(ensureArray(reservationData, "Reservations"));
   }
 
-  function resetReservationForm() {
-    setReservationForm(emptyReservation);
+  function resetReservationForm(defaultSite = lastBookedSite) {
+    setReservationForm(createEmptyReservation(defaultSite));
     setCustomerSearch("");
     setCustomerForm(emptyCustomer);
     setEditingReservationId(null);
@@ -764,12 +1013,30 @@ export default function App() {
   }
 
   function updateSiteStay(index, field, value) {
-    setReservationForm((current) => ({
-      ...current,
-      siteStays: current.siteStays.map((stay, stayIndex) =>
-        stayIndex === index ? { ...stay, [field]: value } : stay
-      )
-    }));
+    setReservationForm((current) => {
+      const nextSiteStays = current.siteStays.map((stay, stayIndex) => {
+        if (stayIndex !== index) {
+          return stay;
+        }
+
+        if (field === "siteId") {
+          const selectedSite = sites.find((site) => String(site.id) === String(value));
+
+          return {
+            ...stay,
+            siteId: value,
+            siteSearch: selectedSite?.site_number || stay.siteSearch
+          };
+        }
+
+        return { ...stay, [field]: value };
+      });
+
+      return {
+        ...current,
+        siteStays: nextSiteStays
+      };
+    });
   }
 
   function addSiteStay() {
@@ -777,7 +1044,7 @@ export default function App() {
       ...current,
       siteStays: [
         ...current.siteStays,
-        { siteId: "", siteSearch: "", arrivalDate: "", leaveDate: "" }
+        createEmptySiteStay()
       ]
     }));
   }
@@ -865,8 +1132,24 @@ export default function App() {
         setReservationSuccessMessage(`Created reservation #${created.id}.`);
       }
 
+      const lastUsedSegment = [...reservationForm.siteStays]
+        .reverse()
+        .find((segment) => segment.siteId);
+
+      let rememberedSite = lastBookedSite;
+
+      if (lastUsedSegment) {
+        rememberedSite = {
+          siteId: String(lastUsedSegment.siteId),
+          siteSearch: lastUsedSegment.siteSearch
+        };
+
+        setLastBookedSite(rememberedSite);
+        writeLastBookedSite(rememberedSite);
+      }
+
       await refreshReservations();
-      resetReservationForm();
+      resetReservationForm(rememberedSite);
     } catch (error) {
       setReservationErrorMessage(error.message);
     }
@@ -882,11 +1165,25 @@ export default function App() {
         firstName: reservation.first_name || "",
         lastName: reservation.last_name || "",
         email: reservation.email || "",
-        phoneNumber: reservation.phone_number || ""
+        phoneNumber: formatPhoneNumber(reservation.phone_number || "")
       });
       setReservationForm({
         customerId: String(reservation.customer_id),
         bookedDate: reservation.booked_date,
+        status: reservation.status || "active",
+        billingMode: reservation.billing_mode || "standard",
+        totalPrice: reservation.totalPrice !== null && reservation.totalPrice !== undefined
+          ? String(reservation.totalPrice)
+          : "",
+        monthlyRentPrice:
+          reservation.monthlyRentPrice !== null && reservation.monthlyRentPrice !== undefined
+            ? String(reservation.monthlyRentPrice)
+            : "",
+        electricMeterReading:
+          reservation.electricMeterReading !== null &&
+          reservation.electricMeterReading !== undefined
+            ? String(reservation.electricMeterReading)
+            : "",
         rvKind: reservation.rv_kind,
         rigLengthFeet: String(reservation.rig_length_feet ?? ""),
         amountPaid: String(reservation.amountPaid ?? ""),
@@ -919,6 +1216,10 @@ export default function App() {
     }
   }
 
+  function openScheduleReservation(reservation) {
+    setActiveScheduleReservation(reservation);
+  }
+
   function applyPlanToReservation() {
     if (!switchPlan?.length) {
       return;
@@ -937,6 +1238,14 @@ export default function App() {
 
   function changeTimelineMonth(offset) {
     setTimelineMonthCursor((current) => {
+      const next = new Date(current);
+      next.setUTCMonth(next.getUTCMonth() + offset);
+      return new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth(), 1));
+    });
+  }
+
+  function changeHistoryMonth(offset) {
+    setHistoryMonthCursor((current) => {
       const next = new Date(current);
       next.setUTCMonth(next.getUTCMonth() + offset);
       return new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth(), 1));
@@ -1105,8 +1414,13 @@ export default function App() {
                 <label>
                   Phone
                   <input
+                    type="tel"
+                    inputMode="numeric"
+                    placeholder="(123)123-1234"
                     value={customerForm.phoneNumber}
-                    onChange={(event) => updateCustomerField("phoneNumber", event.target.value)}
+                    onChange={(event) =>
+                      updateCustomerField("phoneNumber", formatPhoneNumber(event.target.value))
+                    }
                   />
                 </label>
                 <label>
@@ -1138,6 +1452,27 @@ export default function App() {
                     value={reservationForm.bookedDate}
                     onChange={(event) => updateReservationField("bookedDate", event.target.value)}
                   />
+                </label>
+                <label>
+                  Booking status
+                  <select
+                    value={reservationForm.status}
+                    onChange={(event) => updateReservationField("status", event.target.value)}
+                  >
+                    <option value="active">Active</option>
+                    <option value="canceled">Canceled</option>
+                  </select>
+                </label>
+                <label>
+                  Billing mode
+                  <select
+                    value={reservationForm.billingMode}
+                    onChange={(event) => updateReservationField("billingMode", event.target.value)}
+                  >
+                    <option value="standard">Standard</option>
+                    <option value="manual_total">Manual total</option>
+                    <option value="monthly">Monthly</option>
+                  </select>
                 </label>
                 <label>
                   RV kind
@@ -1173,8 +1508,53 @@ export default function App() {
                     placeholder="0.00"
                     value={reservationForm.amountPaid}
                     onChange={(event) => updateReservationField("amountPaid", event.target.value)}
+                    onWheel={(event) => event.currentTarget.blur()}
                   />
                 </label>
+                {reservationForm.billingMode === "manual_total" ? (
+                  <label>
+                    Total price
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={reservationForm.totalPrice}
+                      onChange={(event) =>
+                        updateReservationField("totalPrice", event.target.value)
+                      }
+                    />
+                  </label>
+                ) : null}
+                {reservationForm.billingMode === "monthly" ? (
+                  <>
+                    <label>
+                      Monthly rent
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={reservationForm.monthlyRentPrice}
+                        onChange={(event) =>
+                          updateReservationField("monthlyRentPrice", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      Electric meter
+                      <input
+                        type="number"
+                        step="1"
+                        placeholder="0"
+                        value={reservationForm.electricMeterReading}
+                        onChange={(event) =>
+                          updateReservationField("electricMeterReading", event.target.value)
+                        }
+                      />
+                    </label>
+                  </>
+                ) : null}
                 <label className="notes-field">
                   Notes
                   <textarea
@@ -1200,24 +1580,41 @@ export default function App() {
                 ))}
               </div>
 
-              {reservationPricingPreview.length ? (
+              {reservationPricingPreview.length || reservationForm.billingMode !== "standard" ? (
                 <div className="pricing-preview-card">
-                  <h3>Pricing Preview</h3>
-                  <ul className="result-list">
-                    {reservationPricingPreview.map((segment) => (
-                      <li key={segment.index}>
-                        Site {segment.siteNumber} • {segment.numberOfNights} nights •{" "}
-                        {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
-                        {formatCurrency(segment.normalPrice)} • Discount{" "}
-                        {formatCurrency(segment.discountPrice)}
-                      </li>
-                    ))}
-                  </ul>
+                  <h3>Billing Preview</h3>
+                  {reservationPricingPreview.length ? (
+                    <ul className="result-list">
+                      {reservationPricingPreview.map((segment) => (
+                        <li key={segment.index}>
+                          Site {segment.siteNumber} • {segment.numberOfNights} nights •{" "}
+                          {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
+                          {formatCurrency(segment.normalPrice)} • Discount{" "}
+                          {formatCurrency(segment.discountPrice)}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                   <div className="pricing-summary">
+                    <span>Billing mode: {formatBillingMode(reservationForm.billingMode)}</span>
                     <span>Total normal: {formatCurrency(reservationPricingTotals.normalPrice)}</span>
                     <span>
                       Total discount: {formatCurrency(reservationPricingTotals.discountPrice)}
                     </span>
+                    {reservationForm.billingMode === "manual_total" ? (
+                      <span>Manual total: {formatCurrency(reservationForm.totalPrice || null)}</span>
+                    ) : null}
+                    {reservationForm.billingMode === "monthly" ? (
+                      <>
+                        <span>
+                          Monthly rent: {formatCurrency(reservationForm.monthlyRentPrice || null)}
+                        </span>
+                        <span>
+                          Utility charge: {formatCurrency(utilityPricePreview)}
+                        </span>
+                      </>
+                    ) : null}
+                    <span>Effective total: {formatCurrency(effectiveTotalPreview)}</span>
                     <span>
                       Remaining normal:{" "}
                       {formatCurrency(
@@ -1239,6 +1636,14 @@ export default function App() {
                                 (Number(reservationForm.amountPaid || 0) || 0),
                               0
                             )
+                          : null
+                      )}
+                    </span>
+                    <span>
+                      Remaining balance:{" "}
+                      {formatCurrency(
+                        effectiveTotalPreview !== null
+                          ? effectiveTotalPreview - (Number(reservationForm.amountPaid || 0) || 0)
                           : null
                       )}
                     </span>
@@ -1280,7 +1685,7 @@ export default function App() {
               Refresh schedule
             </button>
           </div>
-          <div className="timeline-controls">
+          <div className="timeline-controls schedule-search-controls">
             <label>
               Search name
               <input
@@ -1290,68 +1695,142 @@ export default function App() {
               />
             </label>
           </div>
-          {currentOccupancy.length ? (
-            <div className="schedule-list">
-              {currentOccupancy.map((reservation) => (
-                <article key={reservation.id} className="timeline-card">
-                  <div className="result-header">
-                    <h3>
-                      Reservation #{reservation.id} • {reservation.first_name} {reservation.last_name}
-                    </h3>
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => startEditingReservation(reservation.id)}
-                    >
-                      Edit
-                    </button>
-                  </div>
-                  <p className="muted">
-                    Booked {formatDisplayDate(reservation.booked_date)} • {reservation.rv_kind}
-                    {reservation.rig_length_feet ? ` • ${reservation.rig_length_feet} ft rig` : ""}
-                  </p>
-                  <ol className="timeline-list">
-                    {reservation.activeSiteStays.map((segment) => (
-                      <li key={segment.id}>
-                        Site {segment.site_number}: {formatDisplayDate(
-                          segment.arrival_date
-                        )} to {formatDisplayDate(segment.leave_date)} •{" "}
-                        {segment.numberOfNights} nights •{" "}
-                        {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
-                        {formatCurrency(segment.normalPrice)} • Discount{" "}
-                        {formatCurrency(segment.discountPrice)}
-                      </li>
-                    ))}
-                  </ol>
-                  <div className="pricing-summary">
-                    <span>Total normal: {formatCurrency(reservation.totals?.normalPrice)}</span>
-                    <span>
-                      Total discount: {formatCurrency(reservation.totals?.discountPrice)}
-                    </span>
-                    <span>Amount paid: {formatCurrency(reservation.amountPaid)}</span>
-                    <span>
-                      Remaining normal: {formatCurrency(reservation.remainingNormalPrice)}
-                    </span>
-                    <span>
-                      Remaining discount: {formatCurrency(reservation.remainingDiscountPrice)}
-                    </span>
-                  </div>
-                  {reservation.notes ? <p className="muted">Notes: {reservation.notes}</p> : null}
-                </article>
-              ))}
+
+          <div className="schedule-dropdown-grid">
+            <div className="schedule-dropdown">
+              <button
+                type="button"
+                className="schedule-dropdown-trigger"
+                onClick={() => setIsWholeScheduleOpen((current) => !current)}
+              >
+                <span>Whole schedule</span>
+                <span className="muted">
+                  {currentOccupancy.length} guests • {isWholeScheduleOpen ? "Hide" : "Show"}
+                </span>
+              </button>
+              {isWholeScheduleOpen ? (
+                <div className="schedule-dropdown-panel">
+                  {currentOccupancy.length ? (
+                    <div className="schedule-list">
+                      {currentOccupancy.map((reservation) => (
+                        <article key={reservation.id} className="timeline-card schedule-summary-card">
+                          <div className="result-header">
+                            <h3>
+                              Reservation #{reservation.id} • {reservation.first_name}{" "}
+                              {reservation.last_name}
+                            </h3>
+                            <div className="button-row schedule-card-actions">
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                onClick={() => openScheduleReservation(reservation)}
+                              >
+                                View
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                onClick={() => startEditingReservation(reservation.id)}
+                              >
+                                Edit
+                              </button>
+                            </div>
+                          </div>
+                          <p className="muted">
+                            {reservation.activeSiteStays
+                              .map((segment) => `Site ${segment.site_number}`)
+                              .join(", ")}{" "}
+                            • Booked {formatDisplayDate(reservation.booked_date)} •{" "}
+                            {reservation.rv_kind}
+                            {reservation.rig_length_feet
+                              ? ` • ${reservation.rig_length_feet} ft rig`
+                              : ""}
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted">No guests are currently in a site today.</p>
+                  )}
+                </div>
+              ) : null}
             </div>
-          ) : (
-            <p className="muted">No guests are currently in a site today.</p>
-          )}
+
+            <div className="schedule-dropdown">
+              <button
+                type="button"
+                className="schedule-dropdown-trigger"
+                onClick={() => setIsArrivalsTodayOpen((current) => !current)}
+              >
+                <span>Who&apos;s coming in today</span>
+                <span className="muted">
+                  {arrivalsToday.length} arrivals • {isArrivalsTodayOpen ? "Hide" : "Show"}
+                </span>
+              </button>
+              {isArrivalsTodayOpen ? (
+                <div className="schedule-dropdown-panel">
+                  {arrivalsToday.length ? (
+                    <div className="schedule-list">
+                      {arrivalsToday.map((reservation) => (
+                        <article key={reservation.id} className="timeline-card schedule-summary-card">
+                          <div className="result-header">
+                            <h3>
+                              Reservation #{reservation.id} • {reservation.first_name}{" "}
+                              {reservation.last_name}
+                            </h3>
+                            <div className="button-row schedule-card-actions">
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                onClick={() => openScheduleReservation(reservation)}
+                              >
+                                View
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                onClick={() => startEditingReservation(reservation.id)}
+                              >
+                                Edit
+                              </button>
+                            </div>
+                          </div>
+                          <p className="muted">
+                            {reservation.arrivingSiteStays
+                              .map((segment) => `Site ${segment.site_number}`)
+                              .join(", ")}{" "}
+                            • Arriving today • {reservation.rv_kind}
+                            {reservation.rig_length_feet
+                              ? ` • ${reservation.rig_length_feet} ft rig`
+                              : ""}
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted">No guests are arriving today.</p>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          </div>
 
           <div className="timeline-controls">
+            <label>
+              Search site
+              <input
+                placeholder="Type a site number"
+                value={timelineSiteSearch}
+                onChange={(event) => setTimelineSiteSearch(event.target.value)}
+              />
+            </label>
             <label>
               Site
               <select
                 value={timelineSiteId}
                 onChange={(event) => setTimelineSiteId(event.target.value)}
               >
-                {sites.map((site) => (
+                {timelineSiteOptions.map((site) => (
                   <option key={site.id} value={site.id}>
                     Site {site.site_number}
                   </option>
@@ -1408,6 +1887,97 @@ export default function App() {
               </div>
             ) : (
               <p className="muted">No booking is assigned to this site on the selected date.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="section-heading">
+            <h2>Reservation History</h2>
+            <p>Browse reservations by booked date, then open a day to review and edit bookings.</p>
+          </div>
+
+          <BookingHistoryCalendar
+            monthCursor={historyMonthCursor}
+            selectedDate={selectedHistoryDate}
+            reservationsByDate={reservationsByBookedDate}
+            onChangeMonth={changeHistoryMonth}
+            onSelectDate={(dateString) => {
+              setSelectedHistoryDate(dateString);
+              setHistoryMonthCursor(startOfMonth(dateString));
+            }}
+          />
+
+          <div className="timeline-card">
+            <h3>Booked on {formatDisplayDate(selectedHistoryDate)}</h3>
+            {selectedHistoryReservations.length ? (
+              <div className="schedule-list">
+                {selectedHistoryReservations.map((reservation) => (
+                  <article key={reservation.id} className="timeline-card history-reservation-card">
+                    <div className="result-header">
+                      <h3>
+                        Reservation #{reservation.id} • {reservation.first_name}{" "}
+                        {reservation.last_name}
+                      </h3>
+                      <div className="button-row schedule-card-actions">
+                        <span
+                          className={`status-badge ${
+                            reservation.status === "canceled" ? "canceled" : "active"
+                          }`}
+                        >
+                          {formatReservationStatus(reservation.status)}
+                        </span>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => startEditingReservation(reservation.id)}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </div>
+                    <p className="muted">
+                      {reservation.rv_kind}
+                      {reservation.rig_length_feet
+                        ? ` • ${reservation.rig_length_feet} ft rig`
+                        : ""}{" "}
+                      • {formatBillingMode(reservation.billing_mode)} • Amount paid{" "}
+                      {formatCurrency(reservation.amountPaid)}
+                    </p>
+                    <div className="pricing-summary">
+                      <span>Effective total: {formatCurrency(reservation.effectiveTotalPrice)}</span>
+                      <span>Remaining balance: {formatCurrency(reservation.remainingBalance)}</span>
+                      {reservation.billing_mode === "manual_total" ? (
+                        <span>Manual total: {formatCurrency(reservation.totalPrice)}</span>
+                      ) : null}
+                      {reservation.billing_mode === "monthly" ? (
+                        <>
+                          <span>
+                            Monthly rent: {formatCurrency(reservation.monthlyRentPrice)}
+                          </span>
+                          <span>Meter: {reservation.electricMeterReading ?? "Not set"}</span>
+                          <span>Utility charge: {formatCurrency(reservation.utilityPrice)}</span>
+                        </>
+                      ) : null}
+                    </div>
+                    <ol className="timeline-list">
+                      {reservation.siteStays.map((segment) => (
+                        <li key={segment.id}>
+                          Site {segment.site_number}: {formatDisplayDate(segment.arrival_date)} to{" "}
+                          {formatDisplayDate(segment.leave_date)} • {segment.numberOfNights} nights
+                        </li>
+                      ))}
+                    </ol>
+                    {reservation.status === "canceled" && reservation.canceled_at ? (
+                      <p className="muted">
+                        Canceled {new Date(reservation.canceled_at).toLocaleString()}
+                      </p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">No reservations were booked on this day.</p>
             )}
           </div>
         </section>
@@ -1542,6 +2112,107 @@ export default function App() {
             <p className="muted">No sites match the current filters.</p>
           ) : null}
         </section>
+
+        {activeScheduleReservation ? (
+          <div
+            className="modal-backdrop"
+            role="presentation"
+            onClick={() => setActiveScheduleReservation(null)}
+          >
+            <div
+              className="modal-card"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="today-schedule-modal-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="result-header">
+                <h3 id="today-schedule-modal-title">
+                  Reservation #{activeScheduleReservation.id} •{" "}
+                  {activeScheduleReservation.first_name} {activeScheduleReservation.last_name}
+                </h3>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => setActiveScheduleReservation(null)}
+                >
+                  Close
+                </button>
+              </div>
+              <p className="muted">
+                Booked {formatDisplayDate(activeScheduleReservation.booked_date)} •{" "}
+                {activeScheduleReservation.rv_kind}
+                {activeScheduleReservation.rig_length_feet
+                  ? ` • ${activeScheduleReservation.rig_length_feet} ft rig`
+                  : ""}
+              </p>
+              <div className="pricing-summary">
+                <span>
+                  Billing mode: {formatBillingMode(activeScheduleReservation.billing_mode)}
+                </span>
+                <span>
+                  Effective total:{" "}
+                  {formatCurrency(activeScheduleReservation.effectiveTotalPrice)}
+                </span>
+                <span>
+                  Remaining balance: {formatCurrency(activeScheduleReservation.remainingBalance)}
+                </span>
+                {activeScheduleReservation.billing_mode === "manual_total" ? (
+                  <span>Manual total: {formatCurrency(activeScheduleReservation.totalPrice)}</span>
+                ) : null}
+                {activeScheduleReservation.billing_mode === "monthly" ? (
+                  <>
+                    <span>
+                      Monthly rent: {formatCurrency(activeScheduleReservation.monthlyRentPrice)}
+                    </span>
+                    <span>
+                      Meter: {activeScheduleReservation.electricMeterReading ?? "Not set"}
+                    </span>
+                    <span>
+                      Utility charge: {formatCurrency(activeScheduleReservation.utilityPrice)}
+                    </span>
+                  </>
+                ) : null}
+              </div>
+              <ol className="timeline-list">
+                {(
+                  activeScheduleReservation.activeSiteStays ||
+                  activeScheduleReservation.arrivingSiteStays ||
+                  []
+                ).map((segment) => (
+                  <li key={segment.id}>
+                    Site {segment.site_number}: {formatDisplayDate(segment.arrival_date)} to{" "}
+                    {formatDisplayDate(segment.leave_date)} • {segment.numberOfNights} nights •{" "}
+                    {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
+                    {formatCurrency(segment.normalPrice)} • Discount{" "}
+                    {formatCurrency(segment.discountPrice)}
+                  </li>
+                ))}
+              </ol>
+              <div className="pricing-summary">
+                <span>
+                  Total normal: {formatCurrency(activeScheduleReservation.totals?.normalPrice)}
+                </span>
+                <span>
+                  Total discount:{" "}
+                  {formatCurrency(activeScheduleReservation.totals?.discountPrice)}
+                </span>
+                <span>Amount paid: {formatCurrency(activeScheduleReservation.amountPaid)}</span>
+                <span>
+                  Remaining normal:{" "}
+                  {formatCurrency(activeScheduleReservation.remainingNormalPrice)}
+                </span>
+                <span>
+                  Remaining discount:{" "}
+                  {formatCurrency(activeScheduleReservation.remainingDiscountPrice)}
+                </span>
+              </div>
+              {activeScheduleReservation.notes ? (
+                <p className="muted">Notes: {activeScheduleReservation.notes}</p>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </main>
     </div>
   );

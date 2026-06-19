@@ -49,6 +49,62 @@ function toPriceNumber(value) {
   return value === null || value === undefined ? null : Number(value);
 }
 
+function normalizeReservationStatus(value) {
+  return value === "canceled" ? "canceled" : "active";
+}
+
+function normalizeBillingMode(value) {
+  if (value === "manual_total") {
+    return "manual_total";
+  }
+
+  if (value === "monthly") {
+    return "monthly";
+  }
+
+  return "standard";
+}
+
+function toMeterNumber(value) {
+  return value === null || value === undefined || value === "" ? null : Number(value);
+}
+
+function calculateUtilityPrice(electricMeterReading) {
+  const meter = toMeterNumber(electricMeterReading);
+
+  if (meter === null) {
+    return null;
+  }
+
+  return meter * 0.17 - 75;
+}
+
+function getEffectiveReservationTotal(billingMode, totals, totalPrice, monthlyRentPrice, utilityPrice) {
+  if (billingMode === "manual_total") {
+    return toPriceNumber(totalPrice);
+  }
+
+  if (billingMode === "monthly") {
+    const rent = toPriceNumber(monthlyRentPrice);
+
+    if (rent === null || utilityPrice === null) {
+      return null;
+    }
+
+    return rent + utilityPrice;
+  }
+
+  if (totals.discountPrice !== null && totals.discountPrice !== undefined) {
+    return totals.discountPrice;
+  }
+
+  if (totals.normalPrice !== null && totals.normalPrice !== undefined) {
+    return totals.normalPrice;
+  }
+
+  return toPriceNumber(totalPrice);
+}
+
 function getPricingCategory(site) {
   if (site.river_category === "prime_river") {
     return "prime_river";
@@ -110,6 +166,29 @@ function applyBalanceSummary(amountPaid, totals) {
     remainingDiscountPrice:
       totals?.discountPrice !== null && totals?.discountPrice !== undefined
         ? Math.max(totals.discountPrice - paid, 0)
+        : null
+  };
+}
+
+function buildBillingSummary(reservationRow, totals) {
+  const utilityPrice = calculateUtilityPrice(reservationRow.electric_meter_reading);
+  const effectiveTotalPrice = getEffectiveReservationTotal(
+    reservationRow.billing_mode,
+    totals,
+    reservationRow.total_price,
+    reservationRow.monthly_rent_price,
+    utilityPrice
+  );
+
+  return {
+    totalPrice: toPriceNumber(reservationRow.total_price),
+    monthlyRentPrice: toPriceNumber(reservationRow.monthly_rent_price),
+    electricMeterReading: toMeterNumber(reservationRow.electric_meter_reading),
+    utilityPrice,
+    effectiveTotalPrice,
+    remainingBalance:
+      effectiveTotalPrice !== null && effectiveTotalPrice !== undefined
+        ? effectiveTotalPrice - (toPriceNumber(reservationRow.amount_paid) ?? 0)
         : null
   };
 }
@@ -262,6 +341,13 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.id,
         r.customer_id,
         r.booked_date::text,
+        r.status,
+        r.billing_mode,
+        r.total_price,
+        r.monthly_rent_price,
+        r.electric_meter_reading,
+        r.canceled_at,
+        r.canceled_site_stays,
         r.rv_kind,
         r.rig_length_feet,
         r.amount_paid,
@@ -282,31 +368,77 @@ async function fetchReservationDetails(queryable, reservationId) {
     return null;
   }
 
-  const staysResult = await queryable.query(
-    `
-      SELECT
-        rss.id,
-        rss.site_id,
-        s.site_number,
-        s.river_category,
-        s.is_big_rig,
-        rss.arrival_date::text,
-        rss.leave_date::text
-      FROM reservation_site_stays rss
-      JOIN rv_sites s ON s.id = rss.site_id
-      WHERE rss.reservation_id = $1
-      ORDER BY rss.arrival_date
-    `,
-    [reservationId]
-  );
+  const reservationRow = reservationResult.rows[0];
+  let stayRows = [];
+
+  if (reservationRow.status === "canceled") {
+    const archivedStays = Array.isArray(reservationRow.canceled_site_stays)
+      ? reservationRow.canceled_site_stays
+      : [];
+    const siteIds = [...new Set(archivedStays.map((segment) => Number(segment.siteId)).filter(Boolean))];
+    const sitesById = new Map();
+
+    if (siteIds.length) {
+      const sitesResult = await queryable.query(
+        `
+          SELECT id, site_number, river_category, is_big_rig
+          FROM rv_sites
+          WHERE id = ANY($1::bigint[])
+        `,
+        [siteIds]
+      );
+
+      for (const site of sitesResult.rows) {
+        sitesById.set(Number(site.id), site);
+      }
+    }
+
+    stayRows = archivedStays
+      .map((segment, index) => {
+        const site = sitesById.get(Number(segment.siteId));
+
+        if (!site || !segment.arrivalDate || !segment.leaveDate) {
+          return null;
+        }
+
+        return {
+          id: `canceled-${reservationId}-${index}`,
+          site_id: Number(segment.siteId),
+          site_number: site.site_number,
+          river_category: site.river_category,
+          is_big_rig: site.is_big_rig,
+          arrival_date: segment.arrivalDate,
+          leave_date: segment.leaveDate
+        };
+      })
+      .filter(Boolean);
+  } else {
+    const staysResult = await queryable.query(
+      `
+        SELECT
+          rss.id,
+          rss.site_id,
+          s.site_number,
+          s.river_category,
+          s.is_big_rig,
+          rss.arrival_date::text,
+          rss.leave_date::text
+        FROM reservation_site_stays rss
+        JOIN rv_sites s ON s.id = rss.site_id
+        WHERE rss.reservation_id = $1
+        ORDER BY rss.arrival_date
+      `,
+      [reservationId]
+    );
+
+    stayRows = staysResult.rows;
+  }
 
   const uniqueNightCounts = [
-    ...new Set(
-      staysResult.rows.map((segment) => nightsBetween(segment.arrival_date, segment.leave_date))
-    )
+    ...new Set(stayRows.map((segment) => nightsBetween(segment.arrival_date, segment.leave_date)))
   ];
   const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
-  const pricedSiteStays = staysResult.rows.map((segment) => ({
+  const pricedSiteStays = stayRows.map((segment) => ({
     ...segment,
     ...getPricingForSiteAndNights(
       segment,
@@ -315,12 +447,14 @@ async function fetchReservationDetails(queryable, reservationId) {
     )
   }));
   const totals = sumReservationTotals(pricedSiteStays);
-  const balances = applyBalanceSummary(reservationResult.rows[0].amount_paid, totals);
+  const balances = applyBalanceSummary(reservationRow.amount_paid, totals);
+  const billing = buildBillingSummary(reservationRow, totals);
 
   return {
-    ...reservationResult.rows[0],
+    ...reservationRow,
     totals,
     ...balances,
+    ...billing,
     siteStays: pricedSiteStays
   };
 }
@@ -550,9 +684,7 @@ app.get("/api/reservations", async (_req, res) => {
       `
         SELECT r.id
         FROM reservations r
-        LEFT JOIN reservation_site_stays rss ON rss.reservation_id = r.id
-        GROUP BY r.id
-        ORDER BY MIN(rss.arrival_date) NULLS LAST, r.id DESC
+        ORDER BY r.booked_date DESC, r.id DESC
       `
     );
 
@@ -581,7 +713,20 @@ app.get("/api/reservations/:id", async (req, res) => {
 });
 
 app.post("/api/reservations", async (req, res) => {
-  const { customerId, bookedDate, rvKind, rigLengthFeet, amountPaid, notes, siteStays } = req.body;
+  const {
+    customerId,
+    bookedDate,
+    rvKind,
+    rigLengthFeet,
+    amountPaid,
+    billingMode,
+    totalPrice,
+    monthlyRentPrice,
+    electricMeterReading,
+    notes,
+    siteStays,
+    status
+  } = req.body;
 
   if (!customerId || !bookedDate || !rvKind) {
     return res.status(400).json({ message: "Customer, booked date, and RV kind are required." });
@@ -594,6 +739,24 @@ app.post("/api/reservations", async (req, res) => {
   }
 
   const normalizedSegments = normalizeSegments(siteStays);
+  const reservationStatus = normalizeReservationStatus(status);
+  const reservationBillingMode = normalizeBillingMode(billingMode);
+  const parsedTotalPrice = toPriceNumber(totalPrice);
+  const parsedMonthlyRentPrice = toPriceNumber(monthlyRentPrice);
+  const parsedElectricMeterReading = toMeterNumber(electricMeterReading);
+  const archivedSegments = normalizedSegments.map((segment) => ({
+    siteId: Number(segment.siteId),
+    arrivalDate: segment.arrivalDate,
+    leaveDate: segment.leaveDate
+  }));
+
+  if (reservationBillingMode === "manual_total" && parsedTotalPrice === null) {
+    return res.status(400).json({ message: "Total price is required for manual total billing." });
+  }
+
+  if (reservationBillingMode === "monthly" && parsedMonthlyRentPrice === null) {
+    return res.status(400).json({ message: "Monthly rent price is required for monthly billing." });
+  }
   const client = await pool.connect();
 
   try {
@@ -604,17 +767,31 @@ app.post("/api/reservations", async (req, res) => {
         INSERT INTO reservations (
           customer_id,
           booked_date,
+          status,
+          billing_mode,
+          total_price,
+          monthly_rent_price,
+          electric_meter_reading,
+          canceled_at,
+          canceled_site_stays,
           rv_kind,
           rig_length_feet,
           amount_paid,
           notes
         )
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13)
         RETURNING id
       `,
       [
         customerId,
         bookedDate,
+        reservationStatus,
+        reservationBillingMode,
+        parsedTotalPrice,
+        parsedMonthlyRentPrice,
+        parsedElectricMeterReading,
+        reservationStatus === "canceled" ? new Date().toISOString() : null,
+        JSON.stringify(reservationStatus === "canceled" ? archivedSegments : []),
         rvKind,
         rigLengthFeet ? Number(rigLengthFeet) : null,
         toPriceNumber(amountPaid) ?? 0,
@@ -624,65 +801,26 @@ app.post("/api/reservations", async (req, res) => {
 
     const reservationId = reservationResult.rows[0].id;
 
-    for (const segment of normalizedSegments) {
-      await client.query(
-        `
-          INSERT INTO reservation_site_stays (
-            reservation_id,
-            site_id,
-            arrival_date,
-            leave_date
-          )
-          VALUES ($1, $2, $3, $4)
-        `,
-        [reservationId, segment.siteId, segment.arrivalDate, segment.leaveDate]
-      );
+    if (reservationStatus === "active") {
+      for (const segment of normalizedSegments) {
+        await client.query(
+          `
+            INSERT INTO reservation_site_stays (
+              reservation_id,
+              site_id,
+              arrival_date,
+              leave_date
+            )
+            VALUES ($1, $2, $3, $4)
+          `,
+          [reservationId, segment.siteId, segment.arrivalDate, segment.leaveDate]
+        );
+      }
     }
 
     await client.query("COMMIT");
-
-    const createdReservation = await pool.query(
-      `
-        SELECT
-          rss.id,
-          rss.site_id,
-          s.site_number,
-          s.river_category,
-          s.is_big_rig,
-          rss.arrival_date::text,
-          rss.leave_date::text
-        FROM reservation_site_stays rss
-        JOIN rv_sites s ON s.id = rss.site_id
-        WHERE rss.reservation_id = $1
-        ORDER BY rss.arrival_date
-      `,
-      [reservationId]
-    );
-
-    const uniqueNightCounts = [
-      ...new Set(
-        createdReservation.rows.map((segment) =>
-          nightsBetween(segment.arrival_date, segment.leave_date)
-        )
-      )
-    ];
-    const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
-    const pricedSiteStays = createdReservation.rows.map((segment) => ({
-      ...segment,
-      ...getPricingForSiteAndNights(
-        segment,
-        nightsBetween(segment.arrival_date, segment.leave_date),
-        pricingLookup
-      )
-    }));
-    const totals = sumReservationTotals(pricedSiteStays);
-
-    res.status(201).json({
-      id: reservationId,
-      ...applyBalanceSummary(toPriceNumber(amountPaid) ?? 0, totals),
-      totals,
-      siteStays: pricedSiteStays
-    });
+    const reservation = await fetchReservationDetails(pool, reservationId);
+    res.status(201).json(reservation);
   } catch (error) {
     await client.query("ROLLBACK");
 
@@ -699,7 +837,20 @@ app.post("/api/reservations", async (req, res) => {
 });
 
 app.put("/api/reservations/:id", async (req, res) => {
-  const { customerId, bookedDate, rvKind, rigLengthFeet, amountPaid, notes, siteStays } = req.body;
+  const {
+    customerId,
+    bookedDate,
+    rvKind,
+    rigLengthFeet,
+    amountPaid,
+    billingMode,
+    totalPrice,
+    monthlyRentPrice,
+    electricMeterReading,
+    notes,
+    siteStays,
+    status
+  } = req.body;
 
   if (!customerId || !bookedDate || !rvKind) {
     return res.status(400).json({ message: "Customer, booked date, and RV kind are required." });
@@ -712,6 +863,24 @@ app.put("/api/reservations/:id", async (req, res) => {
   }
 
   const normalizedSegments = normalizeSegments(siteStays);
+  const reservationStatus = normalizeReservationStatus(status);
+  const reservationBillingMode = normalizeBillingMode(billingMode);
+  const parsedTotalPrice = toPriceNumber(totalPrice);
+  const parsedMonthlyRentPrice = toPriceNumber(monthlyRentPrice);
+  const parsedElectricMeterReading = toMeterNumber(electricMeterReading);
+  const archivedSegments = normalizedSegments.map((segment) => ({
+    siteId: Number(segment.siteId),
+    arrivalDate: segment.arrivalDate,
+    leaveDate: segment.leaveDate
+  }));
+
+  if (reservationBillingMode === "manual_total" && parsedTotalPrice === null) {
+    return res.status(400).json({ message: "Total price is required for manual total billing." });
+  }
+
+  if (reservationBillingMode === "monthly" && parsedMonthlyRentPrice === null) {
+    return res.status(400).json({ message: "Monthly rent price is required for monthly billing." });
+  }
   const client = await pool.connect();
 
   try {
@@ -723,10 +892,17 @@ app.put("/api/reservations/:id", async (req, res) => {
         SET
           customer_id = $2,
           booked_date = $3,
-          rv_kind = $4,
-          rig_length_feet = $5,
-          amount_paid = $6,
-          notes = $7
+          status = $4,
+          billing_mode = $5,
+          total_price = $6,
+          monthly_rent_price = $7,
+          electric_meter_reading = $8,
+          canceled_at = $9,
+          canceled_site_stays = $10::jsonb,
+          rv_kind = $11,
+          rig_length_feet = $12,
+          amount_paid = $13,
+          notes = $14
         WHERE id = $1
         RETURNING id
       `,
@@ -734,6 +910,13 @@ app.put("/api/reservations/:id", async (req, res) => {
         req.params.id,
         customerId,
         bookedDate,
+        reservationStatus,
+        reservationBillingMode,
+        parsedTotalPrice,
+        parsedMonthlyRentPrice,
+        parsedElectricMeterReading,
+        reservationStatus === "canceled" ? new Date().toISOString() : null,
+        JSON.stringify(reservationStatus === "canceled" ? archivedSegments : []),
         rvKind,
         rigLengthFeet ? Number(rigLengthFeet) : null,
         toPriceNumber(amountPaid) ?? 0,
@@ -750,19 +933,21 @@ app.put("/api/reservations/:id", async (req, res) => {
       req.params.id
     ]);
 
-    for (const segment of normalizedSegments) {
-      await client.query(
-        `
-          INSERT INTO reservation_site_stays (
-            reservation_id,
-            site_id,
-            arrival_date,
-            leave_date
-          )
-          VALUES ($1, $2, $3, $4)
-        `,
-        [req.params.id, segment.siteId, segment.arrivalDate, segment.leaveDate]
-      );
+    if (reservationStatus === "active") {
+      for (const segment of normalizedSegments) {
+        await client.query(
+          `
+            INSERT INTO reservation_site_stays (
+              reservation_id,
+              site_id,
+              arrival_date,
+              leave_date
+            )
+            VALUES ($1, $2, $3, $4)
+          `,
+          [req.params.id, segment.siteId, segment.arrivalDate, segment.leaveDate]
+        );
+      }
     }
 
     await client.query("COMMIT");

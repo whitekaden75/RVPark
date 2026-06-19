@@ -234,6 +234,50 @@ textarea {
   margin-top: 16px;
 }
 
+.schedule-dropdown {
+  margin-top: 24px;
+}
+
+.schedule-dropdown-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.schedule-dropdown-trigger {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(57, 81, 58, 0.12);
+  border-radius: 18px;
+  padding: 16px 18px;
+  background: rgba(255, 255, 255, 0.64);
+  color: #1f2a21;
+  text-align: left;
+}
+
+.schedule-dropdown-panel {
+  margin-top: 12px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(57, 81, 58, 0.12);
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.schedule-search-controls {
+  margin-top: 0;
+}
+
+.schedule-summary-card {
+  padding: 16px 18px;
+}
+
+.schedule-card-actions {
+  justify-content: flex-end;
+}
+
 .timeline-controls {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 220px));
@@ -341,6 +385,16 @@ textarea {
   border-color: rgba(160, 102, 47, 0.28);
 }
 
+.calendar-day.history-booked {
+  background: rgba(168, 124, 54, 0.16);
+  border-color: rgba(168, 124, 54, 0.28);
+}
+
+.calendar-day.history-canceled {
+  background: rgba(146, 82, 82, 0.14);
+  border-color: rgba(146, 82, 82, 0.28);
+}
+
 .calendar-day.selected.departure {
   background:
     linear-gradient(135deg, rgba(36, 74, 49, 0.16), rgba(36, 74, 49, 0.16) 50%),
@@ -395,6 +449,16 @@ textarea {
 .legend-box.booked {
   background: rgba(184, 123, 69, 0.18);
   border-color: rgba(160, 102, 47, 0.28);
+}
+
+.legend-box.history-booked {
+  background: rgba(168, 124, 54, 0.16);
+  border-color: rgba(168, 124, 54, 0.28);
+}
+
+.legend-box.history-canceled {
+  background: rgba(146, 82, 82, 0.14);
+  border-color: rgba(146, 82, 82, 0.28);
 }
 
 .pricing-summary {
@@ -495,6 +559,31 @@ textarea {
   margin: 0;
 }
 
+.history-reservation-card {
+  padding: 16px;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.status-badge.active {
+  background: rgba(55, 123, 78, 0.12);
+  color: #1d5e35;
+}
+
+.status-badge.canceled {
+  background: rgba(194, 64, 64, 0.12);
+  color: #7f2222;
+}
+
 .result-header,
 .segment-header,
 .button-row {
@@ -536,6 +625,27 @@ textarea {
   color: #1d5e35;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(26, 37, 28, 0.4);
+}
+
+.modal-card {
+  width: min(760px, 100%);
+  max-height: min(85vh, 900px);
+  overflow: auto;
+  border-radius: 24px;
+  border: 1px solid rgba(57, 81, 58, 0.12);
+  background: rgba(255, 252, 246, 0.98);
+  box-shadow: 0 24px 48px rgba(24, 36, 24, 0.18);
+  padding: 24px;
+}
+
 @media (max-width: 900px) {
   .two-column,
   .results-grid,
@@ -543,6 +653,10 @@ textarea {
   .compact-grid,
   .site-filter-bar,
   .timeline-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .schedule-dropdown-grid {
     grid-template-columns: 1fr;
   }
 
@@ -556,5 +670,15 @@ textarea {
 
   .checkbox-row {
     padding-top: 0;
+  }
+
+  .schedule-dropdown-trigger,
+  .schedule-card-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .modal-backdrop {
+    padding: 16px;
   }
 }
