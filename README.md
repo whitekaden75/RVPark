@@ -24,6 +24,7 @@ React + Node.js app for managing RV park registrations with:
 - `sql/007_add_rig_size_to_reservations.sql` stores the guest RV length in feet
 - `sql/008_add_reservation_cancellation_and_history.sql` adds reservation status and canceled-booking history support
 - `sql/009_add_reservation_billing_fields.sql` adds manual total and monthly billing fields
+- `sql/010_add_yearly_reservation_term.sql` adds yearly reservation support
 
 ## Database Setup
 
@@ -52,6 +53,8 @@ If you want to track how big each guest rig is, run [sql/007_add_rig_size_to_res
 If you want canceled reservations to stay in history without blocking sites, run [sql/008_add_reservation_cancellation_and_history.sql](/Users/kadenwhite/Desktop/RVPark/sql/008_add_reservation_cancellation_and_history.sql) too.
 
 If you want manual totals and monthly billing fields for long-term stays, run [sql/009_add_reservation_billing_fields.sql](/Users/kadenwhite/Desktop/RVPark/sql/009_add_reservation_billing_fields.sql) too.
+
+If you want yearly bookings that stay open-ended until canceled, run [sql/010_add_yearly_reservation_term.sql](/Users/kadenwhite/Desktop/RVPark/sql/010_add_yearly_reservation_term.sql) too.
 
 ## Local Setup
 

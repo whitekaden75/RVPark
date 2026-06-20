@@ -7,6 +7,7 @@ import {
   buildSiteSwitchPlan,
   getDirectMatches,
   normalizeSegments,
+  openEndedStayDate,
   validateReservationSegments
 } from "./planner.js";
 
@@ -51,6 +52,10 @@ function toPriceNumber(value) {
 
 function normalizeReservationStatus(value) {
   return value === "canceled" ? "canceled" : "active";
+}
+
+function normalizeReservationTerm(value) {
+  return value === "yearly" ? "yearly" : "standard";
 }
 
 function normalizeBillingMode(value) {
@@ -103,6 +108,10 @@ function getEffectiveReservationTotal(billingMode, totals, totalPrice, monthlyRe
   }
 
   return toPriceNumber(totalPrice);
+}
+
+function isOpenEndedSegment(segment, reservationTerm) {
+  return reservationTerm === "yearly" && segment.leave_date === openEndedStayDate;
 }
 
 function getPricingCategory(site) {
@@ -342,6 +351,7 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.customer_id,
         r.booked_date::text,
         r.status,
+        r.reservation_term,
         r.billing_mode,
         r.total_price,
         r.monthly_rent_price,
@@ -435,16 +445,37 @@ async function fetchReservationDetails(queryable, reservationId) {
   }
 
   const uniqueNightCounts = [
-    ...new Set(stayRows.map((segment) => nightsBetween(segment.arrival_date, segment.leave_date)))
+    ...new Set(
+      stayRows
+        .filter((segment) => !isOpenEndedSegment(segment, reservationRow.reservation_term))
+        .map((segment) => nightsBetween(segment.arrival_date, segment.leave_date))
+    )
   ];
   const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
   const pricedSiteStays = stayRows.map((segment) => ({
-    ...segment,
-    ...getPricingForSiteAndNights(
-      segment,
-      nightsBetween(segment.arrival_date, segment.leave_date),
-      pricingLookup
-    )
+    ...(function buildSegment() {
+      if (isOpenEndedSegment(segment, reservationRow.reservation_term)) {
+        return {
+          ...segment,
+          pricingCategory: null,
+          numberOfNights: null,
+          pricingConfigured: false,
+          normalPrice: null,
+          discountPrice: null,
+          isOpenEnded: true
+        };
+      }
+
+      return {
+        ...segment,
+        ...getPricingForSiteAndNights(
+          segment,
+          nightsBetween(segment.arrival_date, segment.leave_date),
+          pricingLookup
+        ),
+        isOpenEnded: false
+      };
+    })()
   }));
   const totals = sumReservationTotals(pricedSiteStays);
   const balances = applyBalanceSummary(reservationRow.amount_paid, totals);
@@ -719,6 +750,7 @@ app.post("/api/reservations", async (req, res) => {
     rvKind,
     rigLengthFeet,
     amountPaid,
+    reservationTerm,
     billingMode,
     totalPrice,
     monthlyRentPrice,
@@ -732,13 +764,14 @@ app.post("/api/reservations", async (req, res) => {
     return res.status(400).json({ message: "Customer, booked date, and RV kind are required." });
   }
 
-  const validationMessage = validateReservationSegments(siteStays);
+  const normalizedReservationTerm = normalizeReservationTerm(reservationTerm);
+  const validationMessage = validateReservationSegments(siteStays, normalizedReservationTerm);
 
   if (validationMessage) {
     return res.status(400).json({ message: validationMessage });
   }
 
-  const normalizedSegments = normalizeSegments(siteStays);
+  const normalizedSegments = normalizeSegments(siteStays, normalizedReservationTerm);
   const reservationStatus = normalizeReservationStatus(status);
   const reservationBillingMode = normalizeBillingMode(billingMode);
   const parsedTotalPrice = toPriceNumber(totalPrice);
@@ -768,6 +801,7 @@ app.post("/api/reservations", async (req, res) => {
           customer_id,
           booked_date,
           status,
+          reservation_term,
           billing_mode,
           total_price,
           monthly_rent_price,
@@ -779,13 +813,14 @@ app.post("/api/reservations", async (req, res) => {
           amount_paid,
           notes
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14)
         RETURNING id
       `,
       [
         customerId,
         bookedDate,
         reservationStatus,
+        normalizedReservationTerm,
         reservationBillingMode,
         parsedTotalPrice,
         parsedMonthlyRentPrice,
@@ -843,6 +878,7 @@ app.put("/api/reservations/:id", async (req, res) => {
     rvKind,
     rigLengthFeet,
     amountPaid,
+    reservationTerm,
     billingMode,
     totalPrice,
     monthlyRentPrice,
@@ -856,13 +892,14 @@ app.put("/api/reservations/:id", async (req, res) => {
     return res.status(400).json({ message: "Customer, booked date, and RV kind are required." });
   }
 
-  const validationMessage = validateReservationSegments(siteStays);
+  const normalizedReservationTerm = normalizeReservationTerm(reservationTerm);
+  const validationMessage = validateReservationSegments(siteStays, normalizedReservationTerm);
 
   if (validationMessage) {
     return res.status(400).json({ message: validationMessage });
   }
 
-  const normalizedSegments = normalizeSegments(siteStays);
+  const normalizedSegments = normalizeSegments(siteStays, normalizedReservationTerm);
   const reservationStatus = normalizeReservationStatus(status);
   const reservationBillingMode = normalizeBillingMode(billingMode);
   const parsedTotalPrice = toPriceNumber(totalPrice);
@@ -893,16 +930,17 @@ app.put("/api/reservations/:id", async (req, res) => {
           customer_id = $2,
           booked_date = $3,
           status = $4,
-          billing_mode = $5,
-          total_price = $6,
-          monthly_rent_price = $7,
-          electric_meter_reading = $8,
-          canceled_at = $9,
-          canceled_site_stays = $10::jsonb,
-          rv_kind = $11,
-          rig_length_feet = $12,
-          amount_paid = $13,
-          notes = $14
+          reservation_term = $5,
+          billing_mode = $6,
+          total_price = $7,
+          monthly_rent_price = $8,
+          electric_meter_reading = $9,
+          canceled_at = $10,
+          canceled_site_stays = $11::jsonb,
+          rv_kind = $12,
+          rig_length_feet = $13,
+          amount_paid = $14,
+          notes = $15
         WHERE id = $1
         RETURNING id
       `,
@@ -911,6 +949,7 @@ app.put("/api/reservations/:id", async (req, res) => {
         customerId,
         bookedDate,
         reservationStatus,
+        normalizedReservationTerm,
         reservationBillingMode,
         parsedTotalPrice,
         parsedMonthlyRentPrice,

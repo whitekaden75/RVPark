@@ -224,6 +224,17 @@ textarea {
   background: rgba(255, 255, 255, 0.6);
 }
 
+.suggestion-card {
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(57, 81, 58, 0.12);
+  background: rgba(244, 239, 226, 0.72);
+}
+
+.suggestion-card h3 {
+  margin: 0;
+}
+
 .pricing-preview-card h3 {
   margin-top: 0;
 }

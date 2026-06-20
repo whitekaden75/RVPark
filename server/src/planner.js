@@ -2,6 +2,8 @@ function toDate(value) {
   return new Date(`${value}T00:00:00Z`);
 }
 
+export const openEndedStayDate = "9999-12-31";
+
 function formatDate(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -143,29 +145,33 @@ export function getDirectMatches(availability, arrivalDate, leaveDate) {
   );
 }
 
-export function validateReservationSegments(siteStays) {
+export function validateReservationSegments(siteStays, reservationTerm = "standard") {
   if (!Array.isArray(siteStays) || siteStays.length === 0) {
     return "At least one site stay is required.";
   }
 
   const sorted = [...siteStays].sort((a, b) => a.arrivalDate.localeCompare(b.arrivalDate));
 
+  if (reservationTerm === "yearly" && sorted.length !== 1) {
+    return "Yearly bookings can only have one stay segment.";
+  }
+
   for (let index = 0; index < sorted.length; index += 1) {
     const current = sorted[index];
 
-    if (!current.siteId || !current.arrivalDate || !current.leaveDate) {
+    if (!current.siteId || !current.arrivalDate || (reservationTerm !== "yearly" && !current.leaveDate)) {
       return "Each site stay needs a site, arrival date, and leave date.";
     }
 
-    if (current.arrivalDate >= current.leaveDate) {
+    if (reservationTerm !== "yearly" && current.arrivalDate >= current.leaveDate) {
       return "Each site stay must have an arrival date before the leave date.";
     }
 
-    if (index > 0) {
+    if (reservationTerm !== "yearly" && index > 0) {
       const previous = sorted[index - 1];
 
-      if (previous.leaveDate !== current.arrivalDate) {
-        return "Site stays must be contiguous with no gaps or overlaps.";
+      if (previous.leaveDate > current.arrivalDate) {
+        return "Site stays cannot overlap each other.";
       }
     }
   }
@@ -173,12 +179,15 @@ export function validateReservationSegments(siteStays) {
   return null;
 }
 
-export function normalizeSegments(siteStays) {
+export function normalizeSegments(siteStays, reservationTerm = "standard") {
   return [...siteStays]
     .sort((a, b) => a.arrivalDate.localeCompare(b.arrivalDate))
     .map((segment) => ({
       siteId: Number(segment.siteId),
       arrivalDate: formatDate(toDate(segment.arrivalDate)),
-      leaveDate: formatDate(toDate(segment.leaveDate))
+      leaveDate:
+        reservationTerm === "yearly"
+          ? openEndedStayDate
+          : formatDate(toDate(segment.leaveDate))
     }));
 }
