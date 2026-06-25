@@ -281,27 +281,27 @@ function buildReservationConfirmationText(reservation, paymentLink) {
   const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
   const depositAmount =
     paymentLink?.reservationId === reservation.id ? formatCurrency(paymentLink.amount) : "Not set";
-  const depositLine =
-    paymentLink?.reservationId === reservation.id && paymentLink.checkoutUrl
-      ? `Deposit payment link: ${paymentLink.checkoutUrl}`
-      : "";
 
   return [
     "Riverpark RV Resort",
-    "***RESERVATION***",
-    `Confirmation ${buildConfirmationCode(reservation)}`,
-    `Hi: ${customerName || "Guest"}`,
+    "RESERVATION CONFIRMATION",
+    `Confirmation: ${buildConfirmationCode(reservation)}`,
+    "",
+    `Hi ${customerName || "Guest"},`,
+    "",
     `Email: ${reservation.email || "Not set"}`,
     `Phone: ${formatPhoneNumber(reservation.phone_number || "") || "Not set"}`,
     "",
-    "             -Deposit-",
-    "        **Non Refundable**",
+    "Deposit",
+    "Non Refundable",
     "1 night per reservation, per week. We have a 3% surcharge for credit card. (No Debit cards) you may write a check, or cash with no surcharge on arrival balance.",
-    `DEPOSIT AMOUNT: ${depositAmount}`,
+    `Deposit amount: ${depositAmount}`,
     `Arrival: ${primaryStay?.arrival_date ? formatShortDate(primaryStay.arrival_date) : "Not set"}`,
     "(Check-in 1:00 P.M.)",
     `Depart: ${primaryStay?.leave_date ? formatShortDate(primaryStay.leave_date) : "Not set"}`,
     "(Check-out 11:00 A.M.)",
+    "",
+    "Important information",
     "***Upon arrival, please stop at office to register",
     "**We welcome your fur babies, but out of respect for other campers, & office please: keep pets on a leash at all times; immediately pick-up your pets doo, droppings**",
     "or we will ask you to leave!! No Exceptions!",
@@ -313,10 +313,9 @@ function buildReservationConfirmationText(reservation, paymentLink) {
     "***SITE AND RATES ARE SUBJECT TO CHANGE***",
     "***Contact us as soon as possible if any corrections are necessary.",
     "Please note!! No AT&T cell towers close by & signal is weak or may not work",
-    depositLine,
     "",
     "Thank you for booking with us!",
-    "-Makayla",
+    "Makayla",
     "",
     "Riverpark RV Resort",
     "2956 Rogue River Hwy",
@@ -1644,6 +1643,20 @@ export default function App() {
     }
   }
 
+  async function copyPaymentLinkToClipboard() {
+    if (!generatedPaymentLink?.checkoutUrl) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(generatedPaymentLink.checkoutUrl);
+      setPaymentLinkSuccessMessage(`${generatedPaymentLink.label} copied.`);
+      setPaymentLinkErrorMessage("");
+    } catch {
+      setPaymentLinkErrorMessage("Copy failed. Open the payment link instead.");
+    }
+  }
+
   async function handleReservationRefresh() {
     setErrorMessage("");
 
@@ -2339,7 +2352,7 @@ export default function App() {
                     <p className="muted">
                       Reservation #{generatedPaymentLink.reservationId} stays pending until this deposit is paid.
                     </p>
-                    <div className="payment-link-row">
+                    <div className="button-row">
                       <a
                         className="primary-button payment-link-button"
                         href={generatedPaymentLink.checkoutUrl}
@@ -2348,7 +2361,13 @@ export default function App() {
                       >
                         Open payment link
                       </a>
-                      <input readOnly value={generatedPaymentLink.checkoutUrl} />
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={copyPaymentLinkToClipboard}
+                      >
+                        Copy payment link
+                      </button>
                     </div>
                   </div>
                 ) : null}
@@ -2383,9 +2402,9 @@ export default function App() {
                         {confirmationCopyMessage}
                       </div>
                     ) : null}
-                    <pre className="confirmation-preview">
-                      {buildReservationConfirmationText(createdReservation, generatedPaymentLink)}
-                    </pre>
+                    <p className="muted">
+                      The customer confirmation is ready to copy and send.
+                    </p>
                   </div>
                 ) : null}
               </form>
@@ -3227,7 +3246,7 @@ export default function App() {
                   ) : null}
                   {generatedPaymentLink?.reservationId === activeScheduleReservation.id &&
                   generatedPaymentLink?.label === "Payment link" ? (
-                    <div className="payment-link-row">
+                    <div className="button-row">
                       <a
                         className="primary-button payment-link-button"
                         href={generatedPaymentLink.checkoutUrl}
@@ -3236,7 +3255,13 @@ export default function App() {
                       >
                         Open payment link
                       </a>
-                      <input readOnly value={generatedPaymentLink.checkoutUrl} />
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={copyPaymentLinkToClipboard}
+                      >
+                        Copy payment link
+                      </button>
                     </div>
                   ) : null}
                 </div>

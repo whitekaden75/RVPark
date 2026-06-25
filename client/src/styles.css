@@ -631,30 +631,11 @@ textarea {
   padding: 22px;
 }
 
-.confirmation-preview {
-  margin: 16px 0 0;
-  border-radius: 18px;
-  border: 1px solid rgba(36, 74, 49, 0.12);
-  background: rgba(248, 244, 236, 0.92);
-  color: #274032;
-  font: 600 0.93rem/1.6 "Georgia", "Times New Roman", serif;
-  padding: 18px;
-  white-space: pre-wrap;
-}
-
 .payment-grid {
   display: grid;
   grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
   gap: 16px;
   align-items: end;
-}
-
-.payment-link-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 12px;
-  align-items: center;
-  margin-top: 18px;
 }
 
 .payment-link-button {
@@ -776,10 +757,6 @@ textarea {
   }
 
   .payment-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .payment-link-row {
     grid-template-columns: 1fr;
   }
 
