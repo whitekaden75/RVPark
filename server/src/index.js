@@ -1391,6 +1391,49 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
   }
 });
 
+app.post("/api/reservations/:id/mark-paid", async (req, res) => {
+  const reservationId = Number(req.params.id);
+
+  if (!reservationId) {
+    return res.status(400).json({ message: "Reservation ID is required." });
+  }
+
+  try {
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation) {
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status === "canceled") {
+      return res.status(400).json({ message: "Canceled reservations cannot be updated." });
+    }
+
+    if (reservation.effectiveTotalPrice === null || reservation.effectiveTotalPrice === undefined) {
+      return res.status(400).json({ message: "Set the reservation total before marking it paid." });
+    }
+
+    await pool.query(
+      `
+        UPDATE reservations
+        SET
+          amount_paid = $2,
+          status = CASE
+            WHEN status = 'pending' THEN 'active'
+            ELSE status
+          END
+        WHERE id = $1
+      `,
+      [reservationId, reservation.effectiveTotalPrice]
+    );
+
+    const updatedReservation = await fetchReservationDetails(pool, reservationId);
+    res.json(updatedReservation);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 app.delete("/api/reservations/:id", async (req, res) => {
   const reservationId = Number(req.params.id);
 

@@ -1716,6 +1716,30 @@ export default function App() {
     }
   }
 
+  async function markReservationPaid(reservation) {
+    setErrorMessage("");
+    setSuccessMessage("");
+    setPaymentLinkErrorMessage("");
+
+    try {
+      const updatedReservation = await apiRequest(`/reservations/${reservation.id}/mark-paid`, {
+        method: "POST"
+      });
+
+      setReservations((current) =>
+        current.map((entry) => (entry.id === updatedReservation.id ? updatedReservation : entry))
+      );
+
+      if (activeScheduleReservation?.id === updatedReservation.id) {
+        setActiveScheduleReservation(updatedReservation);
+      }
+
+      setSuccessMessage(`Marked reservation #${updatedReservation.id} as fully paid.`);
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
   async function deleteReservation(reservation) {
     const shouldDelete = window.confirm(
       `Delete reservation #${reservation.id} for ${reservation.first_name} ${reservation.last_name}? This cannot be undone.`
@@ -2626,13 +2650,22 @@ export default function App() {
                                 </h3>
                                 <div className="button-row schedule-card-actions">
                                   {Number(reservation.remainingBalance || 0) > 0 ? (
-                                    <button
-                                      type="button"
-                                      className="ghost-button"
-                                      onClick={() => openScheduleReservation(reservation)}
-                                    >
-                                      Add payment
-                                    </button>
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="ghost-button"
+                                        onClick={() => openScheduleReservation(reservation)}
+                                      >
+                                        Add payment
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="ghost-button"
+                                        onClick={() => markReservationPaid(reservation)}
+                                      >
+                                        Mark paid
+                                      </button>
+                                    </>
                                   ) : null}
                                   <button
                                     type="button"
@@ -3228,6 +3261,15 @@ export default function App() {
                     </div>
                   </div>
                   <div className="button-row">
+                    {Number(activeScheduleReservation.remainingBalance || 0) > 0 ? (
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => markReservationPaid(activeScheduleReservation)}
+                      >
+                        Mark fully paid
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="primary-button"
