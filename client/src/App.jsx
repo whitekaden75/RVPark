@@ -37,11 +37,14 @@ function createEmptyReservation(defaultSite = null) {
     bookedDate: "",
     status: "active",
     reservationTerm: "standard",
-    billingMode: "standard",
+    billingMode: "manual_total",
     totalPrice: "",
     monthlyRentPrice: "",
     electricMeterReading: "",
     rvKind: "camper",
+    motorhomeClassA: false,
+    motorhomeClassC: false,
+    motorhomeWithTow: false,
     rigLengthFeet: "",
     amountPaid: "",
     notes: "",
@@ -140,6 +143,15 @@ function formatDisplayDate(dateString) {
   return `${month} ${day}${getOrdinalSuffix(day)} ${year}`;
 }
 
+function formatShortDate(dateString) {
+  if (!dateString) {
+    return "";
+  }
+
+  const date = new Date(`${dateString}T00:00:00Z`);
+  return `${date.getUTCMonth() + 1}/${date.getUTCDate()}`;
+}
+
 function isDateWithinRange(dateString, startDate, endDate) {
   return dateString >= startDate && dateString < endDate;
 }
@@ -164,7 +176,27 @@ function formatPricingCategory(value) {
 }
 
 function formatReservationStatus(value) {
-  return value === "canceled" ? "Canceled" : "Active";
+  if (value === "canceled") {
+    return "Canceled";
+  }
+
+  if (value === "pending") {
+    return "Pending";
+  }
+
+  return "Active";
+}
+
+function getReservationStatusClass(value) {
+  if (value === "canceled") {
+    return "canceled";
+  }
+
+  if (value === "pending") {
+    return "pending";
+  }
+
+  return "active";
 }
 
 function formatReservationTerm(value) {
@@ -207,6 +239,94 @@ function formatBillingMode(value) {
   }
 
   return "Standard";
+}
+
+function formatMotorhomeDetails(reservation) {
+  if (reservation.rv_kind !== "motor home") {
+    return "";
+  }
+
+  const details = [];
+
+  if (reservation.motorhome_class_a) {
+    details.push("Class A");
+  }
+
+  if (reservation.motorhome_class_c) {
+    details.push("Class C");
+  }
+
+  if (reservation.motorhome_with_tow) {
+    details.push("With tow");
+  }
+
+  return details.length ? ` • ${details.join(" • ")}` : "";
+}
+
+function buildConfirmationCode(reservation) {
+  if (!reservation?.id) {
+    return "";
+  }
+
+  const bookedDate = String(reservation.booked_date || "").replaceAll("-", "").slice(2);
+  return `#${reservation.id}${bookedDate ? `-${bookedDate}` : ""}`;
+}
+
+function buildReservationConfirmationText(reservation, paymentLink) {
+  if (!reservation) {
+    return "";
+  }
+
+  const primaryStay = reservation.siteStays?.[0] || null;
+  const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+  const depositAmount =
+    paymentLink?.reservationId === reservation.id ? formatCurrency(paymentLink.amount) : "Not set";
+  const depositLine =
+    paymentLink?.reservationId === reservation.id && paymentLink.checkoutUrl
+      ? `Deposit payment link: ${paymentLink.checkoutUrl}`
+      : "";
+
+  return [
+    "Riverpark RV Resort",
+    "***RESERVATION***",
+    `Confirmation ${buildConfirmationCode(reservation)}`,
+    `Hi: ${customerName || "Guest"}`,
+    `Email: ${reservation.email || "Not set"}`,
+    `Phone: ${formatPhoneNumber(reservation.phone_number || "") || "Not set"}`,
+    "",
+    "             -Deposit-",
+    "        **Non Refundable**",
+    "1 night per reservation, per week. We have a 3% surcharge for credit card. (No Debit cards) you may write a check, or cash with no surcharge on arrival balance.",
+    `DEPOSIT AMOUNT: ${depositAmount}`,
+    `Arrival: ${primaryStay?.arrival_date ? formatShortDate(primaryStay.arrival_date) : "Not set"}`,
+    "(Check-in 1:00 P.M.)",
+    `Depart: ${primaryStay?.leave_date ? formatShortDate(primaryStay.leave_date) : "Not set"}`,
+    "(Check-out 11:00 A.M.)",
+    "***Upon arrival, please stop at office to register",
+    "**We welcome your fur babies, but out of respect for other campers, & office please: keep pets on a leash at all times; immediately pick-up your pets doo, droppings**",
+    "or we will ask you to leave!! No Exceptions!",
+    "***There are no WOOD fires allowed in the park. No exceptions!",
+    "** Charcoal barbecue's, & propane are okay",
+    "(1 car or truck) per site reserved",
+    "$5.00 charge extra car",
+    "***PLEASE BE RESPECTFUL AND NEVER WALK THROUGH ANOTHER GUESTS SITE!!! This includes walking behind other RV's that are parked along the river!! The rose bush area is fine to cut through!!!",
+    "***SITE AND RATES ARE SUBJECT TO CHANGE***",
+    "***Contact us as soon as possible if any corrections are necessary.",
+    "Please note!! No AT&T cell towers close by & signal is weak or may not work",
+    depositLine,
+    "",
+    "Thank you for booking with us!",
+    "-Makayla",
+    "",
+    "Riverpark RV Resort",
+    "2956 Rogue River Hwy",
+    "Grants Pass, OR 97527",
+    "",
+    "541-295-1269 (cell)",
+    "Text message okay"
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function calculateUtilityPrice(electricMeterReading) {
@@ -708,6 +828,12 @@ export default function App() {
   const [showAllSwitchPlanSegments, setShowAllSwitchPlanSegments] = useState(false);
   const [createdReservation, setCreatedReservation] = useState(null);
   const [editingReservationId, setEditingReservationId] = useState(null);
+  const [reservationDepositAmount, setReservationDepositAmount] = useState("");
+  const [activeSchedulePaymentAmount, setActiveSchedulePaymentAmount] = useState("");
+  const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
+  const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
+  const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] = useState("");
+  const [confirmationCopyMessage, setConfirmationCopyMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [reservationErrorMessage, setReservationErrorMessage] = useState("");
   const [reservationSuccessMessage, setReservationSuccessMessage] = useState("");
@@ -1038,6 +1164,62 @@ export default function App() {
     setCustomerSearch("");
     setCustomerForm(emptyCustomer);
     setEditingReservationId(null);
+    setReservationDepositAmount("");
+  }
+
+  function clearSection(sectionKey) {
+    const todayDate = formatDateInput(new Date());
+
+    if (sectionKey === "availability") {
+      setSearchForm(emptySearch);
+      setDirectMatches([]);
+      setSwitchPlan(null);
+      setSwitchPlanTotals(null);
+      setShowAllDirectMatches(false);
+      setShowAllSwitchPlanSegments(false);
+      return;
+    }
+
+    if (sectionKey === "reservation") {
+      resetReservationForm();
+      setCreatedReservation(null);
+      setGeneratedPaymentLink(null);
+      setPaymentLinkErrorMessage("");
+      setPaymentLinkSuccessMessage("");
+      setConfirmationCopyMessage("");
+      setReservationErrorMessage("");
+      setReservationSuccessMessage("");
+      return;
+    }
+
+    if (sectionKey === "schedule") {
+      setCustomerBookingSearch("");
+      setSelectedArrivalDate(todayDate);
+      setTimelineSiteSearch("");
+      setSelectedTimelineDate(todayDate);
+      setTimelineMonthCursor(startOfMonth(todayDate));
+      setIsWholeScheduleOpen(false);
+      setIsArrivalsTodayOpen(false);
+      setActiveScheduleReservation(null);
+      return;
+    }
+
+    if (sectionKey === "history") {
+      setSelectedHistoryDate(todayDate);
+      setHistoryMonthCursor(startOfMonth(todayDate));
+      return;
+    }
+
+    if (sectionKey === "yearly") {
+      setActiveScheduleReservation(null);
+      return;
+    }
+
+    if (sectionKey === "sites") {
+      setSiteFilters(emptySiteFilters);
+      setIsTypeMenuOpen(false);
+      setOpenSitePricing({});
+    }
   }
 
   function updateSearchField(field, value) {
@@ -1168,7 +1350,19 @@ export default function App() {
   }
 
   function updateReservationField(field, value) {
-    setReservationForm((current) => ({ ...current, [field]: value }));
+    setReservationForm((current) => {
+      if (field === "rvKind") {
+        return {
+          ...current,
+          rvKind: value,
+          motorhomeClassA: value === "motor home" ? current.motorhomeClassA : false,
+          motorhomeClassC: value === "motor home" ? current.motorhomeClassC : false,
+          motorhomeWithTow: value === "motor home" ? current.motorhomeWithTow : false
+        };
+      }
+
+      return { ...current, [field]: value };
+    });
   }
 
   function updateSiteStay(index, field, value) {
@@ -1254,11 +1448,24 @@ export default function App() {
     setSuccessMessage("");
     setReservationErrorMessage("");
     setReservationSuccessMessage("");
+    setGeneratedPaymentLink(null);
+    setPaymentLinkErrorMessage("");
+    setPaymentLinkSuccessMessage("");
+    setConfirmationCopyMessage("");
 
     try {
       let customerId = reservationForm.customerId
         ? Number(reservationForm.customerId)
         : null;
+      const depositAmountNumber = Number(reservationDepositAmount);
+      const isCreatingReservation = !editingReservationId;
+
+      if (
+        isCreatingReservation &&
+        (!Number.isFinite(depositAmountNumber) || depositAmountNumber <= 0)
+      ) {
+        throw new Error("A deposit amount is required to create a reservation.");
+      }
 
       if (!customerId) {
         const createdCustomer = await apiRequest("/customers", {
@@ -1270,20 +1477,44 @@ export default function App() {
         setCustomerSearch(`${createdCustomer.first_name} ${createdCustomer.last_name}`);
         customerId = createdCustomer.id;
       } else {
-        const updatedCustomer = await apiRequest(`/customers/${customerId}`, {
-          method: "PUT",
-          body: JSON.stringify(customerForm)
-        });
+        const existingCustomer =
+          customers.find((customer) => customer.id === customerId) ||
+          customers.find((customer) => String(customer.id) === String(customerId));
+        const shouldUpdateCustomer =
+          !existingCustomer ||
+          customerForm.firstName !== (existingCustomer.first_name || "") ||
+          customerForm.lastName !== (existingCustomer.last_name || "") ||
+          customerForm.email !== (existingCustomer.email || "") ||
+          customerForm.phoneNumber !== formatPhoneNumber(existingCustomer.phone_number || "");
 
-        setCustomers((current) =>
-          current.map((customer) => (customer.id === updatedCustomer.id ? updatedCustomer : customer))
-        );
-        setCustomerSearch(`${updatedCustomer.first_name} ${updatedCustomer.last_name}`);
+        if (shouldUpdateCustomer) {
+          const updatedCustomer = await apiRequest(`/customers/${customerId}`, {
+            method: "PUT",
+            body: JSON.stringify(customerForm)
+          });
+
+          setCustomers((current) =>
+            current.map((customer) =>
+              customer.id === updatedCustomer.id ? updatedCustomer : customer
+            )
+          );
+          setCustomerSearch(`${updatedCustomer.first_name} ${updatedCustomer.last_name}`);
+        } else if (existingCustomer) {
+          setCustomerSearch(`${existingCustomer.first_name} ${existingCustomer.last_name}`);
+        }
       }
 
       const payload = {
         ...reservationForm,
-        customerId
+        billingMode: "manual_total",
+        motorhomeClassA:
+          reservationForm.rvKind === "motor home" ? reservationForm.motorhomeClassA : false,
+        motorhomeClassC:
+          reservationForm.rvKind === "motor home" ? reservationForm.motorhomeClassC : false,
+        motorhomeWithTow:
+          reservationForm.rvKind === "motor home" ? reservationForm.motorhomeWithTow : false,
+        customerId,
+        status: isCreatingReservation ? "pending" : reservationForm.status
       };
       const created = await apiRequest(
         editingReservationId ? `/reservations/${editingReservationId}` : "/reservations",
@@ -1299,8 +1530,8 @@ export default function App() {
         setReservationSuccessMessage(`Updated reservation #${created.id}.`);
       } else {
         setCreatedReservation(created);
-        setSuccessMessage(`Created reservation #${created.id}.`);
-        setReservationSuccessMessage(`Created reservation #${created.id}.`);
+        setSuccessMessage(`Created pending reservation #${created.id}.`);
+        setReservationSuccessMessage(`Created pending reservation #${created.id}.`);
       }
 
       const lastUsedSegment = [...reservationForm.siteStays]
@@ -1320,6 +1551,9 @@ export default function App() {
       }
 
       await refreshReservations();
+      if (isCreatingReservation) {
+        await generatePaymentLink(created.id, depositAmountNumber, true, "Deposit link");
+      }
       resetReservationForm(rememberedSite);
     } catch (error) {
       setReservationErrorMessage(error.message);
@@ -1336,6 +1570,10 @@ export default function App() {
     try {
       const reservation = await apiRequest(`/reservations/${reservationId}`);
       setEditingReservationId(reservation.id);
+      setReservationDepositAmount("");
+      setGeneratedPaymentLink(null);
+      setPaymentLinkErrorMessage("");
+      setPaymentLinkSuccessMessage("");
       setCustomerForm({
         firstName: reservation.first_name || "",
         lastName: reservation.last_name || "",
@@ -1347,7 +1585,7 @@ export default function App() {
         bookedDate: reservation.booked_date,
         status: reservation.status || "active",
         reservationTerm: reservation.reservation_term || "standard",
-        billingMode: reservation.billing_mode || "standard",
+        billingMode: "manual_total",
         totalPrice: reservation.totalPrice !== null && reservation.totalPrice !== undefined
           ? String(reservation.totalPrice)
           : "",
@@ -1361,6 +1599,9 @@ export default function App() {
             ? String(reservation.electricMeterReading)
             : "",
         rvKind: reservation.rv_kind,
+        motorhomeClassA: Boolean(reservation.motorhome_class_a),
+        motorhomeClassC: Boolean(reservation.motorhome_class_c),
+        motorhomeWithTow: Boolean(reservation.motorhome_with_tow),
         rigLengthFeet: String(reservation.rig_length_feet ?? ""),
         amountPaid: String(reservation.amountPaid ?? ""),
         notes: reservation.notes || "",
@@ -1388,6 +1629,21 @@ export default function App() {
     resetReservationForm();
   }
 
+  async function copyReservationConfirmation() {
+    if (!createdReservation) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(
+        buildReservationConfirmationText(createdReservation, generatedPaymentLink)
+      );
+      setConfirmationCopyMessage(`Copied confirmation for reservation #${createdReservation.id}.`);
+    } catch {
+      setConfirmationCopyMessage("Copy failed. You can still copy the confirmation text below.");
+    }
+  }
+
   async function handleReservationRefresh() {
     setErrorMessage("");
 
@@ -1398,7 +1654,91 @@ export default function App() {
     }
   }
 
+  async function generatePaymentLink(reservationId, amount, activateReservationOnPayment, label) {
+    setPaymentLinkErrorMessage("");
+    setPaymentLinkSuccessMessage("");
+
+    try {
+      const amountNumber = Number(amount);
+
+      if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+        throw new Error("Enter a payment amount greater than zero.");
+      }
+
+      const result = await apiRequest(`/reservations/${reservationId}/payment-links`, {
+        method: "POST",
+        body: JSON.stringify({
+          amount: amountNumber.toFixed(2),
+          baseUrl: window.location.origin,
+          activateReservationOnPayment
+        })
+      });
+
+      setGeneratedPaymentLink({
+        reservationId,
+        amount: amountNumber.toFixed(2),
+        checkoutUrl: result.checkoutUrl,
+        label
+      });
+      setPaymentLinkSuccessMessage(`${label} generated for reservation #${reservationId}.`);
+      await refreshReservations();
+      return result;
+    } catch (error) {
+      setPaymentLinkErrorMessage(error.message);
+      return null;
+    }
+  }
+
+  async function handleSchedulePaymentLink(reservation) {
+    const result = await generatePaymentLink(
+      reservation.id,
+      activeSchedulePaymentAmount,
+      false,
+      "Payment link"
+    );
+
+    if (result) {
+      const refreshedReservation = await apiRequest(`/reservations/${reservation.id}`);
+      setActiveScheduleReservation(refreshedReservation);
+    }
+  }
+
+  async function deleteReservation(reservation) {
+    const shouldDelete = window.confirm(
+      `Delete reservation #${reservation.id} for ${reservation.first_name} ${reservation.last_name}? This cannot be undone.`
+    );
+
+    if (!shouldDelete) {
+      return;
+    }
+
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      await apiRequest(`/reservations/${reservation.id}`, {
+        method: "DELETE"
+      });
+
+      if (activeScheduleReservation?.id === reservation.id) {
+        setActiveScheduleReservation(null);
+      }
+
+      await refreshReservations();
+      setSuccessMessage(`Deleted reservation #${reservation.id}.`);
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
   function openScheduleReservation(reservation) {
+    setActiveSchedulePaymentAmount(
+      Number(reservation.remainingBalance || 0) > 0
+        ? Number(reservation.remainingBalance).toFixed(2)
+        : ""
+    );
+    setPaymentLinkErrorMessage("");
+    setPaymentLinkSuccessMessage("");
     setActiveScheduleReservation(reservation);
   }
 
@@ -1500,16 +1840,25 @@ export default function App() {
       {successMessage ? <div className="message success">{successMessage}</div> : null}
 
       <main className="layout">
-        <section ref={reservationFormRef} className="card">
+        <section className="card">
           <div className="section-toggle-row">
             <h2>Availability Search</h2>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => toggleSection("availability")}
-            >
-              {openSections.availability ? "Hide search" : "Open search"}
-            </button>
+            <div className="section-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => clearSection("availability")}
+              >
+                Clear section
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => toggleSection("availability")}
+              >
+                {openSections.availability ? "Hide search" : "Open search"}
+              </button>
+            </div>
           </div>
           {openSections.availability ? (
             <>
@@ -1589,6 +1938,13 @@ export default function App() {
                           <span>
                             {site.sizeFeet} ft • {getSiteTypeLabel(site)} •{" "}
                             {formatPricingCategory(site.pricingCategory)} • {site.numberOfNights} nights
+                            {" "}• Actually open for{" "}
+                            {site.openEnded
+                              ? "an open-ended stay"
+                              : `${site.availableDays} day${site.availableDays === 1 ? "" : "s"}`}
+                            {site.availableUntil && !site.openEnded
+                              ? ` (until ${formatDisplayDate(site.availableUntil)})`
+                              : ""}
                             {" "}• Normal {formatCurrency(site.normalPrice)} • Discount{" "}
                             {formatCurrency(site.discountPrice)}
                           </span>
@@ -1647,16 +2003,25 @@ export default function App() {
           ) : null}
         </section>
 
-        <section className="card">
+        <section ref={reservationFormRef} className="card">
           <div className="section-toggle-row">
             <h2>{editingReservationId ? `Edit Reservation #${editingReservationId}` : "Create Reservation"}</h2>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => toggleSection("reservation")}
-            >
-              {openSections.reservation ? "Hide booking form" : "Open booking form"}
-            </button>
+            <div className="section-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => clearSection("reservation")}
+              >
+                Clear section
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => toggleSection("reservation")}
+              >
+                {openSections.reservation ? "Hide booking form" : "Open booking form"}
+              </button>
+            </div>
           </div>
           {openSections.reservation ? (
             <div>
@@ -1743,7 +2108,25 @@ export default function App() {
                     Customer
                     <select
                       value={reservationForm.customerId}
-                      onChange={(event) => updateReservationField("customerId", event.target.value)}
+                      onChange={(event) => {
+                        const selectedCustomerId = event.target.value;
+
+                        if (!selectedCustomerId) {
+                          updateReservationField("customerId", "");
+                          return;
+                        }
+
+                        const selectedCustomer = customers.find(
+                          (customer) => String(customer.id) === selectedCustomerId
+                        );
+
+                        if (selectedCustomer) {
+                          useExistingCustomer(selectedCustomer);
+                          return;
+                        }
+
+                        updateReservationField("customerId", selectedCustomerId);
+                      }}
                     >
                       <option value="">Create a new customer from the fields above</option>
                       {visibleCustomers.map((customer) => (
@@ -1768,6 +2151,7 @@ export default function App() {
                       onChange={(event) => updateReservationField("status", event.target.value)}
                     >
                       <option value="active">Active</option>
+                      <option value="pending">Pending</option>
                       <option value="canceled">Canceled</option>
                     </select>
                   </label>
@@ -1782,15 +2166,17 @@ export default function App() {
                     </select>
                   </label>
                   <label>
-                    Billing mode
-                    <select
-                      value={reservationForm.billingMode}
-                      onChange={(event) => updateReservationField("billingMode", event.target.value)}
-                    >
-                      <option value="standard">Standard</option>
-                      <option value="manual_total">Manual total</option>
-                      <option value="monthly">Monthly</option>
-                    </select>
+                    Total price
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={reservationForm.totalPrice}
+                      onChange={(event) =>
+                        updateReservationField("totalPrice", event.target.value)
+                      }
+                    />
                   </label>
                   <label>
                     RV kind
@@ -1805,6 +2191,41 @@ export default function App() {
                       ))}
                     </select>
                   </label>
+                  {reservationForm.rvKind === "motor home" ? (
+                    <div className="motorhome-options">
+                      <span className="small-text">Motor home details</span>
+                      <label className="checkbox-row compact-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={reservationForm.motorhomeClassA}
+                          onChange={(event) =>
+                            updateReservationField("motorhomeClassA", event.target.checked)
+                          }
+                        />
+                        Class A
+                      </label>
+                      <label className="checkbox-row compact-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={reservationForm.motorhomeClassC}
+                          onChange={(event) =>
+                            updateReservationField("motorhomeClassC", event.target.checked)
+                          }
+                        />
+                        Class C
+                      </label>
+                      <label className="checkbox-row compact-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={reservationForm.motorhomeWithTow}
+                          onChange={(event) =>
+                            updateReservationField("motorhomeWithTow", event.target.checked)
+                          }
+                        />
+                        With tow
+                      </label>
+                    </div>
+                  ) : null}
                   <label>
                     Rig size (feet)
                     <input
@@ -1817,61 +2238,19 @@ export default function App() {
                       }
                     />
                   </label>
-                  <label>
-                    Amount paid
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      placeholder="0.00"
-                      value={reservationForm.amountPaid}
-                      onChange={(event) => updateReservationField("amountPaid", event.target.value)}
-                      onWheel={(event) => event.currentTarget.blur()}
-                    />
-                  </label>
-                  {reservationForm.billingMode === "manual_total" ? (
+                  {!editingReservationId ? (
                     <label>
-                      Total price
+                      Deposit amount
                       <input
                         type="number"
-                        min="0"
+                        min="0.01"
                         step="0.01"
-                        placeholder="0.00"
-                        value={reservationForm.totalPrice}
-                        onChange={(event) =>
-                          updateReservationField("totalPrice", event.target.value)
-                        }
+                        placeholder="Required"
+                        value={reservationDepositAmount}
+                        onChange={(event) => setReservationDepositAmount(event.target.value)}
+                        onWheel={(event) => event.currentTarget.blur()}
                       />
                     </label>
-                  ) : null}
-                  {reservationForm.billingMode === "monthly" ? (
-                    <>
-                      <label>
-                        Monthly rent
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          placeholder="0.00"
-                          value={reservationForm.monthlyRentPrice}
-                          onChange={(event) =>
-                            updateReservationField("monthlyRentPrice", event.target.value)
-                          }
-                        />
-                      </label>
-                      <label>
-                        Electric meter
-                        <input
-                          type="number"
-                          step="1"
-                          placeholder="0"
-                          value={reservationForm.electricMeterReading}
-                          onChange={(event) =>
-                            updateReservationField("electricMeterReading", event.target.value)
-                          }
-                        />
-                      </label>
-                    </>
                   ) : null}
                   <label className="notes-field">
                     Notes
@@ -1902,65 +2281,12 @@ export default function App() {
                   ))}
                 </div>
 
-                {reservationPricingPreview.length || reservationForm.billingMode !== "standard" ? (
+                {reservationForm.totalPrice ? (
                   <div className="pricing-preview-card">
-                    <h3>Billing Preview</h3>
-                    {reservationPricingPreview.length ? (
-                      <ul className="result-list">
-                        {reservationPricingPreview.map((segment) => (
-                          <li key={segment.index}>
-                            Site {segment.siteNumber} • {segment.numberOfNights} nights •{" "}
-                            {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
-                            {formatCurrency(segment.normalPrice)} • Discount{" "}
-                            {formatCurrency(segment.discountPrice)}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
+                    <h3>Booking Total</h3>
                     <div className="pricing-summary">
-                      <span>Billing mode: {formatBillingMode(reservationForm.billingMode)}</span>
-                      <span>Total normal: {formatCurrency(reservationPricingTotals.normalPrice)}</span>
-                      <span>
-                        Total discount: {formatCurrency(reservationPricingTotals.discountPrice)}
-                      </span>
-                      {reservationForm.billingMode === "manual_total" ? (
-                        <span>Manual total: {formatCurrency(reservationForm.totalPrice || null)}</span>
-                      ) : null}
-                      {reservationForm.billingMode === "monthly" ? (
-                        <>
-                          <span>
-                            Monthly rent: {formatCurrency(reservationForm.monthlyRentPrice || null)}
-                          </span>
-                          <span>
-                            Utility charge: {formatCurrency(utilityPricePreview)}
-                          </span>
-                        </>
-                      ) : null}
+                      <span>Manual total: {formatCurrency(reservationForm.totalPrice || null)}</span>
                       <span>Effective total: {formatCurrency(effectiveTotalPreview)}</span>
-                      <span>
-                        Remaining normal:{" "}
-                        {formatCurrency(
-                          reservationPricingTotals.normalPrice !== null
-                            ? Math.max(
-                                reservationPricingTotals.normalPrice -
-                                  (Number(reservationForm.amountPaid || 0) || 0),
-                                0
-                              )
-                            : null
-                        )}
-                      </span>
-                      <span>
-                        Remaining discount:{" "}
-                        {formatCurrency(
-                          reservationPricingTotals.discountPrice !== null
-                            ? Math.max(
-                                reservationPricingTotals.discountPrice -
-                                  (Number(reservationForm.amountPaid || 0) || 0),
-                                0
-                              )
-                            : null
-                        )}
-                      </span>
                       <span>
                         Remaining balance:{" "}
                         {formatCurrency(
@@ -1994,6 +2320,74 @@ export default function App() {
                 {reservationSuccessMessage ? (
                   <div className="message success">{reservationSuccessMessage}</div>
                 ) : null}
+                {paymentLinkErrorMessage ? (
+                  <div className="message error">{paymentLinkErrorMessage}</div>
+                ) : null}
+                {paymentLinkSuccessMessage &&
+                generatedPaymentLink?.reservationId === createdReservation?.id &&
+                generatedPaymentLink?.label === "Deposit link" ? (
+                  <div className="message success">{paymentLinkSuccessMessage}</div>
+                ) : null}
+                {generatedPaymentLink?.label === "Deposit link" ? (
+                  <div className="payment-panel">
+                    <div className="result-header">
+                      <h3>Deposit payment link</h3>
+                      <span className="balance-pill">
+                        {formatCurrency(generatedPaymentLink.amount)}
+                      </span>
+                    </div>
+                    <p className="muted">
+                      Reservation #{generatedPaymentLink.reservationId} stays pending until this deposit is paid.
+                    </p>
+                    <div className="payment-link-row">
+                      <a
+                        className="primary-button payment-link-button"
+                        href={generatedPaymentLink.checkoutUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open payment link
+                      </a>
+                      <input readOnly value={generatedPaymentLink.checkoutUrl} />
+                    </div>
+                  </div>
+                ) : null}
+                {createdReservation ? (
+                  <div className="confirmation-card">
+                    <div className="result-header">
+                      <h3>Customer confirmation</h3>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={copyReservationConfirmation}
+                      >
+                        Copy confirmation
+                      </button>
+                    </div>
+                    <div className="pricing-summary">
+                      <span>
+                        Confirmation {buildConfirmationCode(createdReservation)}
+                      </span>
+                      <span>Email: {createdReservation.email || "Not set"}</span>
+                      <span>
+                        Phone:{" "}
+                        {formatPhoneNumber(createdReservation.phone_number || "") || "Not set"}
+                      </span>
+                    </div>
+                    {confirmationCopyMessage ? (
+                      <div
+                        className={`message ${
+                          confirmationCopyMessage.startsWith("Copied") ? "success" : "error"
+                        }`}
+                      >
+                        {confirmationCopyMessage}
+                      </div>
+                    ) : null}
+                    <pre className="confirmation-preview">
+                      {buildReservationConfirmationText(createdReservation, generatedPaymentLink)}
+                    </pre>
+                  </div>
+                ) : null}
               </form>
             </div>
           ) : null}
@@ -2002,9 +2396,22 @@ export default function App() {
         <section className="card">
           <div className="section-toggle-row">
             <h2>Schedule</h2>
-            <button type="button" className="ghost-button" onClick={() => toggleSection("schedule")}>
-              {openSections.schedule ? "Hide schedule" : "Open schedule"}
-            </button>
+            <div className="section-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => clearSection("schedule")}
+              >
+                Clear section
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => toggleSection("schedule")}
+              >
+                {openSections.schedule ? "Hide schedule" : "Open schedule"}
+              </button>
+            </div>
           </div>
           {openSections.schedule ? (
             <>
@@ -2051,9 +2458,7 @@ export default function App() {
                             </h3>
                             <div className="button-row schedule-card-actions">
                               <span
-                                className={`status-badge ${
-                                  reservation.status === "canceled" ? "canceled" : "active"
-                                }`}
+                                className={`status-badge ${getReservationStatusClass(reservation.status)}`}
                               >
                                 {formatReservationStatus(reservation.status)}
                               </span>
@@ -2077,9 +2482,11 @@ export default function App() {
                             Booked {formatDisplayDate(reservation.booked_date)} •{" "}
                             {formatReservationTerm(reservation.reservation_term)} •{" "}
                             {reservation.rv_kind}
+                            {formatMotorhomeDetails(reservation)}
                             {reservation.rig_length_feet
                               ? ` • ${reservation.rig_length_feet} ft rig`
                               : ""}
+                            {` • Paid ${formatCurrency(reservation.amountPaid)} • Balance ${formatCurrency(reservation.remainingBalance)}`}
                           </p>
                           <ol className="timeline-list">
                             {reservation.siteStays.map((segment) => (
@@ -2123,6 +2530,15 @@ export default function App() {
                               {reservation.first_name} {reservation.last_name}
                             </h3>
                             <div className="button-row schedule-card-actions">
+                              {Number(reservation.remainingBalance || 0) > 0 ? (
+                                <button
+                                  type="button"
+                                  className="ghost-button"
+                                  onClick={() => openScheduleReservation(reservation)}
+                                >
+                                  Add payment
+                                </button>
+                              ) : null}
                               <button
                                 type="button"
                                 className="ghost-button"
@@ -2148,9 +2564,11 @@ export default function App() {
                             ))}{" "}
                             • Booked {formatDisplayDate(reservation.booked_date)} •{" "}
                             {reservation.rv_kind}
+                            {formatMotorhomeDetails(reservation)}
                             {reservation.rig_length_feet
                               ? ` • ${reservation.rig_length_feet} ft rig`
                               : ""}
+                            {` • Paid ${formatCurrency(reservation.amountPaid)} • Balance ${formatCurrency(reservation.remainingBalance)}`}
                           </p>
                         </article>
                       ))}
@@ -2188,6 +2606,15 @@ export default function App() {
                                   {reservation.first_name} {reservation.last_name}
                                 </h3>
                                 <div className="button-row schedule-card-actions">
+                                  {Number(reservation.remainingBalance || 0) > 0 ? (
+                                    <button
+                                      type="button"
+                                      className="ghost-button"
+                                      onClick={() => openScheduleReservation(reservation)}
+                                    >
+                                      Add payment
+                                    </button>
+                                  ) : null}
                                   <button
                                     type="button"
                                     className="ghost-button"
@@ -2212,9 +2639,11 @@ export default function App() {
                                   </span>
                                 ))}{" "}
                                 • Arriving {formatDisplayDate(selectedArrivalDate)} • {reservation.rv_kind}
+                                {formatMotorhomeDetails(reservation)}
                                 {reservation.rig_length_feet
                                   ? ` • ${reservation.rig_length_feet} ft rig`
                                   : ""}
+                                {` • Paid ${formatCurrency(reservation.amountPaid)} • Balance ${formatCurrency(reservation.remainingBalance)}`}
                               </p>
                             </article>
                           ))}
@@ -2324,9 +2753,22 @@ export default function App() {
         <section className="card">
           <div className="section-toggle-row">
             <h2>Reservation History</h2>
-            <button type="button" className="ghost-button" onClick={() => toggleSection("history")}>
-              {openSections.history ? "Hide history" : "Open history"}
-            </button>
+            <div className="section-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => clearSection("history")}
+              >
+                Clear section
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => toggleSection("history")}
+              >
+                {openSections.history ? "Hide history" : "Open history"}
+              </button>
+            </div>
           </div>
           {openSections.history ? (
             <>
@@ -2357,12 +2799,17 @@ export default function App() {
                           </h3>
                           <div className="button-row schedule-card-actions">
                             <span
-                              className={`status-badge ${
-                                reservation.status === "canceled" ? "canceled" : "active"
-                              }`}
+                              className={`status-badge ${getReservationStatusClass(reservation.status)}`}
                             >
                               {formatReservationStatus(reservation.status)}
                             </span>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => openScheduleReservation(reservation)}
+                            >
+                              View booking
+                            </button>
                             <button
                               type="button"
                               className="ghost-button"
@@ -2374,28 +2821,16 @@ export default function App() {
                         </div>
                         <p className="muted">
                           {reservation.rv_kind}
+                          {formatMotorhomeDetails(reservation)}
                           {reservation.rig_length_feet
                             ? ` • ${reservation.rig_length_feet} ft rig`
                             : ""}{" "}
-                          • {formatReservationTerm(reservation.reservation_term)} •{" "}
-                          {formatBillingMode(reservation.billing_mode)} • Amount paid{" "}
+                          • {formatReservationTerm(reservation.reservation_term)} • Amount paid{" "}
                           {formatCurrency(reservation.amountPaid)}
                         </p>
                         <div className="pricing-summary">
-                          <span>Effective total: {formatCurrency(reservation.effectiveTotalPrice)}</span>
+                          <span>Manual total: {formatCurrency(reservation.totalPrice)}</span>
                           <span>Remaining balance: {formatCurrency(reservation.remainingBalance)}</span>
-                          {reservation.billing_mode === "manual_total" ? (
-                            <span>Manual total: {formatCurrency(reservation.totalPrice)}</span>
-                          ) : null}
-                          {reservation.billing_mode === "monthly" ? (
-                            <>
-                              <span>
-                                Monthly rent: {formatCurrency(reservation.monthlyRentPrice)}
-                              </span>
-                              <span>Meter: {reservation.electricMeterReading ?? "Not set"}</span>
-                              <span>Utility charge: {formatCurrency(reservation.utilityPrice)}</span>
-                            </>
-                          ) : null}
                         </div>
                         <ol className="timeline-list">
                           {reservation.siteStays.map((segment) => (
@@ -2425,9 +2860,22 @@ export default function App() {
         <section className="card">
           <div className="section-toggle-row">
             <h2>Yearly Bookings</h2>
-            <button type="button" className="ghost-button" onClick={() => toggleSection("yearly")}>
-              {openSections.yearly ? "Hide yearly bookings" : "Open yearly bookings"}
-            </button>
+            <div className="section-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => clearSection("yearly")}
+              >
+                Clear section
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => toggleSection("yearly")}
+              >
+                {openSections.yearly ? "Hide yearly bookings" : "Open yearly bookings"}
+              </button>
+            </div>
           </div>
           {openSections.yearly ? (
             <>
@@ -2472,6 +2920,7 @@ export default function App() {
                           ? formatDisplayDate(reservation.siteStays[0].arrival_date)
                           : "Not set"}{" "}
                         • {reservation.rv_kind}
+                        {formatMotorhomeDetails(reservation)}
                         {reservation.rig_length_feet
                           ? ` • ${reservation.rig_length_feet} ft rig`
                           : ""}
@@ -2482,10 +2931,7 @@ export default function App() {
                           Phone:{" "}
                           {formatPhoneNumber(reservation.phone_number || "") || "Not set"}
                         </span>
-                        <span>Billing: {formatBillingMode(reservation.billing_mode)}</span>
-                        <span>
-                          Effective total: {formatCurrency(reservation.effectiveTotalPrice)}
-                        </span>
+                        <span>Manual total: {formatCurrency(reservation.totalPrice)}</span>
                       </div>
                     </article>
                   ))}
@@ -2500,9 +2946,22 @@ export default function App() {
         <section className="card">
           <div className="section-toggle-row">
             <h2>RV Sites</h2>
-            <button type="button" className="ghost-button" onClick={() => toggleSection("sites")}>
-              {openSections.sites ? "Hide site list" : "Open site list"}
-            </button>
+            <div className="section-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => clearSection("sites")}
+              >
+                Clear section
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => toggleSection("sites")}
+              >
+                {openSections.sites ? "Hide site list" : "Open site list"}
+              </button>
+            </div>
           </div>
           {openSections.sites ? (
             <>
@@ -2654,18 +3113,28 @@ export default function App() {
                 <h3 id="today-schedule-modal-title">
                   {activeScheduleReservation.first_name} {activeScheduleReservation.last_name}
                 </h3>
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={() => setActiveScheduleReservation(null)}
-                >
-                  Close
-                </button>
+                <div className="button-row schedule-card-actions">
+                  <button
+                    type="button"
+                    className="ghost-button danger-button"
+                    onClick={() => deleteReservation(activeScheduleReservation)}
+                  >
+                    Delete reservation
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => setActiveScheduleReservation(null)}
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
               <p className="muted">
                 Booked {formatDisplayDate(activeScheduleReservation.booked_date)} •{" "}
                 {formatReservationTerm(activeScheduleReservation.reservation_term)} •{" "}
                 {activeScheduleReservation.rv_kind}
+                {formatMotorhomeDetails(activeScheduleReservation)}
                 {activeScheduleReservation.rig_length_feet
                   ? ` • ${activeScheduleReservation.rig_length_feet} ft rig`
                   : ""}
@@ -2685,36 +3154,17 @@ export default function App() {
               </div>
               <div className="pricing-summary">
                 <span>
-                  Billing mode: {formatBillingMode(activeScheduleReservation.billing_mode)}
-                </span>
-                <span>
-                  Effective total:{" "}
-                  {formatCurrency(activeScheduleReservation.effectiveTotalPrice)}
+                  Manual total: {formatCurrency(activeScheduleReservation.totalPrice)}
                 </span>
                 <span>
                   Remaining balance: {formatCurrency(activeScheduleReservation.remainingBalance)}
                 </span>
-                {activeScheduleReservation.billing_mode === "manual_total" ? (
-                  <span>Manual total: {formatCurrency(activeScheduleReservation.totalPrice)}</span>
-                ) : null}
-                {activeScheduleReservation.billing_mode === "monthly" ? (
-                  <>
-                    <span>
-                      Monthly rent: {formatCurrency(activeScheduleReservation.monthlyRentPrice)}
-                    </span>
-                    <span>
-                      Meter: {activeScheduleReservation.electricMeterReading ?? "Not set"}
-                    </span>
-                    <span>
-                      Utility charge: {formatCurrency(activeScheduleReservation.utilityPrice)}
-                    </span>
-                  </>
-                ) : null}
               </div>
               <ol className="timeline-list">
                 {(
                   activeScheduleReservation.activeSiteStays ||
                   activeScheduleReservation.arrivingSiteStays ||
+                  activeScheduleReservation.siteStays ||
                   []
                 ).map((segment) => (
                   <li key={segment.id}>
@@ -2722,34 +3172,75 @@ export default function App() {
                       segment.arrival_date
                     )} • leave {formatLeaveDate(segment.leave_date)}
                     {segment.numberOfNights ? ` • ${segment.numberOfNights} nights` : " • Yearly stay"}
-                    {segment.numberOfNights ? (
-                      <>
-                        {" "}• {formatPricingCategory(segment.pricingCategory)} • Normal{" "}
-                        {formatCurrency(segment.normalPrice)} • Discount{" "}
-                        {formatCurrency(segment.discountPrice)}
-                      </>
-                    ) : null}
                   </li>
                 ))}
               </ol>
               <div className="pricing-summary">
-                <span>
-                  Total normal: {formatCurrency(activeScheduleReservation.totals?.normalPrice)}
-                </span>
-                <span>
-                  Total discount:{" "}
-                  {formatCurrency(activeScheduleReservation.totals?.discountPrice)}
-                </span>
+                <span>Manual total: {formatCurrency(activeScheduleReservation.totalPrice)}</span>
                 <span>Amount paid: {formatCurrency(activeScheduleReservation.amountPaid)}</span>
-                <span>
-                  Remaining normal:{" "}
-                  {formatCurrency(activeScheduleReservation.remainingNormalPrice)}
-                </span>
-                <span>
-                  Remaining discount:{" "}
-                  {formatCurrency(activeScheduleReservation.remainingDiscountPrice)}
-                </span>
+                <span>Remaining balance: {formatCurrency(activeScheduleReservation.remainingBalance)}</span>
               </div>
+              {activeScheduleReservation.status !== "canceled" ? (
+                <div className="payment-panel">
+                  <div className="result-header">
+                    <h3>Send another payment link</h3>
+                    <span className="balance-pill">
+                      Balance {formatCurrency(activeScheduleReservation.remainingBalance)}
+                    </span>
+                  </div>
+                  <div className="payment-grid">
+                    <label>
+                      Payment amount
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={activeSchedulePaymentAmount}
+                        onChange={(event) => setActiveSchedulePaymentAmount(event.target.value)}
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                    <div className="pricing-summary">
+                      <span>Status: {formatReservationStatus(activeScheduleReservation.status)}</span>
+                      <span>Amount paid: {formatCurrency(activeScheduleReservation.amountPaid)}</span>
+                      <span>
+                        Remaining balance: {formatCurrency(activeScheduleReservation.remainingBalance)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => handleSchedulePaymentLink(activeScheduleReservation)}
+                    >
+                      Generate payment link
+                    </button>
+                  </div>
+                  {paymentLinkErrorMessage ? (
+                    <div className="message error">{paymentLinkErrorMessage}</div>
+                  ) : null}
+                  {paymentLinkSuccessMessage &&
+                  generatedPaymentLink?.reservationId === activeScheduleReservation.id &&
+                  generatedPaymentLink?.label === "Payment link" ? (
+                    <div className="message success">{paymentLinkSuccessMessage}</div>
+                  ) : null}
+                  {generatedPaymentLink?.reservationId === activeScheduleReservation.id &&
+                  generatedPaymentLink?.label === "Payment link" ? (
+                    <div className="payment-link-row">
+                      <a
+                        className="primary-button payment-link-button"
+                        href={generatedPaymentLink.checkoutUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open payment link
+                      </a>
+                      <input readOnly value={generatedPaymentLink.checkoutUrl} />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {activeScheduleReservation.notes ? (
                 <p className="muted">Notes: {activeScheduleReservation.notes}</p>
               ) : null}

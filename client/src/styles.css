@@ -73,6 +73,12 @@ textarea {
   gap: 16px;
 }
 
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .section-toggle-row h2 {
   margin: 0;
 }
@@ -524,8 +530,21 @@ textarea {
   padding-top: 30px;
 }
 
+.compact-checkbox {
+  padding-top: 0;
+}
+
 .checkbox-row input {
   width: auto;
+}
+
+.motorhome-options {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid rgba(61, 81, 60, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .primary-button,
@@ -547,6 +566,11 @@ textarea {
   border: 1px solid rgba(36, 74, 49, 0.2);
   background: transparent;
   color: #244a31;
+}
+
+.ghost-button.danger-button {
+  border-color: rgba(194, 64, 64, 0.28);
+  color: #9a2c2c;
 }
 
 .primary-button:hover,
@@ -585,6 +609,70 @@ textarea {
   padding: 16px;
 }
 
+.payment-panel {
+  border: 1px solid rgba(36, 74, 49, 0.16);
+  box-shadow: 0 16px 34px rgba(36, 74, 49, 0.08);
+}
+
+.payment-panel {
+  margin-top: 20px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 20px;
+}
+
+.confirmation-card {
+  margin-top: 20px;
+  border-radius: 24px;
+  border: 1px solid rgba(36, 74, 49, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 250, 242, 0.96), rgba(255, 255, 255, 0.94));
+  box-shadow: 0 18px 36px rgba(36, 74, 49, 0.08);
+  padding: 22px;
+}
+
+.confirmation-preview {
+  margin: 16px 0 0;
+  border-radius: 18px;
+  border: 1px solid rgba(36, 74, 49, 0.12);
+  background: rgba(248, 244, 236, 0.92);
+  color: #274032;
+  font: 600 0.93rem/1.6 "Georgia", "Times New Roman", serif;
+  padding: 18px;
+  white-space: pre-wrap;
+}
+
+.payment-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: end;
+}
+
+.payment-link-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin-top: 18px;
+}
+
+.payment-link-button {
+  text-decoration: none;
+  text-align: center;
+}
+
+.balance-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(176, 112, 54, 0.14);
+  color: #87511c;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -599,6 +687,11 @@ textarea {
 .status-badge.active {
   background: rgba(55, 123, 78, 0.12);
   color: #1d5e35;
+}
+
+.status-badge.pending {
+  background: rgba(176, 112, 54, 0.14);
+  color: #87511c;
 }
 
 .status-badge.canceled {
@@ -682,6 +775,14 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .payment-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-link-row {
+    grid-template-columns: 1fr;
+  }
+
   .calendar-day {
     min-height: 58px;
   }
@@ -697,6 +798,12 @@ textarea {
   .section-toggle-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .section-actions {
+    align-items: flex-start;
+    flex-direction: column;
+    width: 100%;
   }
 
   .schedule-dropdown-trigger,

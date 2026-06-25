@@ -8,6 +8,12 @@ function formatDate(date) {
   return date.toISOString().slice(0, 10);
 }
 
+function nightsBetween(arrivalDate, leaveDate) {
+  const start = toDate(arrivalDate);
+  const end = toDate(leaveDate);
+  return Math.round((end - start) / 86400000);
+}
+
 function uniqueSortedDates(values) {
   return [...new Set(values)].sort();
 }
@@ -143,6 +149,59 @@ export function getDirectMatches(availability, arrivalDate, leaveDate) {
       (interval) => interval.start <= arrivalDate && interval.end >= leaveDate
     )
   );
+}
+
+export function buildAvailabilityLeadTimes(sites, futureStays, arrivalDate) {
+  const staysBySite = new Map();
+
+  for (const site of sites) {
+    staysBySite.set(site.id, []);
+  }
+
+  for (const stay of futureStays) {
+    if (staysBySite.has(stay.site_id)) {
+      staysBySite.get(stay.site_id).push(stay);
+    }
+  }
+
+  const leadTimes = new Map();
+
+  for (const site of sites) {
+    const siteStays = (staysBySite.get(site.id) || []).sort((left, right) =>
+      left.arrival_date.localeCompare(right.arrival_date)
+    );
+    const blockingStay = siteStays.find(
+      (stay) => stay.arrival_date <= arrivalDate && stay.leave_date > arrivalDate
+    );
+
+    if (blockingStay) {
+      leadTimes.set(site.id, {
+        availableDays: 0,
+        availableUntil: arrivalDate,
+        openEnded: false
+      });
+      continue;
+    }
+
+    const nextStay = siteStays.find((stay) => stay.arrival_date > arrivalDate);
+
+    if (!nextStay) {
+      leadTimes.set(site.id, {
+        availableDays: null,
+        availableUntil: null,
+        openEnded: true
+      });
+      continue;
+    }
+
+    leadTimes.set(site.id, {
+      availableDays: nightsBetween(arrivalDate, nextStay.arrival_date),
+      availableUntil: nextStay.arrival_date,
+      openEnded: false
+    });
+  }
+
+  return leadTimes;
 }
 
 export function validateReservationSegments(siteStays, reservationTerm = "standard") {

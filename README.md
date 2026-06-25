@@ -25,6 +25,9 @@ React + Node.js app for managing RV park registrations with:
 - `sql/008_add_reservation_cancellation_and_history.sql` adds reservation status and canceled-booking history support
 - `sql/009_add_reservation_billing_fields.sql` adds manual total and monthly billing fields
 - `sql/010_add_yearly_reservation_term.sql` adds yearly reservation support
+- `sql/011_add_stripe_payment_records.sql` tracks Stripe checkout sessions so paid balances can be recorded safely
+- `sql/012_update_stripe_payment_records_for_pending_links.sql` updates the Stripe payment table if you already ran the earlier Stripe SQL before link/pending support
+- `sql/013_add_motorhome_type_flags.sql` adds the class A, class C, and with-tow motor home flags to reservations
 
 ## Database Setup
 
@@ -56,6 +59,12 @@ If you want manual totals and monthly billing fields for long-term stays, run [s
 
 If you want yearly bookings that stay open-ended until canceled, run [sql/010_add_yearly_reservation_term.sql](/Users/kadenwhite/Desktop/RVPark/sql/010_add_yearly_reservation_term.sql) too.
 
+If you want Stripe payments recorded back onto reservations, run [sql/011_add_stripe_payment_records.sql](/Users/kadenwhite/Desktop/RVPark/sql/011_add_stripe_payment_records.sql) too.
+
+If you already ran the earlier Stripe payment SQL and need the newer pending-link columns, run [sql/012_update_stripe_payment_records_for_pending_links.sql](/Users/kadenwhite/Desktop/RVPark/sql/012_update_stripe_payment_records_for_pending_links.sql) too.
+
+If you want to track motor home class and tow details on reservations, run [sql/013_add_motorhome_type_flags.sql](/Users/kadenwhite/Desktop/RVPark/sql/013_add_motorhome_type_flags.sql) too.
+
 ## Local Setup
 
 ### 1. Backend
@@ -68,6 +77,7 @@ Required values:
 - `PORT`
 - `CLIENT_ORIGIN`
 - `APP_PASSCODE`
+- `STRIPE_SECRET_KEY`
 
 Install and run yourself:
 
@@ -109,6 +119,7 @@ Your Postgres already lives on Railway, so the main task is connecting a backend
    - `CLIENT_ORIGIN`
    - `PORT`
    - `APP_PASSCODE`
+   - `STRIPE_SECRET_KEY`
 6. For `DATABASE_URL`, use the connection string from your existing Railway Postgres instance.
 7. Deploy the backend.
 8. After deploy, copy the generated public backend URL.
@@ -158,6 +169,7 @@ Then redeploy the backend.
 - `POST /api/availability/plan`
 - `POST /api/reservations`
 - `GET /api/reservations/:id`
+- `POST /api/reservations/:id/payment-links`
 
 ## Booking Rules Implemented
 
