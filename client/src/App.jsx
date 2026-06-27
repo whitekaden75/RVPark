@@ -8,6 +8,29 @@ const unlockStorageKey = "rvpark-unlocked";
 const lastBookedSiteStorageKey = "rvpark-last-booked-site";
 const openEndedStayDate = "9999-12-31";
 
+function getStripeReturnState() {
+  if (typeof window === "undefined") {
+    return {
+      paymentStatus: "",
+      reservationId: "",
+      sessionId: "",
+      shouldBypassPasscode: false
+    };
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const paymentStatus = params.get("payment") || "";
+  const reservationId = params.get("reservationId") || "";
+  const sessionId = params.get("session_id") || "";
+
+  return {
+    paymentStatus,
+    reservationId,
+    sessionId,
+    shouldBypassPasscode: paymentStatus === "success" && Boolean(sessionId)
+  };
+}
+
 const emptySearch = {
   arrivalDate: "",
   leaveDate: "",
@@ -225,6 +248,29 @@ function formatPhoneNumber(value) {
   return `(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
+function normalizePhoneForSms(value) {
+  return String(value || "").replaceAll(/\D/g, "").slice(0, 10);
+}
+
+function formatArrivalReference(dateString) {
+  if (!dateString) {
+    return "soon";
+  }
+
+  const today = formatDateInput(new Date());
+  const tomorrow = addDays(today, 1);
+
+  if (dateString === today) {
+    return "today";
+  }
+
+  if (dateString === tomorrow) {
+    return "tomorrow";
+  }
+
+  return formatShortDate(dateString);
+}
+
 function normalizeNamePart(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -326,6 +372,73 @@ function buildReservationConfirmationText(reservation, paymentLink) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function buildArrivalReminderText(reservation, arrivalDate) {
+  if (!reservation) {
+    return "";
+  }
+
+  const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+  const arrivingSegment =
+    reservation.arrivingSiteStays?.find((segment) => segment.arrival_date === arrivalDate) ||
+    reservation.siteStays?.find((segment) => segment.arrival_date === arrivalDate) ||
+    reservation.siteStays?.[0] ||
+    null;
+
+  return [
+    "RIVERPARK RV RESORT",
+    "",
+    `Hi ${customerName || "Guest"},`,
+    `We have you coming in ${formatArrivalReference(arrivalDate)}.`,
+    "",
+    "CHECK-IN TIME IS 1:00 PM",
+    `Arrival: ${arrivingSegment?.arrival_date ? formatShortDate(arrivingSegment.arrival_date) : "Not set"}`,
+    `Depart: ${arrivingSegment?.leave_date ? formatShortDate(arrivingSegment.leave_date) : "Not set"}`,
+    `Balance due: ${formatCurrency(reservation.remainingBalance)}`,
+    "",
+    "The balance due will be charged to your card on file unless otherwise requested.",
+    "",
+    "PLEASE NOTE:",
+    "- We do NOT accept debit cards.",
+    "- Credit cards have a 3% surcharge.",
+    "- Check or cash: no surcharge.",
+    "",
+    "Please confirm your arrival in a return text, along with your APPROXIMATE ARRIVAL TIME.",
+    "",
+    "If the office is closed, you will find your receipt and park map in the \"Late Arrivals\" box to the left of the office door. The park map will direct you to your site.",
+    "",
+    "All sites are back-in only. If you need assistance backing in, or have any questions, please ring the bell to the right of the door, or call 541-295-1269. It will be answered if we are available, within reasonable hours.",
+    "",
+    "Thank you!!",
+    "-Makayla",
+    "",
+    "2956 Rogue River Hwy",
+    "Grants Pass, OR 97527"
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildSmsComposeUrl(phoneNumber, messageBody) {
+  const separator = phoneNumber ? "?&" : "?";
+  return `sms:${phoneNumber}${separator}body=${encodeURIComponent(messageBody)}`;
+}
+
+function buildGmailComposeUrl(reservation, paymentLink) {
+  if (!reservation?.email) {
+    return "";
+  }
+
+  const params = new URLSearchParams({
+    view: "cm",
+    fs: "1",
+    to: reservation.email,
+    su: `Riverpark RV Resort reservation confirmation ${buildConfirmationCode(reservation)}`,
+    body: buildReservationConfirmationText(reservation, paymentLink)
+  });
+
+  return `https://mail.google.com/mail/?${params.toString()}`;
 }
 
 function calculateUtilityPrice(electricMeterReading) {
@@ -783,12 +896,16 @@ function BookingHistoryCalendar({
 }
 
 export default function App() {
+  const stripeReturnState = getStripeReturnState();
   const [isUnlocked, setIsUnlocked] = useState(() => {
     if (typeof window === "undefined") {
       return false;
     }
 
-    return window.sessionStorage.getItem(unlockStorageKey) === "true";
+    return (
+      window.sessionStorage.getItem(unlockStorageKey) === "true" ||
+      stripeReturnState.shouldBypassPasscode
+    );
   });
   const [passcodeInput, setPasscodeInput] = useState("");
   const [passcodeError, setPasscodeError] = useState("");
@@ -868,10 +985,78 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!stripeReturnState.paymentStatus) {
+      return;
+    }
+
+    if (stripeReturnState.shouldBypassPasscode) {
+      window.sessionStorage.setItem(unlockStorageKey, "true");
+      setIsUnlocked(true);
+      setSuccessMessage(
+        stripeReturnState.reservationId
+          ? `Payment return opened reservation #${stripeReturnState.reservationId}.`
+          : "Payment return opened the app."
+      );
+    }
+
+    const nextUrl = `${window.location.pathname}${window.location.hash || ""}`;
+    window.history.replaceState({}, document.title, nextUrl);
+  }, [stripeReturnState.paymentStatus, stripeReturnState.reservationId, stripeReturnState.shouldBypassPasscode]);
+
+  useEffect(() => {
+    if (!activeScheduleReservation) {
+      return;
+    }
+
+    const refreshedReservation = reservations.find(
+      (reservation) => reservation.id === activeScheduleReservation.id
+    );
+
+    if (!refreshedReservation) {
+      setActiveScheduleReservation(null);
+      return;
+    }
+
+    if (refreshedReservation !== activeScheduleReservation) {
+      setActiveScheduleReservation(refreshedReservation);
+    }
+  }, [activeScheduleReservation, reservations]);
+
+  useEffect(() => {
     if (!timelineSiteId && sites.length > 0) {
       setTimelineSiteId(String(sites[0].id));
     }
   }, [sites, timelineSiteId]);
+
+  useEffect(() => {
+    setReservationForm((current) => {
+      let hasChanges = false;
+      const nextSiteStays = current.siteStays.map((stay) => {
+        if (!stay.siteId) {
+          return stay;
+        }
+
+        const selectedSite = sites.find((site) => String(site.id) === String(stay.siteId));
+
+        if (!selectedSite || stay.siteSearch === selectedSite.site_number) {
+          return stay;
+        }
+
+        hasChanges = true;
+        return {
+          ...stay,
+          siteSearch: selectedSite.site_number
+        };
+      });
+
+      return hasChanges
+        ? {
+            ...current,
+            siteStays: nextSiteStays
+          }
+        : current;
+    });
+  }, [sites]);
 
   useEffect(() => {
     if (!activeScheduleReservation) {
@@ -887,6 +1072,26 @@ export default function App() {
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
   }, [activeScheduleReservation]);
+
+  useEffect(() => {
+    function handleVisibilityOrFocus() {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
+      refreshSites().catch((error) => {
+        setErrorMessage(error.message);
+      });
+    }
+
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+
+    return () => {
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+    };
+  }, []);
 
   useEffect(() => {
     if (reservationForm.reservationTerm !== "yearly") {
@@ -1153,9 +1358,19 @@ export default function App() {
     (left, right) => right.id - left.id
   );
 
-  async function refreshReservations() {
-    const reservationData = await apiRequest("/reservations");
+  async function refreshSites() {
+    const siteData = await apiRequest("/sites");
+    setSites(ensureArray(siteData, "Sites"));
+  }
+
+  async function refreshReservationAndSiteData() {
+    const [reservationData, siteData] = await Promise.all([
+      apiRequest("/reservations"),
+      apiRequest("/sites")
+    ]);
+
     setReservations(ensureArray(reservationData, "Reservations"));
+    setSites(ensureArray(siteData, "Sites"));
   }
 
   function resetReservationForm(defaultSite = lastBookedSite) {
@@ -1341,7 +1556,7 @@ export default function App() {
         setActiveScheduleReservation(null);
       }
 
-      await refreshReservations();
+      await refreshReservationAndSiteData();
       setSuccessMessage(`Canceled reservation #${reservationId}.`);
     } catch (error) {
       setErrorMessage(error.message);
@@ -1513,7 +1728,7 @@ export default function App() {
         motorhomeWithTow:
           reservationForm.rvKind === "motor home" ? reservationForm.motorhomeWithTow : false,
         customerId,
-        status: isCreatingReservation ? "pending" : reservationForm.status
+        status: reservationForm.status
       };
       const created = await apiRequest(
         editingReservationId ? `/reservations/${editingReservationId}` : "/reservations",
@@ -1529,8 +1744,8 @@ export default function App() {
         setReservationSuccessMessage(`Updated reservation #${created.id}.`);
       } else {
         setCreatedReservation(created);
-        setSuccessMessage(`Created pending reservation #${created.id}.`);
-        setReservationSuccessMessage(`Created pending reservation #${created.id}.`);
+        setSuccessMessage(`Created active reservation #${created.id}.`);
+        setReservationSuccessMessage(`Created active reservation #${created.id}.`);
       }
 
       const lastUsedSegment = [...reservationForm.siteStays]
@@ -1549,7 +1764,7 @@ export default function App() {
         writeLastBookedSite(rememberedSite);
       }
 
-      await refreshReservations();
+      await refreshReservationAndSiteData();
       if (isCreatingReservation) {
         await generatePaymentLink(created.id, depositAmountNumber, true, "Deposit link");
       }
@@ -1643,6 +1858,45 @@ export default function App() {
     }
   }
 
+  function openReservationConfirmationInGmail(reservation) {
+    if (!reservation?.email) {
+      setErrorMessage("Add a customer email address before opening Gmail compose.");
+      return;
+    }
+
+    const paymentLink =
+      generatedPaymentLink?.reservationId === reservation.id ? generatedPaymentLink : null;
+    const composeUrl = buildGmailComposeUrl(reservation, paymentLink);
+    window.open(composeUrl, "_blank", "noopener,noreferrer");
+    setSuccessMessage(`Opened Gmail draft for reservation #${reservation.id}.`);
+    setErrorMessage("");
+  }
+
+  function openConfirmationInGmail() {
+    if (!createdReservation?.email) {
+      setConfirmationCopyMessage("Add a customer email address before opening Gmail compose.");
+      return;
+    }
+
+    openReservationConfirmationInGmail(createdReservation);
+    setConfirmationCopyMessage(`Opened Gmail draft for reservation #${createdReservation.id}.`);
+  }
+
+  function openArrivalTextMessage(reservation, arrivalDate) {
+    const phoneNumber = normalizePhoneForSms(reservation?.phone_number);
+
+    if (!phoneNumber) {
+      setErrorMessage("Add a customer phone number before opening a text message.");
+      return;
+    }
+
+    const messageBody = buildArrivalReminderText(reservation, arrivalDate);
+    const smsUrl = buildSmsComposeUrl(phoneNumber, messageBody);
+    window.location.href = smsUrl;
+    setSuccessMessage(`Opened text draft for reservation #${reservation.id}.`);
+    setErrorMessage("");
+  }
+
   async function copyPaymentLinkToClipboard() {
     if (!generatedPaymentLink?.checkoutUrl) {
       return;
@@ -1661,7 +1915,7 @@ export default function App() {
     setErrorMessage("");
 
     try {
-      await refreshReservations();
+      await refreshReservationAndSiteData();
     } catch (error) {
       setErrorMessage(error.message);
     }
@@ -1694,7 +1948,7 @@ export default function App() {
         label
       });
       setPaymentLinkSuccessMessage(`${label} generated for reservation #${reservationId}.`);
-      await refreshReservations();
+      await refreshReservationAndSiteData();
       return result;
     } catch (error) {
       setPaymentLinkErrorMessage(error.message);
@@ -1761,7 +2015,7 @@ export default function App() {
         setActiveScheduleReservation(null);
       }
 
-      await refreshReservations();
+      await refreshReservationAndSiteData();
       setSuccessMessage(`Deleted reservation #${reservation.id}.`);
     } catch (error) {
       setErrorMessage(error.message);
@@ -2374,7 +2628,7 @@ export default function App() {
                       </span>
                     </div>
                     <p className="muted">
-                      Reservation #{generatedPaymentLink.reservationId} stays pending until this deposit is paid.
+                      Reservation #{generatedPaymentLink.reservationId} is active while this deposit link remains available.
                     </p>
                     <div className="button-row">
                       <a
@@ -2399,13 +2653,22 @@ export default function App() {
                   <div className="confirmation-card">
                     <div className="result-header">
                       <h3>Customer confirmation</h3>
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        onClick={copyReservationConfirmation}
-                      >
-                        Copy confirmation
-                      </button>
+                      <div className="button-row">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={openConfirmationInGmail}
+                        >
+                          Open in Gmail
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={copyReservationConfirmation}
+                        >
+                          Copy confirmation
+                        </button>
+                      </div>
                     </div>
                     <div className="pricing-summary">
                       <span>
@@ -2670,6 +2933,15 @@ export default function App() {
                                   <button
                                     type="button"
                                     className="ghost-button"
+                                    onClick={() =>
+                                      openArrivalTextMessage(reservation, selectedArrivalDate)
+                                    }
+                                  >
+                                    Open text
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ghost-button"
                                     onClick={() => openScheduleReservation(reservation)}
                                   >
                                     View booking
@@ -2855,6 +3127,13 @@ export default function App() {
                             >
                               {formatReservationStatus(reservation.status)}
                             </span>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => openReservationConfirmationInGmail(reservation)}
+                            >
+                              Open in Gmail
+                            </button>
                             <button
                               type="button"
                               className="ghost-button"
