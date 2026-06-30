@@ -21,6 +21,7 @@ const appPasscode = process.env.APP_PASSCODE || "rvpark2026";
 const appPasscodeHeader = "x-app-passcode";
 const stripeApiVersion = "2026-02-25.clover";
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
+const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
 const stripe = stripeSecretKey
   ? new Stripe(stripeSecretKey, { apiVersion: stripeApiVersion })
   : null;
@@ -31,6 +32,58 @@ app.use(
     allowedHeaders: ["Content-Type", appPasscodeHeader]
   })
 );
+
+app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), async (req, res) => {
+  if (!stripe) {
+    return res.status(503).json({
+      message: "Stripe is not configured. Add STRIPE_SECRET_KEY on the server first."
+    });
+  }
+
+  if (!stripeWebhookSecret) {
+    return res.status(503).json({
+      message: "Stripe webhook secret is not configured. Add STRIPE_WEBHOOK_SECRET on the server first."
+    });
+  }
+
+  const signature = req.header("stripe-signature");
+
+  if (!signature) {
+    return res.status(400).json({ message: "Missing Stripe signature header." });
+  }
+
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, signature, stripeWebhookSecret);
+  } catch (error) {
+    return res.status(400).json({ message: `Invalid Stripe webhook signature: ${error.message}` });
+  }
+
+  let eventRecord;
+
+  try {
+    eventRecord = await upsertStripeWebhookEventRecord(event);
+  } catch (error) {
+    console.error("Unable to store Stripe webhook event", event.id, error);
+    return res.status(500).json({ message: "Unable to store Stripe webhook event." });
+  }
+
+  if (eventRecord.processingStatus === "processed") {
+    return res.json({ received: true, duplicate: true });
+  }
+
+  try {
+    await handleStripeWebhookEvent(event);
+    await updateStripeWebhookEventRecord(eventRecord.id, "processed");
+    return res.json({ received: true });
+  } catch (error) {
+    console.error("Unable to process Stripe webhook event", event.id, error);
+    await updateStripeWebhookEventRecord(eventRecord.id, "failed", error.message);
+    return res.status(500).json({ message: "Unable to process Stripe webhook event." });
+  }
+});
+
 app.use(express.json());
 
 app.use("/api", (req, res, next) => {
@@ -251,9 +304,439 @@ function ensureStripeConfigured(res) {
   return true;
 }
 
+function getStripeEventTimestamp(event) {
+  return Number.isFinite(event?.created) ? new Date(event.created * 1000).toISOString() : null;
+}
+
+function getStripeObjectId(event) {
+  return typeof event?.data?.object?.id === "string" ? event.data.object.id : null;
+}
+
+async function upsertStripeWebhookEventRecord(event) {
+  const existingResult = await pool.query(
+    `
+      SELECT id, processing_status
+      FROM stripe_webhook_events
+      WHERE stripe_event_id = $1
+      LIMIT 1
+    `,
+    [event.id]
+  );
+
+  if (existingResult.rowCount > 0) {
+    return {
+      id: existingResult.rows[0].id,
+      processingStatus: existingResult.rows[0].processing_status,
+      isNew: false
+    };
+  }
+
+  const insertResult = await pool.query(
+    `
+      INSERT INTO stripe_webhook_events (
+        stripe_event_id,
+        event_type,
+        api_version,
+        livemode,
+        stripe_created_at,
+        stripe_object_id,
+        payload,
+        processing_status
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'received')
+      RETURNING id, processing_status
+    `,
+    [
+      event.id,
+      event.type,
+      event.api_version || null,
+      Boolean(event.livemode),
+      getStripeEventTimestamp(event),
+      getStripeObjectId(event),
+      JSON.stringify(event)
+    ]
+  );
+
+  return {
+    id: insertResult.rows[0].id,
+    processingStatus: insertResult.rows[0].processing_status,
+    isNew: true
+  };
+}
+
+async function updateStripeWebhookEventRecord(eventRowId, status, errorMessage = null) {
+  await pool.query(
+    `
+      UPDATE stripe_webhook_events
+      SET
+        processing_status = $2,
+        processing_error = $3,
+        processed_at = NOW()
+      WHERE id = $1
+    `,
+    [eventRowId, status, errorMessage]
+  );
+}
+
+async function findStripePaymentRecordForUpdate(client, { checkoutSessionId = null, paymentIntentId = null }) {
+  if (checkoutSessionId) {
+    const bySessionResult = await client.query(
+      `
+        SELECT
+          id,
+          reservation_id,
+          amount_cents,
+          activate_reservation_on_payment,
+          payment_status
+        FROM stripe_payment_records
+        WHERE stripe_checkout_session_id = $1
+        FOR UPDATE
+      `,
+      [checkoutSessionId]
+    );
+
+    if (bySessionResult.rowCount > 0) {
+      return bySessionResult.rows[0];
+    }
+  }
+
+  if (paymentIntentId) {
+    const byIntentResult = await client.query(
+      `
+        SELECT
+          id,
+          reservation_id,
+          amount_cents,
+          activate_reservation_on_payment,
+          payment_status
+        FROM stripe_payment_records
+        WHERE stripe_payment_intent_id = $1
+        FOR UPDATE
+      `,
+      [paymentIntentId]
+    );
+
+    if (byIntentResult.rowCount > 0) {
+      return byIntentResult.rows[0];
+    }
+  }
+
+  return null;
+}
+
+async function applyStripePaymentSettlement(client, paymentRecord, details) {
+  const wasAlreadyPaid = paymentRecord.payment_status === "paid";
+
+  if (!wasAlreadyPaid) {
+    await client.query(
+      `
+        UPDATE reservations
+        SET
+          amount_paid = COALESCE(amount_paid, 0) + $2,
+          status = CASE
+            WHEN status = 'pending' AND $3::boolean THEN 'active'
+            ELSE status
+          END
+        WHERE id = $1
+      `,
+      [
+        paymentRecord.reservation_id,
+        Number(paymentRecord.amount_cents) / 100,
+        paymentRecord.activate_reservation_on_payment
+      ]
+    );
+  }
+
+  await client.query(
+    `
+      UPDATE stripe_payment_records
+      SET
+        stripe_payment_intent_id = COALESCE($2, stripe_payment_intent_id),
+        stripe_charge_id = COALESCE($3, stripe_charge_id),
+        payment_status = $4,
+        checkout_status = COALESCE($5, checkout_status),
+        stripe_customer_email = COALESCE($6, stripe_customer_email),
+        stripe_payment_method_type = COALESCE($7, stripe_payment_method_type),
+        amount_received_cents = COALESCE($8, amount_received_cents, amount_cents),
+        paid_at = COALESCE(paid_at, $9),
+        failed_at = NULL,
+        expired_at = NULL,
+        last_error_message = NULL,
+        last_event_id = $10,
+        last_event_type = $11,
+        last_event_created_at = $12
+      WHERE id = $1
+    `,
+    [
+      paymentRecord.id,
+      details.paymentIntentId,
+      details.chargeId,
+      details.paymentStatus,
+      details.checkoutStatus,
+      details.customerEmail,
+      details.paymentMethodType,
+      details.amountReceivedCents,
+      details.paidAt,
+      details.eventId,
+      details.eventType,
+      details.eventCreatedAt
+    ]
+  );
+}
+
+async function applyStripePaymentStateUpdate(client, paymentRecord, details) {
+  await client.query(
+    `
+      UPDATE stripe_payment_records
+      SET
+        stripe_payment_intent_id = COALESCE($2, stripe_payment_intent_id),
+        stripe_charge_id = COALESCE($3, stripe_charge_id),
+        payment_status = $4,
+        checkout_status = COALESCE($5, checkout_status),
+        stripe_customer_email = COALESCE($6, stripe_customer_email),
+        stripe_payment_method_type = COALESCE($7, stripe_payment_method_type),
+        amount_received_cents = COALESCE($8, amount_received_cents),
+        failed_at = COALESCE($9, failed_at),
+        expired_at = COALESCE($10, expired_at),
+        last_error_message = COALESCE($11, last_error_message),
+        last_event_id = $12,
+        last_event_type = $13,
+        last_event_created_at = $14
+      WHERE id = $1
+    `,
+    [
+      paymentRecord.id,
+      details.paymentIntentId,
+      details.chargeId,
+      details.paymentStatus,
+      details.checkoutStatus,
+      details.customerEmail,
+      details.paymentMethodType,
+      details.amountReceivedCents,
+      details.failedAt,
+      details.expiredAt,
+      details.errorMessage,
+      details.eventId,
+      details.eventType,
+      details.eventCreatedAt
+    ]
+  );
+}
+
+async function applyStripeRefundUpdate(client, paymentRecord, details) {
+  await client.query(
+    `
+      UPDATE stripe_payment_records
+      SET
+        stripe_payment_intent_id = COALESCE($2, stripe_payment_intent_id),
+        stripe_charge_id = COALESCE($3, stripe_charge_id),
+        refunded_cents = GREATEST(COALESCE(refunded_cents, 0), COALESCE($4, 0)),
+        refunded_at = COALESCE($5, refunded_at),
+        last_event_id = $6,
+        last_event_type = $7,
+        last_event_created_at = $8
+      WHERE id = $1
+    `,
+    [
+      paymentRecord.id,
+      details.paymentIntentId,
+      details.chargeId,
+      details.refundedCents,
+      details.refundedAt,
+      details.eventId,
+      details.eventType,
+      details.eventCreatedAt
+    ]
+  );
+}
+
+async function handleStripeWebhookEvent(event) {
+  const eventCreatedAt = getStripeEventTimestamp(event);
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    switch (event.type) {
+      case "checkout.session.completed":
+      case "checkout.session.async_payment_succeeded": {
+        const session = event.data.object;
+        const paymentRecord = await findStripePaymentRecordForUpdate(client, {
+          checkoutSessionId: session.id,
+          paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : null
+        });
+
+        if (paymentRecord) {
+          if (session.payment_status === "paid") {
+            await applyStripePaymentSettlement(client, paymentRecord, {
+              paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : null,
+              chargeId: null,
+              paymentStatus: session.payment_status || "paid",
+              checkoutStatus: session.status || null,
+              customerEmail: session.customer_details?.email || null,
+              paymentMethodType: Array.isArray(session.payment_method_types)
+                ? session.payment_method_types[0] || null
+                : null,
+              amountReceivedCents:
+                Number.isFinite(session.amount_total) ? Number(session.amount_total) : null,
+              paidAt: session.status === "complete" ? new Date().toISOString() : null,
+              eventId: event.id,
+              eventType: event.type,
+              eventCreatedAt
+            });
+          } else {
+            await applyStripePaymentStateUpdate(client, paymentRecord, {
+              paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : null,
+              chargeId: null,
+              paymentStatus: session.payment_status || "unpaid",
+              checkoutStatus: session.status || null,
+              customerEmail: session.customer_details?.email || null,
+              paymentMethodType: Array.isArray(session.payment_method_types)
+                ? session.payment_method_types[0] || null
+                : null,
+              amountReceivedCents:
+                Number.isFinite(session.amount_total) ? Number(session.amount_total) : null,
+              failedAt: null,
+              expiredAt: null,
+              errorMessage: null,
+              eventId: event.id,
+              eventType: event.type,
+              eventCreatedAt
+            });
+          }
+        }
+
+        break;
+      }
+      case "checkout.session.async_payment_failed":
+      case "checkout.session.expired": {
+        const session = event.data.object;
+        const paymentRecord = await findStripePaymentRecordForUpdate(client, {
+          checkoutSessionId: session.id,
+          paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : null
+        });
+
+        if (paymentRecord) {
+          await applyStripePaymentStateUpdate(client, paymentRecord, {
+            paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : null,
+            chargeId: null,
+            paymentStatus: event.type === "checkout.session.expired" ? "expired" : "failed",
+            checkoutStatus: session.status || null,
+            customerEmail: session.customer_details?.email || null,
+            paymentMethodType: Array.isArray(session.payment_method_types)
+              ? session.payment_method_types[0] || null
+              : null,
+            amountReceivedCents:
+              Number.isFinite(session.amount_total) ? Number(session.amount_total) : null,
+            failedAt: event.type === "checkout.session.async_payment_failed" ? new Date().toISOString() : null,
+            expiredAt: event.type === "checkout.session.expired" ? new Date().toISOString() : null,
+            errorMessage: null,
+            eventId: event.id,
+            eventType: event.type,
+            eventCreatedAt
+          });
+        }
+
+        break;
+      }
+      case "payment_intent.succeeded":
+      case "payment_intent.payment_failed": {
+        const paymentIntent = event.data.object;
+        const paymentRecord = await findStripePaymentRecordForUpdate(client, {
+          paymentIntentId: paymentIntent.id
+        });
+
+        if (paymentRecord) {
+          if (event.type === "payment_intent.succeeded") {
+            await applyStripePaymentSettlement(client, paymentRecord, {
+              paymentIntentId: paymentIntent.id,
+              chargeId:
+                typeof paymentIntent.latest_charge === "string" ? paymentIntent.latest_charge : null,
+              paymentStatus: "paid",
+              checkoutStatus: null,
+              customerEmail: paymentIntent.receipt_email || null,
+              paymentMethodType:
+                Array.isArray(paymentIntent.payment_method_types)
+                  ? paymentIntent.payment_method_types[0] || null
+                  : null,
+              amountReceivedCents:
+                Number.isFinite(paymentIntent.amount_received)
+                  ? Number(paymentIntent.amount_received)
+                  : null,
+              paidAt: new Date().toISOString(),
+              eventId: event.id,
+              eventType: event.type,
+              eventCreatedAt
+            });
+          } else {
+            await applyStripePaymentStateUpdate(client, paymentRecord, {
+              paymentIntentId: paymentIntent.id,
+              chargeId:
+                typeof paymentIntent.latest_charge === "string" ? paymentIntent.latest_charge : null,
+              paymentStatus: "failed",
+              checkoutStatus: null,
+              customerEmail: paymentIntent.receipt_email || null,
+              paymentMethodType:
+                Array.isArray(paymentIntent.payment_method_types)
+                  ? paymentIntent.payment_method_types[0] || null
+                  : null,
+              amountReceivedCents:
+                Number.isFinite(paymentIntent.amount_received)
+                  ? Number(paymentIntent.amount_received)
+                  : null,
+              failedAt: new Date().toISOString(),
+              expiredAt: null,
+              errorMessage: paymentIntent.last_payment_error?.message || null,
+              eventId: event.id,
+              eventType: event.type,
+              eventCreatedAt
+            });
+          }
+        }
+
+        break;
+      }
+      case "charge.refunded": {
+        const charge = event.data.object;
+        const paymentRecord = await findStripePaymentRecordForUpdate(client, {
+          paymentIntentId: typeof charge.payment_intent === "string" ? charge.payment_intent : null
+        });
+
+        if (paymentRecord) {
+          await applyStripeRefundUpdate(client, paymentRecord, {
+            paymentIntentId: typeof charge.payment_intent === "string" ? charge.payment_intent : null,
+            chargeId: charge.id,
+            refundedCents:
+              Number.isFinite(charge.amount_refunded) ? Number(charge.amount_refunded) : null,
+            refundedAt: new Date().toISOString(),
+            eventId: event.id,
+            eventType: event.type,
+            eventCreatedAt
+          });
+        }
+
+        break;
+      }
+      default:
+        break;
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function syncOpenStripePayments() {
   if (!stripe) {
-    return;
+    return {
+      checkedCount: 0,
+      updatedCount: 0,
+      errorCount: 0
+    };
   }
 
   const paymentsResult = await pool.query(
@@ -272,6 +755,12 @@ async function syncOpenStripePayments() {
     `
   );
 
+  const summary = {
+    checkedCount: paymentsResult.rows.length,
+    updatedCount: 0,
+    errorCount: 0
+  };
+
   for (const paymentRecord of paymentsResult.rows) {
     let session;
 
@@ -279,6 +768,7 @@ async function syncOpenStripePayments() {
       session = await stripe.checkout.sessions.retrieve(paymentRecord.stripe_checkout_session_id);
     } catch (error) {
       console.error("Unable to refresh Stripe checkout session", paymentRecord.stripe_checkout_session_id, error);
+      summary.errorCount += 1;
       continue;
     }
 
@@ -353,14 +843,18 @@ async function syncOpenStripePayments() {
         ]
       );
 
+      summary.updatedCount += 1;
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
+      summary.errorCount += 1;
       console.error("Unable to record Stripe payment", paymentRecord.stripe_checkout_session_id, error);
     } finally {
       client.release();
     }
   }
+
+  return summary;
 }
 
 function getPricingForSiteAndNights(site, numberOfNights, pricingLookup) {
@@ -1335,13 +1829,19 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
+      client_reference_id: String(reservation.id),
       success_url: `${baseUrl}/?payment=success&reservationId=${reservation.id}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/?payment=cancel&reservationId=${reservation.id}`,
-      customer_email: reservation.email || undefined,
       metadata: {
         reservation_id: String(reservation.id),
         payment_amount_cents: String(amountCents),
         activate_reservation_on_payment: activateReservationOnPayment ? "true" : "false"
+      },
+      payment_intent_data: {
+        metadata: {
+          reservation_id: String(reservation.id),
+          payment_amount_cents: String(amountCents)
+        }
       },
       line_items: [
         {
@@ -1386,6 +1886,19 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
       reservationId: reservation.id,
       checkoutUrl: session.url
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/stripe/sync", async (_req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  try {
+    const summary = await syncOpenStripePayments();
+    res.json(summary);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

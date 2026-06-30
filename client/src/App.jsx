@@ -954,6 +954,7 @@ export default function App() {
   const [reservationErrorMessage, setReservationErrorMessage] = useState("");
   const [reservationSuccessMessage, setReservationSuccessMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const [isStripeSyncing, setIsStripeSyncing] = useState(false);
   const reservationFormRef = useRef(null);
   const [openSections, setOpenSections] = useState({
     availability: false,
@@ -1921,6 +1922,27 @@ export default function App() {
     }
   }
 
+  async function handleStripeSync() {
+    setIsStripeSyncing(true);
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const result = await apiRequest("/stripe/sync", {
+        method: "POST"
+      });
+
+      await refreshReservationAndSiteData();
+      setSuccessMessage(
+        `Stripe sync finished. Checked ${result.checkedCount || 0} open payments and updated ${result.updatedCount || 0}.`
+      );
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setIsStripeSyncing(false);
+    }
+  }
+
   async function generatePaymentLink(reservationId, amount, activateReservationOnPayment, label) {
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
@@ -2131,6 +2153,25 @@ export default function App() {
       {successMessage ? <div className="message success">{successMessage}</div> : null}
 
       <main className="layout">
+        <section className="card">
+          <div className="section-toggle-row">
+            <h2>Stripe Sync</h2>
+            <div className="section-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={handleStripeSync}
+                disabled={isStripeSyncing}
+              >
+                {isStripeSyncing ? "Syncing Stripe..." : "Sync Stripe payments"}
+              </button>
+            </div>
+          </div>
+          <div className="section-heading">
+            <p>Use this to backfill older Stripe payments into reservation balances after webhooks go live.</p>
+          </div>
+        </section>
+
         <section className="card">
           <div className="section-toggle-row">
             <h2>Availability Search</h2>

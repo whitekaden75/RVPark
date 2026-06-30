@@ -28,6 +28,7 @@ React + Node.js app for managing RV park registrations with:
 - `sql/011_add_stripe_payment_records.sql` tracks Stripe checkout sessions so paid balances can be recorded safely
 - `sql/012_update_stripe_payment_records_for_pending_links.sql` updates the Stripe payment table if you already ran the earlier Stripe SQL before link/pending support
 - `sql/013_add_motorhome_type_flags.sql` adds the class A, class C, and with-tow motor home flags to reservations
+- `sql/014_add_stripe_webhook_tracking.sql` adds Stripe webhook event storage and richer payment-status fields
 
 ## Database Setup
 
@@ -65,6 +66,8 @@ If you already ran the earlier Stripe payment SQL and need the newer pending-lin
 
 If you want to track motor home class and tow details on reservations, run [sql/013_add_motorhome_type_flags.sql](/Users/kadenwhite/Desktop/RVPark/sql/013_add_motorhome_type_flags.sql) too.
 
+If you want Stripe webhook receipts and richer payment-status tracking, run [sql/014_add_stripe_webhook_tracking.sql](/Users/kadenwhite/Desktop/RVPark/sql/014_add_stripe_webhook_tracking.sql) too.
+
 ## Local Setup
 
 ### 1. Backend
@@ -78,6 +81,7 @@ Required values:
 - `CLIENT_ORIGIN`
 - `APP_PASSCODE`
 - `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
 
 Install and run yourself:
 
@@ -120,6 +124,7 @@ Your Postgres already lives on Railway, so the main task is connecting a backend
    - `PORT`
    - `APP_PASSCODE`
    - `STRIPE_SECRET_KEY`
+   - `STRIPE_WEBHOOK_SECRET`
 6. For `DATABASE_URL`, use the connection string from your existing Railway Postgres instance.
 7. Deploy the backend.
 8. After deploy, copy the generated public backend URL.
@@ -170,6 +175,8 @@ Then redeploy the backend.
 - `POST /api/reservations`
 - `GET /api/reservations/:id`
 - `POST /api/reservations/:id/payment-links`
+- `POST /api/stripe/sync`
+- `POST /api/stripe/webhooks`
 
 ## Booking Rules Implemented
 
