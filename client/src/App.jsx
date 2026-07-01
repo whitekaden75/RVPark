@@ -1893,6 +1893,11 @@ export default function App() {
 
   async function startEditingReservation(reservationId) {
     setErrorMessage("");
+    setCreatedReservation(null);
+    setGeneratedPaymentLink(null);
+    setPaymentLinkErrorMessage("");
+    setPaymentLinkSuccessMessage("");
+    setReservationCardPayment(null);
     setOpenSections((current) => ({
       ...current,
       reservation: true
@@ -1901,10 +1906,6 @@ export default function App() {
     try {
       const reservation = await apiRequest(`/reservations/${reservationId}`);
       setEditingReservationId(reservation.id);
-      setGeneratedPaymentLink(null);
-      setPaymentLinkErrorMessage("");
-      setPaymentLinkSuccessMessage("");
-      setReservationCardPayment(null);
       setCustomerForm({
         firstName: reservation.first_name || "",
         lastName: reservation.last_name || "",
