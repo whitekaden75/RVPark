@@ -2439,6 +2439,50 @@ export default function App() {
     }
   }
 
+  async function deleteOfficePaymentRecord(paymentEvent) {
+    if (!activeScheduleReservation) {
+      return;
+    }
+
+    const shouldDelete = window.confirm(
+      `Delete office payment record for ${formatCurrency(paymentEvent.amount)}?`
+    );
+
+    if (!shouldDelete) {
+      return;
+    }
+
+    setErrorMessage("");
+    setSuccessMessage("");
+    setPaymentLinkErrorMessage("");
+
+    try {
+      const updatedReservation = await apiRequest(
+        `/reservation-payment-events/${paymentEvent.id}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      setReservations((current) =>
+        current.map((entry) => (entry.id === updatedReservation.id ? updatedReservation : entry))
+      );
+
+      if (activeScheduleReservation?.id === updatedReservation.id) {
+        setActiveScheduleReservation(updatedReservation);
+      }
+
+      setActiveSchedulePaymentAmount(
+        Number(updatedReservation.remainingBalance || 0) > 0
+          ? Number(updatedReservation.remainingBalance).toFixed(2)
+          : ""
+      );
+      setSuccessMessage(`Deleted office payment record from reservation #${updatedReservation.id}.`);
+    } catch (error) {
+      setPaymentLinkErrorMessage(error.message);
+    }
+  }
+
   async function finalizeCardPayment(reservationId) {
     await apiRequest("/stripe/sync", { method: "POST" });
     const refreshedReservation = await apiRequest(`/reservations/${reservationId}`);
@@ -4628,11 +4672,22 @@ export default function App() {
                   <h3>Payment history</h3>
                   <ul className="timeline-list">
                     {activeScheduleReservation.paymentEvents.map((paymentEvent) => (
-                      <li key={paymentEvent.id}>
-                        {formatPaymentSource(paymentEvent.paymentSource)} •{" "}
-                        {formatCurrency(paymentEvent.amount)} •{" "}
-                        {new Date(paymentEvent.recordedAt).toLocaleString()}
-                        {paymentEvent.note ? ` • ${paymentEvent.note}` : ""}
+                      <li key={paymentEvent.id} className="payment-history-item">
+                        <span>
+                          {formatPaymentSource(paymentEvent.paymentSource)} •{" "}
+                          {formatCurrency(paymentEvent.amount)} •{" "}
+                          {new Date(paymentEvent.recordedAt).toLocaleString()}
+                          {paymentEvent.note ? ` • ${paymentEvent.note}` : ""}
+                        </span>
+                        {paymentEvent.paymentSource === "office_card_reader" ? (
+                          <button
+                            type="button"
+                            className="ghost-button danger-button payment-history-delete"
+                            onClick={() => deleteOfficePaymentRecord(paymentEvent)}
+                          >
+                            Delete
+                          </button>
+                        ) : null}
                       </li>
                     ))}
                   </ul>
@@ -4646,57 +4701,82 @@ export default function App() {
                       Balance {formatCurrency(activeScheduleReservation.remainingBalance)}
                     </span>
                   </div>
-                  <div className="field-grid compact-grid">
-                    <label>
-                      Deposit amount
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={schedulePaymentForm.depositAmount}
-                        onChange={(event) =>
-                          updateSchedulePaymentField("depositAmount", event.target.value)
-                        }
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
-                    <label>
-                      Manual total
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={schedulePaymentForm.totalPrice}
-                        onChange={(event) =>
-                          updateSchedulePaymentField("totalPrice", event.target.value)
-                        }
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
-                    <label>
-                      Amount paid
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={schedulePaymentForm.amountPaid}
-                        onChange={(event) =>
-                          updateSchedulePaymentField("amountPaid", event.target.value)
-                        }
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
-                    <label>
-                      Office payment amount
-                      <input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={activeSchedulePaymentAmount}
-                        onChange={(event) => setActiveSchedulePaymentAmount(event.target.value)}
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
+                  <div className="payment-edit-sections">
+                    <div className="timeline-card payment-edit-card">
+                      <div className="result-header">
+                        <h4>Reservation amounts</h4>
+                        <span className="muted">Save these only when you want to change the booking totals.</span>
+                      </div>
+                      <div className="field-grid compact-grid">
+                        <label>
+                          Deposit amount
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={schedulePaymentForm.depositAmount}
+                            onChange={(event) =>
+                              updateSchedulePaymentField("depositAmount", event.target.value)
+                            }
+                            onWheel={(event) => event.currentTarget.blur()}
+                          />
+                        </label>
+                        <label>
+                          Manual total
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={schedulePaymentForm.totalPrice}
+                            onChange={(event) =>
+                              updateSchedulePaymentField("totalPrice", event.target.value)
+                            }
+                            onWheel={(event) => event.currentTarget.blur()}
+                          />
+                        </label>
+                        <label>
+                          Amount paid
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={schedulePaymentForm.amountPaid}
+                            onChange={(event) =>
+                              updateSchedulePaymentField("amountPaid", event.target.value)
+                            }
+                            onWheel={(event) => event.currentTarget.blur()}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="timeline-card payment-edit-card office-payment-card">
+                      <div className="result-header">
+                        <h4>Record office payment</h4>
+                        <span className="muted">This uses only the office payment amount below.</span>
+                      </div>
+                      <div className="field-grid">
+                        <label>
+                          Office payment amount
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={activeSchedulePaymentAmount}
+                            onChange={(event) => setActiveSchedulePaymentAmount(event.target.value)}
+                            onWheel={(event) => event.currentTarget.blur()}
+                          />
+                        </label>
+                      </div>
+                      <div className="button-row">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => recordOfficePayment(activeScheduleReservation)}
+                        >
+                          Record office payment
+                        </button>
+                      </div>
+                    </div>
                   </div>
                   <div className="button-row">
                     <button
@@ -4710,13 +4790,6 @@ export default function App() {
                       }}
                     >
                       Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => recordOfficePayment(activeScheduleReservation)}
-                    >
-                      Record office payment
                     </button>
                     <button
                       type="button"

@@ -773,6 +773,37 @@ textarea {
   grid-column: 1 / -1;
 }
 
+.payment-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.payment-history-delete {
+  flex-shrink: 0;
+  padding: 8px 12px;
+}
+
+.payment-edit-sections {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.payment-edit-card {
+  padding: 16px;
+}
+
+.payment-edit-card h4 {
+  margin: 0;
+}
+
+.office-payment-card {
+  border-color: rgba(176, 112, 54, 0.22);
+  background: rgba(255, 249, 239, 0.88);
+}
+
 .message {
   margin-top: 18px;
   border-radius: 16px;

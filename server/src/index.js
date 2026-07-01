@@ -2274,6 +2274,90 @@ app.post("/api/reservations/:id/record-payment", async (req, res) => {
   }
 });
 
+app.delete("/api/reservation-payment-events/:id", async (req, res) => {
+  const paymentEventId = Number(req.params.id);
+
+  if (!paymentEventId) {
+    return res.status(400).json({ message: "Payment event ID is required." });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const paymentEventResult = await client.query(
+      `
+        SELECT
+          id,
+          reservation_id,
+          amount,
+          payment_source
+        FROM reservation_payment_events
+        WHERE id = $1
+        FOR UPDATE
+      `,
+      [paymentEventId]
+    );
+
+    if (paymentEventResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Payment record not found." });
+    }
+
+    const paymentEvent = paymentEventResult.rows[0];
+
+    if (paymentEvent.payment_source !== "office_card_reader") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Only office payment records can be deleted here." });
+    }
+
+    const reservationResult = await client.query(
+      `
+        SELECT
+          id,
+          amount_paid
+        FROM reservations
+        WHERE id = $1
+        FOR UPDATE
+      `,
+      [paymentEvent.reservation_id]
+    );
+
+    if (reservationResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    const reservation = reservationResult.rows[0];
+    const nextAmountPaid = Math.max(
+      (toPriceNumber(reservation.amount_paid) ?? 0) - (toPriceNumber(paymentEvent.amount) ?? 0),
+      0
+    );
+
+    await client.query(`DELETE FROM reservation_payment_events WHERE id = $1`, [paymentEventId]);
+
+    await client.query(
+      `
+        UPDATE reservations
+        SET amount_paid = $2
+        WHERE id = $1
+      `,
+      [paymentEvent.reservation_id, nextAmountPaid]
+    );
+
+    await client.query("COMMIT");
+
+    const updatedReservation = await fetchReservationDetails(pool, paymentEvent.reservation_id);
+    res.json(updatedReservation);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
 app.delete("/api/reservations/:id", async (req, res) => {
   const reservationId = Number(req.params.id);
 
