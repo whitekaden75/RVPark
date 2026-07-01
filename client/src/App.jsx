@@ -10,13 +10,10 @@ const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
 const unlockStorageKey = "rvpark-unlocked";
 const lastBookedSiteStorageKey = "rvpark-last-booked-site";
 const openEndedStayDate = "9999-12-31";
-const stripePromise = stripePublishableKey ? loadStripe(stripePublishableKey) : null;
 const cardElementOptions = {
   style: {
     base: {
       color: "#274032",
-      fontFamily: "\"Georgia\", \"Times New Roman\", serif",
-      fontSize: "16px",
       "::placeholder": {
         color: "#7b8577"
       }
@@ -26,6 +23,20 @@ const cardElementOptions = {
     }
   }
 };
+
+let cachedStripePromise = null;
+
+function getStripePromise() {
+  if (!stripePublishableKey) {
+    return null;
+  }
+
+  if (!cachedStripePromise) {
+    cachedStripePromise = loadStripe(stripePublishableKey);
+  }
+
+  return cachedStripePromise;
+}
 
 function getStripeReturnState() {
   if (typeof window === "undefined") {
@@ -109,6 +120,47 @@ function createSchedulePaymentForm(reservation = null) {
       reservation?.amountPaid !== null && reservation?.amountPaid !== undefined
         ? String(reservation.amountPaid)
         : ""
+  };
+}
+
+function createReservationEditorState(reservation) {
+  return {
+    customer: {
+      id: String(reservation.customer_id || ""),
+      firstName: reservation.first_name || "",
+      lastName: reservation.last_name || "",
+      email: reservation.email || "",
+      phoneNumber: formatPhoneNumber(reservation.phone_number || "")
+    },
+    reservation: {
+      bookedDate: reservation.booked_date,
+      status: reservation.status || "active",
+      reservationTerm: reservation.reservation_term || "standard",
+      totalPrice:
+        reservation.totalPrice !== null && reservation.totalPrice !== undefined
+          ? String(reservation.totalPrice)
+          : "",
+      depositAmount:
+        reservation.depositAmount !== null && reservation.depositAmount !== undefined
+          ? String(reservation.depositAmount)
+          : "",
+      amountPaid:
+        reservation.amountPaid !== null && reservation.amountPaid !== undefined
+          ? String(reservation.amountPaid)
+          : "",
+      rvKind: reservation.rv_kind,
+      motorhomeClassA: Boolean(reservation.motorhome_class_a),
+      motorhomeClassC: Boolean(reservation.motorhome_class_c),
+      motorhomeWithTow: Boolean(reservation.motorhome_with_tow),
+      rigLengthFeet: String(reservation.rig_length_feet ?? ""),
+      notes: reservation.notes || "",
+      siteStays: reservation.siteStays.map((segment) => ({
+        siteId: String(segment.site_id),
+        siteSearch: segment.site_number,
+        arrivalDate: segment.arrival_date,
+        leaveDate: isOpenEndedStay(segment.leave_date) ? "" : segment.leave_date
+      }))
+    }
   };
 }
 
@@ -584,7 +636,17 @@ async function apiRequest(path, options = {}) {
     throw new Error(data?.message || "Request failed.");
   }
 
+  if (response.status === 204 || response.status === 205) {
+    return null;
+  }
+
   if (!isJson) {
+    const text = await response.text().catch(() => "");
+
+    if (!text.trim()) {
+      return null;
+    }
+
     throw new Error(
       `Expected JSON from ${apiBaseUrl}${path}. Check that VITE_API_BASE_URL points to your backend /api URL.`
     );
@@ -1106,6 +1168,10 @@ export default function App() {
   const [showAllSwitchPlanSegments, setShowAllSwitchPlanSegments] = useState(false);
   const [createdReservation, setCreatedReservation] = useState(null);
   const [editingReservationId, setEditingReservationId] = useState(null);
+  const [reservationEditFocusSection, setReservationEditFocusSection] = useState("");
+  const [reservationEditor, setReservationEditor] = useState(null);
+  const [reservationEditorErrorMessage, setReservationEditorErrorMessage] = useState("");
+  const [reservationEditorSuccessMessage, setReservationEditorSuccessMessage] = useState("");
   const [activeSchedulePaymentAmount, setActiveSchedulePaymentAmount] = useState("");
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
@@ -1126,6 +1192,11 @@ export default function App() {
   const [successMessage, setSuccessMessage] = useState("");
   const [isStripeSyncing, setIsStripeSyncing] = useState(false);
   const reservationFormRef = useRef(null);
+  const reservationCustomerSectionRef = useRef(null);
+  const reservationDatesSectionRef = useRef(null);
+  const reservationRigSectionRef = useRef(null);
+  const reservationNotesSectionRef = useRef(null);
+  const reservationSiteSectionRef = useRef(null);
   const [openSections, setOpenSections] = useState({
     availability: false,
     reservation: false,
@@ -1585,6 +1656,30 @@ export default function App() {
     scheduleCardPayment?.amount !== null &&
     scheduleCardPayment?.amount !== undefined &&
     Boolean(scheduleCardPayment?.clientSecret);
+  const reservationEditFocusLabel = {
+    customer: "customer information",
+    dates: "dates and site",
+    rig: "rig details",
+    notes: "notes"
+  }[reservationEditFocusSection];
+
+  function scrollReservationEditor(sectionKey = "") {
+    const sectionMap = {
+      customer: reservationCustomerSectionRef,
+      dates: reservationDatesSectionRef,
+      rig: reservationRigSectionRef,
+      notes: reservationNotesSectionRef,
+      site: reservationSiteSectionRef
+    };
+    const targetRef = sectionMap[sectionKey] || reservationFormRef;
+
+    window.requestAnimationFrame(() => {
+      targetRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+      });
+    });
+  }
 
   async function refreshSites() {
     const siteData = await apiRequest("/sites");
@@ -1606,6 +1701,7 @@ export default function App() {
     setCustomerSearch("");
     setCustomerForm(emptyCustomer);
     setEditingReservationId(null);
+    setReservationEditFocusSection("");
   }
 
   function clearSection(sectionKey) {
@@ -2009,13 +2105,14 @@ export default function App() {
     }
   }
 
-  async function startEditingReservation(reservationId) {
+  async function startEditingReservation(reservationId, focusSection = "") {
     setErrorMessage("");
     setCreatedReservation(null);
     setGeneratedPaymentLink(null);
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
     setReservationCardPayment(null);
+    setReservationEditFocusSection(focusSection);
     setOpenSections((current) => ({
       ...current,
       reservation: true
@@ -2068,12 +2165,7 @@ export default function App() {
       });
       setCustomerSearch(`${reservation.first_name} ${reservation.last_name}`);
       setCreatedReservation(null);
-      window.requestAnimationFrame(() => {
-        reservationFormRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "start"
-        });
-      });
+      scrollReservationEditor(focusSection);
     } catch (error) {
       setErrorMessage(error.message);
     }
@@ -2163,7 +2255,7 @@ export default function App() {
   }
 
   async function createCardPaymentIntent(reservationId, amount, activateReservationOnPayment) {
-    if (!stripePublishableKey || !stripePromise) {
+    if (!stripePublishableKey) {
       setPaymentLinkErrorMessage(
         "Add VITE_STRIPE_PUBLISHABLE_KEY to the client before collecting card details on-site."
       );
@@ -2450,8 +2542,24 @@ export default function App() {
         method: "DELETE"
       });
 
+      setReservations((current) =>
+        current.filter((entry) => entry.id !== reservation.id)
+      );
+
       if (activeScheduleReservation?.id === reservation.id) {
         setActiveScheduleReservation(null);
+      }
+
+      if (createdReservation?.id === reservation.id) {
+        setCreatedReservation(null);
+      }
+
+      if (reservationEditor?.id === reservation.id) {
+        closeReservationEditor();
+      }
+
+      if (editingReservationId === reservation.id) {
+        resetReservationForm();
       }
 
       await refreshReservationAndSiteData();
@@ -2467,6 +2575,135 @@ export default function App() {
 
   function closeCardActionMenu() {
     setOpenCardActionMenuId("");
+  }
+
+  function buildReservationEditActions(reservationId) {
+    return [
+      {
+        label: "Edit customer information",
+        onClick: () => openReservationEditor(reservationId, "customer")
+      },
+      {
+        label: "Edit dates/site",
+        onClick: () => openReservationEditor(reservationId, "dates")
+      },
+      {
+        label: "Edit rig",
+        onClick: () => openReservationEditor(reservationId, "rig")
+      },
+      {
+        label: "Edit notes",
+        onClick: () => openReservationEditor(reservationId, "notes")
+      }
+    ];
+  }
+
+  function updateReservationEditorCustomerField(field, value) {
+    setReservationEditor((current) =>
+      current
+        ? {
+            ...current,
+            customer: {
+              ...current.customer,
+              [field]: value
+            }
+          }
+        : current
+    );
+  }
+
+  function updateReservationEditorField(field, value) {
+    setReservationEditor((current) => {
+      if (!current) {
+        return current;
+      }
+
+      if (field === "rvKind") {
+        return {
+          ...current,
+          reservation: {
+            ...current.reservation,
+            rvKind: value,
+            motorhomeClassA:
+              value === "motor home" ? current.reservation.motorhomeClassA : false,
+            motorhomeClassC:
+              value === "motor home" ? current.reservation.motorhomeClassC : false,
+            motorhomeWithTow:
+              value === "motor home" ? current.reservation.motorhomeWithTow : false
+          }
+        };
+      }
+
+      return {
+        ...current,
+        reservation: {
+          ...current.reservation,
+          [field]: value
+        }
+      };
+    });
+  }
+
+  function updateReservationEditorSiteStay(index, field, value) {
+    setReservationEditor((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const nextSiteStays = current.reservation.siteStays.map((stay, stayIndex) => {
+        if (stayIndex !== index) {
+          return stay;
+        }
+
+        if (field === "siteId") {
+          const selectedSite = sites.find((site) => String(site.id) === String(value));
+
+          return {
+            ...stay,
+            siteId: value,
+            siteSearch: selectedSite?.site_number || stay.siteSearch
+          };
+        }
+
+        return { ...stay, [field]: value };
+      });
+
+      return {
+        ...current,
+        reservation: {
+          ...current.reservation,
+          siteStays: nextSiteStays
+        }
+      };
+    });
+  }
+
+  function addReservationEditorSiteStay() {
+    setReservationEditor((current) =>
+      current
+        ? {
+            ...current,
+            reservation: {
+              ...current.reservation,
+              siteStays: [...current.reservation.siteStays, createEmptySiteStay()]
+            }
+          }
+        : current
+    );
+  }
+
+  function removeReservationEditorSiteStay(index) {
+    setReservationEditor((current) =>
+      current
+        ? {
+            ...current,
+            reservation: {
+              ...current.reservation,
+              siteStays: current.reservation.siteStays.filter((_, stayIndex) => stayIndex !== index)
+            }
+          }
+        : current
+    );
   }
 
   function openScheduleReservation(reservation, options = {}) {
@@ -2485,6 +2722,116 @@ export default function App() {
     setSchedulePaymentSuccessMessage("");
     setIsEditingSchedulePaymentInfo(openPaymentEditor);
     setActiveScheduleReservation(reservation);
+  }
+
+  async function openReservationEditor(reservationId, focusSection = "customer") {
+    setErrorMessage("");
+    setReservationEditorErrorMessage("");
+    setReservationEditorSuccessMessage("");
+    setReservationEditFocusSection(focusSection);
+
+    try {
+      const reservation = await apiRequest(`/reservations/${reservationId}`);
+      setReservationEditor({
+        id: reservation.id,
+        focusSection,
+        ...createReservationEditorState(reservation)
+      });
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  function closeReservationEditor() {
+    setReservationEditor(null);
+    setReservationEditorErrorMessage("");
+    setReservationEditorSuccessMessage("");
+    setReservationEditFocusSection("");
+  }
+
+  async function saveReservationEditor() {
+    if (!reservationEditor) {
+      return;
+    }
+
+    setReservationEditorErrorMessage("");
+    setReservationEditorSuccessMessage("");
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const customerPayload = {
+        firstName: reservationEditor.customer.firstName,
+        lastName: reservationEditor.customer.lastName,
+        email: reservationEditor.customer.email,
+        phoneNumber: reservationEditor.customer.phoneNumber
+      };
+      const customerId = Number(reservationEditor.customer.id);
+      const updatedCustomer = await apiRequest(`/customers/${customerId}`, {
+        method: "PUT",
+        body: JSON.stringify(customerPayload)
+      });
+
+      setCustomers((current) =>
+        current.map((customer) =>
+          customer.id === updatedCustomer.id ? updatedCustomer : customer
+        )
+      );
+
+      const reservationPayload = {
+        customerId,
+        bookedDate: reservationEditor.reservation.bookedDate,
+        status: reservationEditor.reservation.status,
+        reservationTerm: reservationEditor.reservation.reservationTerm,
+        billingMode: "manual_total",
+        totalPrice: reservationEditor.reservation.totalPrice,
+        depositAmount: reservationEditor.reservation.depositAmount,
+        rvKind: reservationEditor.reservation.rvKind,
+        motorhomeClassA:
+          reservationEditor.reservation.rvKind === "motor home"
+            ? reservationEditor.reservation.motorhomeClassA
+            : false,
+        motorhomeClassC:
+          reservationEditor.reservation.rvKind === "motor home"
+            ? reservationEditor.reservation.motorhomeClassC
+            : false,
+        motorhomeWithTow:
+          reservationEditor.reservation.rvKind === "motor home"
+            ? reservationEditor.reservation.motorhomeWithTow
+            : false,
+        rigLengthFeet: reservationEditor.reservation.rigLengthFeet,
+        amountPaid: reservationEditor.reservation.amountPaid,
+        notes: reservationEditor.reservation.notes,
+        siteStays: reservationEditor.reservation.siteStays
+      };
+
+      const updatedReservation = await apiRequest(`/reservations/${reservationEditor.id}`, {
+        method: "PUT",
+        body: JSON.stringify(reservationPayload)
+      });
+
+      setReservations((current) =>
+        current.map((entry) => (entry.id === updatedReservation.id ? updatedReservation : entry))
+      );
+
+      if (activeScheduleReservation?.id === updatedReservation.id) {
+        setActiveScheduleReservation(updatedReservation);
+      }
+
+      if (createdReservation?.id === updatedReservation.id) {
+        setCreatedReservation(updatedReservation);
+      }
+
+      setReservationEditor({
+        id: updatedReservation.id,
+        focusSection: reservationEditor.focusSection,
+        ...createReservationEditorState(updatedReservation)
+      });
+      setReservationEditorSuccessMessage(`Saved reservation #${updatedReservation.id}.`);
+      setSuccessMessage(`Saved reservation #${updatedReservation.id}.`);
+    } catch (error) {
+      setReservationEditorErrorMessage(error.message);
+    }
   }
 
   function openReservationSection() {
@@ -2790,10 +3137,17 @@ export default function App() {
           {openSections.reservation ? (
             <div>
               <div className="section-heading">
-                <p>Create the customer and reservation together, or pick an existing customer.</p>
+                <p>
+                  {editingReservationId && reservationEditFocusLabel
+                    ? `Editing ${reservationEditFocusLabel} for reservation #${editingReservationId}.`
+                    : "Create the customer and reservation together, or pick an existing customer."}
+                </p>
               </div>
               <form onSubmit={handleReservationCreate}>
                 <div className="field-grid">
+                  <div ref={reservationCustomerSectionRef} className="reservation-form-anchor">
+                    <span className="small-text">Customer information</span>
+                  </div>
                   <label>
                     First name
                     <input
@@ -2900,6 +3254,9 @@ export default function App() {
                       ))}
                     </select>
                   </label>
+                  <div ref={reservationDatesSectionRef} className="reservation-form-anchor">
+                    <span className="small-text">Dates and site</span>
+                  </div>
                   <label>
                     Booked date
                     <input
@@ -2973,6 +3330,9 @@ export default function App() {
                       />
                     </label>
                   )}
+                  <div ref={reservationRigSectionRef} className="reservation-form-anchor">
+                    <span className="small-text">Rig details</span>
+                  </div>
                   <label>
                     RV kind
                     <select
@@ -3033,6 +3393,9 @@ export default function App() {
                       }
                     />
                   </label>
+                  <div ref={reservationNotesSectionRef} className="reservation-form-anchor">
+                    <span className="small-text">Notes</span>
+                  </div>
                   <label className="notes-field">
                     Notes
                     <textarea
@@ -3043,7 +3406,7 @@ export default function App() {
                   </label>
                 </div>
 
-                <div className="segment-list">
+                <div ref={reservationSiteSectionRef} className="segment-list">
                   {reservationForm.siteStays.map((segment, index) => (
                     <SiteStayFields
                       key={index}
@@ -3118,7 +3481,7 @@ export default function App() {
                     <p className="muted">
                       Reservation #{reservationCardPayment.reservationId} will stay pending until this card payment goes through.
                     </p>
-                    <Elements stripe={stripePromise}>
+                    <Elements stripe={getStripePromise()}>
                       <CardPaymentForm
                         amountLabel={formatCurrency(reservationCardPayment.amount)}
                         clientSecret={reservationCardPayment.clientSecret}
@@ -3270,12 +3633,8 @@ export default function App() {
                                       openScheduleReservation(reservation, {
                                         openPaymentEditor: true
                                       })
-                                  },
-                                  {
-                                    label: "Edit",
-                                    onClick: () => startEditingReservation(reservation.id)
                                   }
-                                ]}
+                                ].concat(buildReservationEditActions(reservation.id))}
                               />
                             </div>
                           </div>
@@ -3355,12 +3714,8 @@ export default function App() {
                                       openScheduleReservation(reservation, {
                                         openPaymentEditor: true
                                       })
-                                  },
-                                  {
-                                    label: "Edit",
-                                    onClick: () => startEditingReservation(reservation.id)
                                   }
-                                ]}
+                                ].concat(buildReservationEditActions(reservation.id))}
                               />
                             </div>
                           </div>
@@ -3448,12 +3803,8 @@ export default function App() {
                                           openScheduleReservation(reservation, {
                                             openPaymentEditor: true
                                           })
-                                      },
-                                      {
-                                        label: "Edit",
-                                        onClick: () => startEditingReservation(reservation.id)
                                       }
-                                    ]}
+                                    ].concat(buildReservationEditActions(reservation.id))}
                                   />
                                 </div>
                               </div>
@@ -3560,12 +3911,8 @@ export default function App() {
                                     openScheduleReservation(entry.reservation, {
                                       openPaymentEditor: true
                                     })
-                                },
-                                {
-                                  label: "Edit",
-                                  onClick: () => startEditingReservation(entry.reservationId)
                                 }
-                              ]}
+                              ].concat(buildReservationEditActions(entry.reservationId))}
                             />
                           </div>
                         </div>
@@ -3658,12 +4005,8 @@ export default function App() {
                                     openScheduleReservation(reservation, {
                                       openPaymentEditor: true
                                     })
-                                },
-                                {
-                                  label: "Edit",
-                                  onClick: () => startEditingReservation(reservation.id)
                                 }
-                              ]}
+                              ].concat(buildReservationEditActions(reservation.id))}
                             />
                           </div>
                         </div>
@@ -3757,10 +4100,7 @@ export default function App() {
                                     openPaymentEditor: true
                                   })
                               },
-                              {
-                                label: "Edit",
-                                onClick: () => startEditingReservation(reservation.id)
-                              },
+                              ...buildReservationEditActions(reservation.id),
                               {
                                 label: "Cancel",
                                 onClick: () => cancelReservation(reservation.id),
@@ -3952,6 +4292,244 @@ export default function App() {
           ) : null}
         </section>
 
+        {reservationEditor ? (
+          <div
+            className="modal-backdrop"
+            role="presentation"
+            onClick={closeReservationEditor}
+          >
+            <div
+              className="modal-card"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="reservation-editor-modal-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="result-header">
+                <div>
+                  <h3 id="reservation-editor-modal-title">
+                    Edit {reservationEditFocusLabel || "reservation"}
+                  </h3>
+                  <p className="muted">
+                    Reservation #{reservationEditor.id} • {reservationEditor.customer.firstName}{" "}
+                    {reservationEditor.customer.lastName}
+                  </p>
+                </div>
+                <div className="button-row schedule-card-actions">
+                  <button type="button" className="ghost-button" onClick={closeReservationEditor}>
+                    Close
+                  </button>
+                </div>
+              </div>
+              {reservationEditor.focusSection === "customer" ? (
+                <div className="field-grid">
+                  <label>
+                    First name
+                    <input
+                      value={reservationEditor.customer.firstName}
+                      onChange={(event) =>
+                        updateReservationEditorCustomerField("firstName", event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Last name
+                    <input
+                      value={reservationEditor.customer.lastName}
+                      onChange={(event) =>
+                        updateReservationEditorCustomerField("lastName", event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Email
+                    <input
+                      type="email"
+                      value={reservationEditor.customer.email}
+                      onChange={(event) =>
+                        updateReservationEditorCustomerField("email", event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Phone
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      value={reservationEditor.customer.phoneNumber}
+                      onChange={(event) =>
+                        updateReservationEditorCustomerField(
+                          "phoneNumber",
+                          formatPhoneNumber(event.target.value)
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+              ) : null}
+              {reservationEditor.focusSection === "rig" ? (
+                <div className="field-grid">
+                  <label>
+                    RV kind
+                    <select
+                      value={reservationEditor.reservation.rvKind}
+                      onChange={(event) =>
+                        updateReservationEditorField("rvKind", event.target.value)
+                      }
+                    >
+                      {rvKinds.map((kind) => (
+                        <option key={kind} value={kind}>
+                          {kind}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Rig size (feet)
+                    <input
+                      type="number"
+                      min="1"
+                      value={reservationEditor.reservation.rigLengthFeet}
+                      onChange={(event) =>
+                        updateReservationEditorField("rigLengthFeet", event.target.value)
+                      }
+                    />
+                  </label>
+                  {reservationEditor.reservation.rvKind === "motor home" ? (
+                    <div className="motorhome-options notes-field">
+                      <span className="small-text">Motor home details</span>
+                      <label className="checkbox-row compact-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={reservationEditor.reservation.motorhomeClassA}
+                          onChange={(event) =>
+                            updateReservationEditorField("motorhomeClassA", event.target.checked)
+                          }
+                        />
+                        Class A
+                      </label>
+                      <label className="checkbox-row compact-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={reservationEditor.reservation.motorhomeClassC}
+                          onChange={(event) =>
+                            updateReservationEditorField("motorhomeClassC", event.target.checked)
+                          }
+                        />
+                        Class C
+                      </label>
+                      <label className="checkbox-row compact-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={reservationEditor.reservation.motorhomeWithTow}
+                          onChange={(event) =>
+                            updateReservationEditorField("motorhomeWithTow", event.target.checked)
+                          }
+                        />
+                        With tow
+                      </label>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {reservationEditor.focusSection === "notes" ? (
+                <label className="notes-field">
+                  Notes
+                  <textarea
+                    rows="8"
+                    value={reservationEditor.reservation.notes}
+                    onChange={(event) =>
+                      updateReservationEditorField("notes", event.target.value)
+                    }
+                  />
+                </label>
+              ) : null}
+              {reservationEditor.focusSection === "dates" ? (
+                <>
+                  <div className="field-grid">
+                    <label>
+                      Booked date
+                      <input
+                        type="date"
+                        value={reservationEditor.reservation.bookedDate}
+                        onChange={(event) =>
+                          updateReservationEditorField("bookedDate", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      Booking status
+                      <select
+                        value={reservationEditor.reservation.status}
+                        onChange={(event) =>
+                          updateReservationEditorField("status", event.target.value)
+                        }
+                      >
+                        <option value="active">Active</option>
+                        <option value="pending">Pending</option>
+                        <option value="canceled">Canceled</option>
+                      </select>
+                    </label>
+                    <label>
+                      Reservation term
+                      <select
+                        value={reservationEditor.reservation.reservationTerm}
+                        onChange={(event) =>
+                          updateReservationEditorField("reservationTerm", event.target.value)
+                        }
+                      >
+                        <option value="standard">Standard</option>
+                        <option value="yearly">Yearly</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="segment-list">
+                    {reservationEditor.reservation.siteStays.map((segment, index) => (
+                      <SiteStayFields
+                        key={`${reservationEditor.id}-${index}`}
+                        segment={segment}
+                        index={index}
+                        sites={sites}
+                        bookedRangesBySite={bookedRangesBySite}
+                        reservationTerm={reservationEditor.reservation.reservationTerm}
+                        onChange={updateReservationEditorSiteStay}
+                        onRemove={removeReservationEditorSiteStay}
+                        canRemove={
+                          reservationEditor.reservation.reservationTerm !== "yearly" &&
+                          reservationEditor.reservation.siteStays.length > 1
+                        }
+                      />
+                    ))}
+                    {reservationEditor.reservation.reservationTerm !== "yearly" ? (
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={addReservationEditorSiteStay}
+                      >
+                        Add stay segment
+                      </button>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
+              <div className="button-row">
+                <button type="button" className="ghost-button" onClick={closeReservationEditor}>
+                  Cancel
+                </button>
+                <button type="button" className="primary-button" onClick={saveReservationEditor}>
+                  Save changes
+                </button>
+              </div>
+              {reservationEditorErrorMessage ? (
+                <div className="message error">{reservationEditorErrorMessage}</div>
+              ) : null}
+              {reservationEditorSuccessMessage ? (
+                <div className="message success">{reservationEditorSuccessMessage}</div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
         {activeScheduleReservation ? (
           <div
             className="modal-backdrop"
@@ -4108,6 +4686,17 @@ export default function App() {
                         onWheel={(event) => event.currentTarget.blur()}
                       />
                     </label>
+                    <label>
+                      Office payment amount
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={activeSchedulePaymentAmount}
+                        onChange={(event) => setActiveSchedulePaymentAmount(event.target.value)}
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
                   </div>
                   <div className="button-row">
                     <button
@@ -4121,6 +4710,13 @@ export default function App() {
                       }}
                     >
                       Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => recordOfficePayment(activeScheduleReservation)}
+                    >
+                      Record office payment
                     </button>
                     <button
                       type="button"
@@ -4199,7 +4795,7 @@ export default function App() {
                     <div className="message success">{paymentLinkSuccessMessage}</div>
                   ) : null}
                   {hasScheduleCardPayment ? (
-                    <Elements stripe={stripePromise}>
+                    <Elements stripe={getStripePromise()}>
                       <CardPaymentForm
                         amountLabel={formatCurrency(scheduleCardPayment.amount)}
                         clientSecret={scheduleCardPayment.clientSecret}
