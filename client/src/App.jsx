@@ -1468,6 +1468,18 @@ export default function App() {
   const selectedHistoryReservations = [...(reservationsByBookedDate.get(selectedHistoryDate) || [])].sort(
     (left, right) => right.id - left.id
   );
+  const hasReservationCardPayment =
+    Boolean(createdReservation?.id) &&
+    reservationCardPayment?.reservationId === createdReservation?.id &&
+    reservationCardPayment?.amount !== null &&
+    reservationCardPayment?.amount !== undefined &&
+    Boolean(reservationCardPayment?.clientSecret);
+  const hasScheduleCardPayment =
+    Boolean(activeScheduleReservation?.id) &&
+    scheduleCardPayment?.reservationId === activeScheduleReservation.id &&
+    scheduleCardPayment?.amount !== null &&
+    scheduleCardPayment?.amount !== undefined &&
+    Boolean(scheduleCardPayment?.clientSecret);
 
   async function refreshSites() {
     const siteData = await apiRequest("/sites");
@@ -2861,10 +2873,10 @@ export default function App() {
                 {paymentLinkErrorMessage ? (
                   <div className="message error">{paymentLinkErrorMessage}</div>
                 ) : null}
-                {paymentLinkSuccessMessage && reservationCardPayment?.reservationId === createdReservation?.id ? (
+                {paymentLinkSuccessMessage && hasReservationCardPayment ? (
                   <div className="message success">{paymentLinkSuccessMessage}</div>
                 ) : null}
-                {reservationCardPayment?.reservationId === createdReservation?.id ? (
+                {hasReservationCardPayment ? (
                   <div className="payment-panel">
                     <div className="result-header">
                       <h3>Collect deposit card</h3>
@@ -2892,7 +2904,7 @@ export default function App() {
                     </Elements>
                   </div>
                 ) : null}
-                {createdReservation ? (
+                {createdReservation && !editingReservationId ? (
                   <div className="confirmation-card">
                     <div className="result-header">
                       <h3>Customer confirmation</h3>
@@ -3821,11 +3833,10 @@ export default function App() {
                   {paymentLinkErrorMessage ? (
                     <div className="message error">{paymentLinkErrorMessage}</div>
                   ) : null}
-                  {paymentLinkSuccessMessage &&
-                  scheduleCardPayment?.reservationId === activeScheduleReservation.id ? (
+                  {paymentLinkSuccessMessage && hasScheduleCardPayment ? (
                     <div className="message success">{paymentLinkSuccessMessage}</div>
                   ) : null}
-                  {scheduleCardPayment?.reservationId === activeScheduleReservation.id ? (
+                  {hasScheduleCardPayment ? (
                     <Elements stripe={stripePromise}>
                       <CardPaymentForm
                         amountLabel={formatCurrency(scheduleCardPayment.amount)}
