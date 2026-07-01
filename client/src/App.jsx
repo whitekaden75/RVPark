@@ -112,6 +112,42 @@ function createSchedulePaymentForm(reservation = null) {
   };
 }
 
+function CardActionMenu({ menuId, openMenuId, onToggle, onClose, actions }) {
+  const isOpen = openMenuId === menuId;
+
+  return (
+    <div className="card-action-menu" onClick={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        className="ghost-button card-action-trigger"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        onClick={() => onToggle(menuId)}
+      >
+        ...
+      </button>
+      {isOpen ? (
+        <div className="card-action-dropdown" role="menu">
+          {actions.map((action) => (
+            <button
+              key={action.label}
+              type="button"
+              role="menuitem"
+              className={`card-action-item ${action.danger ? "danger" : ""}`}
+              onClick={() => {
+                onClose();
+                action.onClick();
+              }}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const rvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
 const siteNumberCollator = new Intl.Collator(undefined, {
   numeric: true,
@@ -1076,6 +1112,7 @@ export default function App() {
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] = useState("");
   const [reservationCardPayment, setReservationCardPayment] = useState(null);
   const [scheduleCardPayment, setScheduleCardPayment] = useState(null);
+  const [openCardActionMenuId, setOpenCardActionMenuId] = useState("");
   const [isEditingSchedulePaymentInfo, setIsEditingSchedulePaymentInfo] = useState(false);
   const [schedulePaymentForm, setSchedulePaymentForm] = useState(() =>
     createSchedulePaymentForm()
@@ -1175,6 +1212,18 @@ export default function App() {
       setTimelineSiteId(String(sites[0].id));
     }
   }, [sites, timelineSiteId]);
+
+  useEffect(() => {
+    function handleDocumentClick() {
+      setOpenCardActionMenuId("");
+    }
+
+    document.addEventListener("click", handleDocumentClick);
+
+    return () => {
+      document.removeEventListener("click", handleDocumentClick);
+    };
+  }, []);
 
   useEffect(() => {
     function preventNumberInputScroll(event) {
@@ -2254,6 +2303,50 @@ export default function App() {
     }
   }
 
+  async function recordOfficePayment(reservation) {
+    setErrorMessage("");
+    setSuccessMessage("");
+    setPaymentLinkErrorMessage("");
+    setPaymentLinkSuccessMessage("");
+
+    try {
+      const amountNumber = Number(activeSchedulePaymentAmount);
+
+      if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+        throw new Error("Enter an office payment amount greater than zero.");
+      }
+
+      const updatedReservation = await apiRequest(`/reservations/${reservation.id}/record-payment`, {
+        method: "POST",
+        body: JSON.stringify({
+          amount: amountNumber.toFixed(2),
+          paymentSource: "office_card_reader"
+        })
+      });
+
+      setReservations((current) =>
+        current.map((entry) => (entry.id === updatedReservation.id ? updatedReservation : entry))
+      );
+
+      if (activeScheduleReservation?.id === updatedReservation.id) {
+        setActiveScheduleReservation(updatedReservation);
+      }
+
+      if (scheduleCardPayment?.reservationId === updatedReservation.id) {
+        setScheduleCardPayment(null);
+      }
+
+      setActiveSchedulePaymentAmount(
+        Number(updatedReservation.remainingBalance || 0) > 0
+          ? Number(updatedReservation.remainingBalance).toFixed(2)
+          : ""
+      );
+      setSuccessMessage(`Recorded office payment for reservation #${updatedReservation.id}.`);
+    } catch (error) {
+      setPaymentLinkErrorMessage(error.message);
+    }
+  }
+
   async function finalizeCardPayment(reservationId) {
     await apiRequest("/stripe/sync", { method: "POST" });
     const refreshedReservation = await apiRequest(`/reservations/${reservationId}`);
@@ -2366,6 +2459,14 @@ export default function App() {
     } catch (error) {
       setErrorMessage(error.message);
     }
+  }
+
+  function toggleCardActionMenu(menuId) {
+    setOpenCardActionMenuId((current) => (current === menuId ? "" : menuId));
+  }
+
+  function closeCardActionMenu() {
+    setOpenCardActionMenuId("");
   }
 
   function openScheduleReservation(reservation, options = {}) {
@@ -2841,6 +2942,37 @@ export default function App() {
                       }
                     />
                   </label>
+                  {!editingReservationId ? (
+                    <label>
+                      Deposit amount
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        placeholder="Required"
+                        value={reservationForm.depositAmount}
+                        onChange={(event) =>
+                          updateReservationField("depositAmount", event.target.value)
+                        }
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                  ) : (
+                    <label>
+                      Deposit amount
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={reservationForm.depositAmount}
+                        onChange={(event) =>
+                          updateReservationField("depositAmount", event.target.value)
+                        }
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                  )}
                   <label>
                     RV kind
                     <select
@@ -2901,37 +3033,6 @@ export default function App() {
                       }
                     />
                   </label>
-                  {!editingReservationId ? (
-                    <label>
-                      Deposit amount
-                      <input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        placeholder="Required"
-                        value={reservationForm.depositAmount}
-                        onChange={(event) =>
-                          updateReservationField("depositAmount", event.target.value)
-                        }
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
-                  ) : (
-                    <label>
-                      Deposit amount
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        placeholder="0.00"
-                        value={reservationForm.depositAmount}
-                        onChange={(event) =>
-                          updateReservationField("depositAmount", event.target.value)
-                        }
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
-                  )}
                   <label className="notes-field">
                     Notes
                     <textarea
@@ -3153,29 +3254,29 @@ export default function App() {
                               >
                                 {formatReservationStatus(reservation.status)}
                               </span>
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={() => openScheduleReservation(reservation)}
-                              >
-                                View booking
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={() =>
-                                  openScheduleReservation(reservation, { openPaymentEditor: true })
-                                }
-                              >
-                                Edit payment info
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={() => startEditingReservation(reservation.id)}
-                              >
-                                Edit
-                              </button>
+                              <CardActionMenu
+                                menuId={`customer-search-${reservation.id}`}
+                                openMenuId={openCardActionMenuId}
+                                onToggle={toggleCardActionMenu}
+                                onClose={closeCardActionMenu}
+                                actions={[
+                                  {
+                                    label: "View booking",
+                                    onClick: () => openScheduleReservation(reservation)
+                                  },
+                                  {
+                                    label: "Edit payment info",
+                                    onClick: () =>
+                                      openScheduleReservation(reservation, {
+                                        openPaymentEditor: true
+                                      })
+                                  },
+                                  {
+                                    label: "Edit",
+                                    onClick: () => startEditingReservation(reservation.id)
+                                  }
+                                ]}
+                              />
                             </div>
                           </div>
                           <p className="muted">
@@ -3230,38 +3331,37 @@ export default function App() {
                               {reservation.first_name} {reservation.last_name}
                             </h3>
                             <div className="button-row schedule-card-actions">
-                              {Number(reservation.remainingBalance || 0) > 0 ? (
-                                <button
-                                  type="button"
-                                  className="ghost-button"
-                                  onClick={() => openScheduleReservation(reservation)}
-                                >
-                                  Add payment
-                                </button>
-                              ) : null}
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={() => openScheduleReservation(reservation)}
-                              >
-                                View booking
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={() =>
-                                  openScheduleReservation(reservation, { openPaymentEditor: true })
-                                }
-                              >
-                                Edit payment info
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={() => startEditingReservation(reservation.id)}
-                              >
-                                Edit
-                              </button>
+                              <CardActionMenu
+                                menuId={`whole-schedule-${reservation.id}`}
+                                openMenuId={openCardActionMenuId}
+                                onToggle={toggleCardActionMenu}
+                                onClose={closeCardActionMenu}
+                                actions={[
+                                  ...(Number(reservation.remainingBalance || 0) > 0
+                                    ? [
+                                        {
+                                          label: "Add payment",
+                                          onClick: () => openScheduleReservation(reservation)
+                                        }
+                                      ]
+                                    : []),
+                                  {
+                                    label: "View booking",
+                                    onClick: () => openScheduleReservation(reservation)
+                                  },
+                                  {
+                                    label: "Edit payment info",
+                                    onClick: () =>
+                                      openScheduleReservation(reservation, {
+                                        openPaymentEditor: true
+                                      })
+                                  },
+                                  {
+                                    label: "Edit",
+                                    onClick: () => startEditingReservation(reservation.id)
+                                  }
+                                ]}
+                              />
                             </div>
                           </div>
                           <p className="muted">
@@ -3315,58 +3415,46 @@ export default function App() {
                                   {reservation.first_name} {reservation.last_name}
                                 </h3>
                                 <div className="button-row schedule-card-actions">
-                                  {Number(reservation.remainingBalance || 0) > 0 ? (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className="ghost-button"
-                                        onClick={() => openScheduleReservation(reservation)}
-                                      >
-                                        Add payment
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="ghost-button"
-                                        onClick={() => markReservationPaid(reservation)}
-                                      >
-                                        Mark paid
-                                      </button>
-                                    </>
-                                  ) : null}
-                                  <button
-                                    type="button"
-                                    className="ghost-button"
-                                    onClick={() =>
-                                      openArrivalTextMessage(reservation, selectedArrivalDate)
-                                    }
-                                  >
-                                    Open text
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="ghost-button"
-                                    onClick={() => openScheduleReservation(reservation)}
-                                  >
-                                    View booking
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="ghost-button"
-                                    onClick={() =>
-                                      openScheduleReservation(reservation, {
-                                        openPaymentEditor: true
-                                      })
-                                    }
-                                  >
-                                    Edit payment info
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="ghost-button"
-                                    onClick={() => startEditingReservation(reservation.id)}
-                                  >
-                                    Edit
-                                  </button>
+                                  <CardActionMenu
+                                    menuId={`arrivals-${reservation.id}`}
+                                    openMenuId={openCardActionMenuId}
+                                    onToggle={toggleCardActionMenu}
+                                    onClose={closeCardActionMenu}
+                                    actions={[
+                                      ...(Number(reservation.remainingBalance || 0) > 0
+                                        ? [
+                                            {
+                                              label: "Add payment",
+                                              onClick: () => openScheduleReservation(reservation)
+                                            },
+                                            {
+                                              label: "Mark paid",
+                                              onClick: () => markReservationPaid(reservation)
+                                            }
+                                          ]
+                                        : []),
+                                      {
+                                        label: "Open text",
+                                        onClick: () =>
+                                          openArrivalTextMessage(reservation, selectedArrivalDate)
+                                      },
+                                      {
+                                        label: "View booking",
+                                        onClick: () => openScheduleReservation(reservation)
+                                      },
+                                      {
+                                        label: "Edit payment info",
+                                        onClick: () =>
+                                          openScheduleReservation(reservation, {
+                                            openPaymentEditor: true
+                                          })
+                                      },
+                                      {
+                                        label: "Edit",
+                                        onClick: () => startEditingReservation(reservation.id)
+                                      }
+                                    ]}
+                                  />
                                 </div>
                               </div>
                               <p className="muted">
@@ -3456,31 +3544,29 @@ export default function App() {
                             {entry.customerName}
                           </h4>
                           <div className="button-row schedule-card-actions">
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => openScheduleReservation(entry.reservation)}
-                            >
-                              View booking
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() =>
-                                openScheduleReservation(entry.reservation, {
-                                  openPaymentEditor: true
-                                })
-                              }
-                            >
-                              Edit payment info
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => startEditingReservation(entry.reservationId)}
-                            >
-                              Edit
-                            </button>
+                            <CardActionMenu
+                              menuId={`timeline-${entry.reservationId}-${entry.segment.id}`}
+                              openMenuId={openCardActionMenuId}
+                              onToggle={toggleCardActionMenu}
+                              onClose={closeCardActionMenu}
+                              actions={[
+                                {
+                                  label: "View booking",
+                                  onClick: () => openScheduleReservation(entry.reservation)
+                                },
+                                {
+                                  label: "Edit payment info",
+                                  onClick: () =>
+                                    openScheduleReservation(entry.reservation, {
+                                      openPaymentEditor: true
+                                    })
+                                },
+                                {
+                                  label: "Edit",
+                                  onClick: () => startEditingReservation(entry.reservationId)
+                                }
+                              ]}
+                            />
                           </div>
                         </div>
                         <p className="muted">
@@ -3552,36 +3638,33 @@ export default function App() {
                             >
                               {formatReservationStatus(reservation.status)}
                             </span>
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => openReservationConfirmationInGmail(reservation)}
-                            >
-                              Open in Gmail
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => openScheduleReservation(reservation)}
-                            >
-                              View booking
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() =>
-                                openScheduleReservation(reservation, { openPaymentEditor: true })
-                              }
-                            >
-                              Edit payment info
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => startEditingReservation(reservation.id)}
-                            >
-                              Edit
-                            </button>
+                            <CardActionMenu
+                              menuId={`history-${reservation.id}`}
+                              openMenuId={openCardActionMenuId}
+                              onToggle={toggleCardActionMenu}
+                              onClose={closeCardActionMenu}
+                              actions={[
+                                {
+                                  label: "Open in Gmail",
+                                  onClick: () => openReservationConfirmationInGmail(reservation)
+                                },
+                                {
+                                  label: "View booking",
+                                  onClick: () => openScheduleReservation(reservation)
+                                },
+                                {
+                                  label: "Edit payment info",
+                                  onClick: () =>
+                                    openScheduleReservation(reservation, {
+                                      openPaymentEditor: true
+                                    })
+                                },
+                                {
+                                  label: "Edit",
+                                  onClick: () => startEditingReservation(reservation.id)
+                                }
+                              ]}
+                            />
                           </div>
                         </div>
                         <p className="muted">
@@ -3657,36 +3740,34 @@ export default function App() {
                           {reservation.first_name} {reservation.last_name}
                         </h3>
                         <div className="button-row schedule-card-actions">
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() => openScheduleReservation(reservation)}
-                          >
-                            View booking
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() =>
-                              openScheduleReservation(reservation, { openPaymentEditor: true })
-                            }
-                          >
-                            Edit payment info
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() => startEditingReservation(reservation.id)}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() => cancelReservation(reservation.id)}
-                          >
-                            Cancel
-                          </button>
+                          <CardActionMenu
+                            menuId={`yearly-${reservation.id}`}
+                            openMenuId={openCardActionMenuId}
+                            onToggle={toggleCardActionMenu}
+                            onClose={closeCardActionMenu}
+                            actions={[
+                              {
+                                label: "View booking",
+                                onClick: () => openScheduleReservation(reservation)
+                              },
+                              {
+                                label: "Edit payment info",
+                                onClick: () =>
+                                  openScheduleReservation(reservation, {
+                                    openPaymentEditor: true
+                                  })
+                              },
+                              {
+                                label: "Edit",
+                                onClick: () => startEditingReservation(reservation.id)
+                              },
+                              {
+                                label: "Cancel",
+                                onClick: () => cancelReservation(reservation.id),
+                                danger: true
+                              }
+                            ]}
+                          />
                         </div>
                       </div>
                       <p className="muted">
@@ -4078,6 +4159,7 @@ export default function App() {
                       />
                     </label>
                     <div className="pricing-summary">
+                      <span>Office payment: use this amount box, then record it below.</span>
                       <span>Status: {formatReservationStatus(activeScheduleReservation.status)}</span>
                       <span>Amount paid: {formatCurrency(activeScheduleReservation.amountPaid)}</span>
                       <span>
@@ -4086,6 +4168,13 @@ export default function App() {
                     </div>
                   </div>
                   <div className="button-row">
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => recordOfficePayment(activeScheduleReservation)}
+                    >
+                      Record office payment
+                    </button>
                     {Number(activeScheduleReservation.remainingBalance || 0) > 0 ? (
                       <button
                         type="button"

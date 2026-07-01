@@ -2204,6 +2204,76 @@ app.post("/api/reservations/:id/mark-paid", async (req, res) => {
   }
 });
 
+app.post("/api/reservations/:id/record-payment", async (req, res) => {
+  const reservationId = Number(req.params.id);
+  const paymentSource = "office_card_reader";
+  const paymentNote = typeof req.body?.note === "string" ? req.body.note.trim() : "";
+  const paymentAmount = toPriceNumber(req.body?.amount);
+
+  if (!reservationId) {
+    return res.status(400).json({ message: "Reservation ID is required." });
+  }
+
+  if (paymentAmount === null || paymentAmount <= 0) {
+    return res.status(400).json({ message: "Enter an office payment amount greater than zero." });
+  }
+
+  try {
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation) {
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status === "canceled") {
+      return res.status(400).json({ message: "Canceled reservations cannot be updated." });
+    }
+
+    if (reservation.remainingBalance !== null && paymentAmount > Number(reservation.remainingBalance)) {
+      return res.status(400).json({ message: "Office payment cannot exceed the remaining balance." });
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      await client.query(
+        `
+          UPDATE reservations
+          SET
+            amount_paid = COALESCE(amount_paid, 0) + $2,
+            status = CASE
+              WHEN status = 'pending' THEN 'active'
+              ELSE status
+            END
+          WHERE id = $1
+        `,
+        [reservationId, paymentAmount]
+      );
+
+      await insertReservationPaymentEvent(client, {
+        reservationId,
+        amount: paymentAmount,
+        paymentSource,
+        note: paymentNote || "Office card reader payment"
+      });
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const updatedReservation = await fetchReservationDetails(pool, reservationId);
+    res.json(updatedReservation);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 app.delete("/api/reservations/:id", async (req, res) => {
   const reservationId = Number(req.params.id);
 
