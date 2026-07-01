@@ -281,6 +281,7 @@ function buildBillingSummary(reservationRow, totals) {
   );
 
   return {
+    depositAmount: toPriceNumber(reservationRow.deposit_amount) ?? 0,
     totalPrice: toPriceNumber(reservationRow.total_price),
     monthlyRentPrice: toPriceNumber(reservationRow.monthly_rent_price),
     electricMeterReading: toMeterNumber(reservationRow.electric_meter_reading),
@@ -291,6 +292,58 @@ function buildBillingSummary(reservationRow, totals) {
         ? effectiveTotalPrice - (toPriceNumber(reservationRow.amount_paid) ?? 0)
         : null
   };
+}
+
+async function insertReservationPaymentEvent(
+  client,
+  {
+    reservationId,
+    stripePaymentRecordId = null,
+    amount,
+    paymentSource,
+    note = null,
+    recordedAt = new Date().toISOString()
+  }
+) {
+  const normalizedAmount = toPriceNumber(amount);
+
+  if (normalizedAmount === null || normalizedAmount <= 0) {
+    return;
+  }
+
+  if (stripePaymentRecordId) {
+    await client.query(
+      `
+        INSERT INTO reservation_payment_events (
+          reservation_id,
+          stripe_payment_record_id,
+          amount,
+          payment_source,
+          note,
+          recorded_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (stripe_payment_record_id) DO NOTHING
+      `,
+      [reservationId, stripePaymentRecordId, normalizedAmount, paymentSource, note, recordedAt]
+    );
+    return;
+  }
+
+  await client.query(
+    `
+      INSERT INTO reservation_payment_events (
+        reservation_id,
+        stripe_payment_record_id,
+        amount,
+        payment_source,
+        note,
+        recorded_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `,
+    [reservationId, null, normalizedAmount, paymentSource, note, recordedAt]
+  );
 }
 
 function ensureStripeConfigured(res) {
@@ -445,6 +498,15 @@ async function applyStripePaymentSettlement(client, paymentRecord, details) {
         paymentRecord.activate_reservation_on_payment
       ]
     );
+
+    await insertReservationPaymentEvent(client, {
+      reservationId: paymentRecord.reservation_id,
+      stripePaymentRecordId: paymentRecord.id,
+      amount: Number(paymentRecord.amount_cents) / 100,
+      paymentSource: "stripe",
+      note: details.paymentIntentId ? `Stripe PaymentIntent ${details.paymentIntentId}` : "Stripe payment",
+      recordedAt: details.paidAt || new Date().toISOString()
+    });
   }
 
   await client.query(
@@ -745,6 +807,7 @@ async function syncOpenStripePayments() {
         id,
         reservation_id,
         stripe_checkout_session_id,
+        stripe_payment_intent_id,
         amount_cents,
         activate_reservation_on_payment,
         payment_status
@@ -763,16 +826,31 @@ async function syncOpenStripePayments() {
 
   for (const paymentRecord of paymentsResult.rows) {
     let session;
+    let paymentIntent;
 
     try {
-      session = await stripe.checkout.sessions.retrieve(paymentRecord.stripe_checkout_session_id);
+      if (paymentRecord.stripe_checkout_session_id) {
+        session = await stripe.checkout.sessions.retrieve(paymentRecord.stripe_checkout_session_id);
+      } else if (paymentRecord.stripe_payment_intent_id) {
+        paymentIntent = await stripe.paymentIntents.retrieve(paymentRecord.stripe_payment_intent_id);
+      } else {
+        continue;
+      }
     } catch (error) {
-      console.error("Unable to refresh Stripe checkout session", paymentRecord.stripe_checkout_session_id, error);
+      console.error(
+        "Unable to refresh Stripe payment state",
+        paymentRecord.stripe_checkout_session_id || paymentRecord.stripe_payment_intent_id,
+        error
+      );
       summary.errorCount += 1;
       continue;
     }
 
-    if (session.payment_status !== "paid") {
+    if (session && session.payment_status !== "paid") {
+      continue;
+    }
+
+    if (paymentIntent && paymentIntent.status !== "succeeded") {
       continue;
     }
 
@@ -826,6 +904,21 @@ async function syncOpenStripePayments() {
         ]
       );
 
+      await insertReservationPaymentEvent(client, {
+        reservationId: lockedPayment.reservation_id,
+        stripePaymentRecordId: lockedPayment.id,
+        amount: Number(lockedPayment.amount_cents) / 100,
+        paymentSource: "stripe",
+        note: session
+          ? typeof session.payment_intent === "string"
+            ? `Stripe PaymentIntent ${session.payment_intent}`
+            : "Stripe payment"
+          : paymentIntent?.id
+            ? `Stripe PaymentIntent ${paymentIntent.id}`
+            : "Stripe payment",
+        recordedAt: new Date().toISOString()
+      });
+
       await client.query(
         `
           UPDATE stripe_payment_records
@@ -837,9 +930,17 @@ async function syncOpenStripePayments() {
         `,
         [
           lockedPayment.id,
-          typeof session.payment_intent === "string" ? session.payment_intent : null,
-          session.payment_status,
-          session.status === "complete" ? new Date().toISOString() : null
+          session
+            ? typeof session.payment_intent === "string"
+              ? session.payment_intent
+              : null
+            : paymentIntent?.id || null,
+          session ? session.payment_status : "paid",
+          session
+            ? session.status === "complete"
+              ? new Date().toISOString()
+              : null
+            : new Date().toISOString()
         ]
       );
 
@@ -848,7 +949,11 @@ async function syncOpenStripePayments() {
     } catch (error) {
       await client.query("ROLLBACK");
       summary.errorCount += 1;
-      console.error("Unable to record Stripe payment", paymentRecord.stripe_checkout_session_id, error);
+      console.error(
+        "Unable to record Stripe payment",
+        paymentRecord.stripe_checkout_session_id || paymentRecord.stripe_payment_intent_id,
+        error
+      );
     } finally {
       client.release();
     }
@@ -1070,6 +1175,7 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.status,
         r.reservation_term,
         r.billing_mode,
+        r.deposit_amount,
         r.total_price,
         r.monthly_rent_price,
         r.electric_meter_reading,
@@ -1099,6 +1205,22 @@ async function fetchReservationDetails(queryable, reservationId) {
   }
 
   const reservationRow = reservationResult.rows[0];
+  const paymentEventsResult = await queryable.query(
+    `
+      SELECT
+        id,
+        stripe_payment_record_id,
+        amount,
+        payment_source,
+        note,
+        recorded_at,
+        created_at
+      FROM reservation_payment_events
+      WHERE reservation_id = $1
+      ORDER BY recorded_at DESC, id DESC
+    `,
+    [reservationId]
+  );
   let stayRows = [];
 
   if (reservationRow.status === "canceled") {
@@ -1206,6 +1328,15 @@ async function fetchReservationDetails(queryable, reservationId) {
     totals,
     ...balances,
     ...billing,
+    paymentEvents: paymentEventsResult.rows.map((row) => ({
+      id: row.id,
+      stripePaymentRecordId: row.stripe_payment_record_id,
+      amount: toPriceNumber(row.amount),
+      paymentSource: row.payment_source,
+      note: row.note || "",
+      recordedAt: row.recorded_at,
+      createdAt: row.created_at
+    })),
     siteStays: pricedSiteStays
   };
 }
@@ -1489,6 +1620,7 @@ app.post("/api/reservations", async (req, res) => {
     motorhomeWithTow,
     rigLengthFeet,
     amountPaid,
+    depositAmount,
     reservationTerm,
     billingMode,
     totalPrice,
@@ -1515,6 +1647,7 @@ app.post("/api/reservations", async (req, res) => {
   const reservationBillingMode = normalizeBillingMode(billingMode);
   const isMotorhome = rvKind === "motor home";
   const parsedTotalPrice = toPriceNumber(totalPrice);
+  const parsedDepositAmount = toPriceNumber(depositAmount) ?? 0;
   const parsedMonthlyRentPrice = toPriceNumber(monthlyRentPrice);
   const parsedElectricMeterReading = toMeterNumber(electricMeterReading);
   const archivedSegments = normalizedSegments.map((segment) => ({
@@ -1552,6 +1685,7 @@ app.post("/api/reservations", async (req, res) => {
           status,
           reservation_term,
           billing_mode,
+          deposit_amount,
           total_price,
           monthly_rent_price,
           electric_meter_reading,
@@ -1565,7 +1699,7 @@ app.post("/api/reservations", async (req, res) => {
           amount_paid,
           notes
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16, $17, $18)
         RETURNING id
       `,
       [
@@ -1574,6 +1708,7 @@ app.post("/api/reservations", async (req, res) => {
         reservationStatus,
         normalizedReservationTerm,
         reservationBillingMode,
+        parsedDepositAmount,
         parsedTotalPrice,
         parsedMonthlyRentPrice,
         parsedElectricMeterReading,
@@ -1636,6 +1771,7 @@ app.put("/api/reservations/:id", async (req, res) => {
     motorhomeWithTow,
     rigLengthFeet,
     amountPaid,
+    depositAmount,
     reservationTerm,
     billingMode,
     totalPrice,
@@ -1662,6 +1798,7 @@ app.put("/api/reservations/:id", async (req, res) => {
   const reservationBillingMode = normalizeBillingMode(billingMode);
   const isMotorhome = rvKind === "motor home";
   const parsedTotalPrice = toPriceNumber(totalPrice);
+  const parsedDepositAmount = toPriceNumber(depositAmount) ?? 0;
   const parsedMonthlyRentPrice = toPriceNumber(monthlyRentPrice);
   const parsedElectricMeterReading = toMeterNumber(electricMeterReading);
   const archivedSegments = normalizedSegments.map((segment) => ({
@@ -1700,18 +1837,19 @@ app.put("/api/reservations/:id", async (req, res) => {
           status = $4,
           reservation_term = $5,
           billing_mode = $6,
-          total_price = $7,
-          monthly_rent_price = $8,
-          electric_meter_reading = $9,
-          canceled_at = $10,
-          canceled_site_stays = $11::jsonb,
-          rv_kind = $12,
-          motorhome_class_a = $13,
-          motorhome_class_c = $14,
-          motorhome_with_tow = $15,
-          rig_length_feet = $16,
-          amount_paid = $17,
-          notes = $18
+          deposit_amount = $7,
+          total_price = $8,
+          monthly_rent_price = $9,
+          electric_meter_reading = $10,
+          canceled_at = $11,
+          canceled_site_stays = $12::jsonb,
+          rv_kind = $13,
+          motorhome_class_a = $14,
+          motorhome_class_c = $15,
+          motorhome_with_tow = $16,
+          rig_length_feet = $17,
+          amount_paid = $18,
+          notes = $19
         WHERE id = $1
         RETURNING id
       `,
@@ -1722,6 +1860,7 @@ app.put("/api/reservations/:id", async (req, res) => {
         reservationStatus,
         normalizedReservationTerm,
         reservationBillingMode,
+        parsedDepositAmount,
         parsedTotalPrice,
         parsedMonthlyRentPrice,
         parsedElectricMeterReading,
@@ -1891,6 +2030,91 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
   }
 });
 
+app.post("/api/reservations/:id/payment-intents", async (req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  const reservationId = Number(req.params.id);
+  const amountCents = toAmountCents(req.body.amount);
+  const activateReservationOnPayment = Boolean(req.body.activateReservationOnPayment);
+
+  if (!reservationId || !amountCents) {
+    return res.status(400).json({ message: "Reservation and payment amount are required." });
+  }
+
+  try {
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation) {
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status === "canceled") {
+      return res.status(400).json({ message: "Canceled reservations cannot accept payments." });
+    }
+
+    const remainingBalanceCents = toAmountCents(reservation.remainingBalance);
+
+    if (!remainingBalanceCents) {
+      return res.status(400).json({ message: "This reservation does not have a remaining balance." });
+    }
+
+    if (amountCents > remainingBalanceCents) {
+      return res.status(400).json({
+        message: "Payment amount cannot be greater than the current remaining balance."
+      });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amountCents,
+      currency: "usd",
+      payment_method_types: ["card"],
+      receipt_email: reservation.email || undefined,
+      metadata: {
+        reservation_id: String(reservation.id),
+        payment_amount_cents: String(amountCents),
+        activate_reservation_on_payment: activateReservationOnPayment ? "true" : "false"
+      }
+    });
+
+    await pool.query(
+      `
+        INSERT INTO stripe_payment_records (
+          reservation_id,
+          stripe_checkout_session_id,
+          stripe_payment_intent_id,
+          amount_cents,
+          currency,
+          payment_status,
+          activate_reservation_on_payment,
+          stripe_customer_email
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `,
+      [
+        reservation.id,
+        null,
+        paymentIntent.id,
+        amountCents,
+        paymentIntent.currency || "usd",
+        paymentIntent.status === "succeeded" ? "paid" : "unpaid",
+        activateReservationOnPayment,
+        reservation.email || null
+      ]
+    );
+
+    res.json({
+      reservationId: reservation.id,
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      amount: (amountCents / 100).toFixed(2)
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 app.post("/api/stripe/sync", async (_req, res) => {
   if (!ensureStripeConfigured(res)) {
     return;
@@ -1906,6 +2130,10 @@ app.post("/api/stripe/sync", async (_req, res) => {
 
 app.post("/api/reservations/:id/mark-paid", async (req, res) => {
   const reservationId = Number(req.params.id);
+  const paymentSource = req.body?.paymentSource === "office_card_reader"
+    ? "office_card_reader"
+    : "office_card_reader";
+  const paymentNote = typeof req.body?.note === "string" ? req.body.note.trim() : "";
 
   if (!reservationId) {
     return res.status(400).json({ message: "Reservation ID is required." });
@@ -1926,19 +2154,48 @@ app.post("/api/reservations/:id/mark-paid", async (req, res) => {
       return res.status(400).json({ message: "Set the reservation total before marking it paid." });
     }
 
-    await pool.query(
-      `
-        UPDATE reservations
-        SET
-          amount_paid = $2,
-          status = CASE
-            WHEN status = 'pending' THEN 'active'
-            ELSE status
-          END
-        WHERE id = $1
-      `,
-      [reservationId, reservation.effectiveTotalPrice]
+    const amountToRecord = Math.max(
+      Number(reservation.effectiveTotalPrice) - (Number(reservation.amountPaid || 0) || 0),
+      0
     );
+
+    if (amountToRecord <= 0) {
+      return res.status(400).json({ message: "This reservation is already fully paid." });
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      await client.query(
+        `
+          UPDATE reservations
+          SET
+            amount_paid = $2,
+            status = CASE
+              WHEN status = 'pending' THEN 'active'
+              ELSE status
+            END
+          WHERE id = $1
+        `,
+        [reservationId, reservation.effectiveTotalPrice]
+      );
+
+      await insertReservationPaymentEvent(client, {
+        reservationId,
+        amount: amountToRecord,
+        paymentSource,
+        note: paymentNote || "Office card reader payment"
+      });
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
 
     const updatedReservation = await fetchReservationDetails(pool, reservationId);
     res.json(updatedReservation);

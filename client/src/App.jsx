@@ -1,12 +1,31 @@
 import { useEffect, useRef, useState } from "react";
+import { CardElement, Elements, useElements, useStripe } from "@stripe/react-stripe-js";
+import { loadStripe } from "@stripe/stripe-js";
 
 const apiBaseUrl = (
   import.meta.env.VITE_API_BASE_URL || "https://rvpark-production.up.railway.app/api"
 ).replace(/\/+$/, "");
 const appPasscode = import.meta.env.VITE_APP_PASSCODE || "rvpark2026";
+const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
 const unlockStorageKey = "rvpark-unlocked";
 const lastBookedSiteStorageKey = "rvpark-last-booked-site";
 const openEndedStayDate = "9999-12-31";
+const stripePromise = stripePublishableKey ? loadStripe(stripePublishableKey) : null;
+const cardElementOptions = {
+  style: {
+    base: {
+      color: "#274032",
+      fontFamily: "\"Georgia\", \"Times New Roman\", serif",
+      fontSize: "16px",
+      "::placeholder": {
+        color: "#7b8577"
+      }
+    },
+    invalid: {
+      color: "#9a2c2c"
+    }
+  }
+};
 
 function getStripeReturnState() {
   if (typeof window === "undefined") {
@@ -61,6 +80,7 @@ function createEmptyReservation(defaultSite = null) {
     status: "active",
     reservationTerm: "standard",
     billingMode: "manual_total",
+    depositAmount: "",
     totalPrice: "",
     monthlyRentPrice: "",
     electricMeterReading: "",
@@ -309,6 +329,14 @@ function formatMotorhomeDetails(reservation) {
   return details.length ? ` • ${details.join(" • ")}` : "";
 }
 
+function formatPaymentSource(value) {
+  if (value === "office_card_reader") {
+    return "Office card reader";
+  }
+
+  return "Stripe";
+}
+
 function buildConfirmationCode(reservation) {
   if (!reservation?.id) {
     return "";
@@ -325,8 +353,9 @@ function buildReservationConfirmationText(reservation, paymentLink) {
 
   const primaryStay = reservation.siteStays?.[0] || null;
   const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
-  const depositAmount =
-    paymentLink?.reservationId === reservation.id ? formatCurrency(paymentLink.amount) : "Not set";
+  const depositAmount = formatCurrency(
+    paymentLink?.reservationId === reservation.id ? paymentLink.amount : reservation.depositAmount ?? null
+  );
 
   return [
     "Riverpark RV Resort",
@@ -895,6 +924,86 @@ function BookingHistoryCalendar({
   );
 }
 
+function CardPaymentForm({
+  amountLabel,
+  clientSecret,
+  reservation,
+  onCancel,
+  onSuccess
+}) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setErrorMessage("");
+
+    if (!stripe || !elements) {
+      setErrorMessage("Stripe card entry is still loading.");
+      return;
+    }
+
+    const cardElement = elements.getElement(CardElement);
+
+    if (!cardElement) {
+      setErrorMessage("Card entry is not ready yet.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const result = await stripe.confirmCardPayment(clientSecret, {
+        payment_method: {
+          card: cardElement,
+          billing_details: {
+            name: `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim() || undefined,
+            email: reservation.email || undefined,
+            phone: reservation.phone_number || undefined
+          }
+        }
+      });
+
+      if (result.error) {
+        throw new Error(result.error.message || "Payment failed.");
+      }
+
+      if (!result.paymentIntent) {
+        throw new Error("Stripe did not return a payment result.");
+      }
+
+      await onSuccess(result.paymentIntent);
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <form className="card-payment-form" onSubmit={handleSubmit}>
+      <div className="result-header">
+        <h3>Card payment</h3>
+        <span className="balance-pill">{amountLabel}</span>
+      </div>
+      <div className="card-element-shell">
+        <CardElement options={cardElementOptions} />
+      </div>
+      {errorMessage ? <div className="message error">{errorMessage}</div> : null}
+      <div className="button-row">
+        <button type="submit" className="primary-button" disabled={!stripe || isSubmitting}>
+          {isSubmitting ? "Processing..." : "Charge card"}
+        </button>
+        <button type="button" className="ghost-button" onClick={onCancel} disabled={isSubmitting}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export default function App() {
   const stripeReturnState = getStripeReturnState();
   const [isUnlocked, setIsUnlocked] = useState(() => {
@@ -944,11 +1053,12 @@ export default function App() {
   const [showAllSwitchPlanSegments, setShowAllSwitchPlanSegments] = useState(false);
   const [createdReservation, setCreatedReservation] = useState(null);
   const [editingReservationId, setEditingReservationId] = useState(null);
-  const [reservationDepositAmount, setReservationDepositAmount] = useState("");
   const [activeSchedulePaymentAmount, setActiveSchedulePaymentAmount] = useState("");
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] = useState("");
+  const [reservationCardPayment, setReservationCardPayment] = useState(null);
+  const [scheduleCardPayment, setScheduleCardPayment] = useState(null);
   const [confirmationCopyMessage, setConfirmationCopyMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [reservationErrorMessage, setReservationErrorMessage] = useState("");
@@ -1379,7 +1489,6 @@ export default function App() {
     setCustomerSearch("");
     setCustomerForm(emptyCustomer);
     setEditingReservationId(null);
-    setReservationDepositAmount("");
   }
 
   function clearSection(sectionKey) {
@@ -1401,6 +1510,7 @@ export default function App() {
       setGeneratedPaymentLink(null);
       setPaymentLinkErrorMessage("");
       setPaymentLinkSuccessMessage("");
+      setReservationCardPayment(null);
       setConfirmationCopyMessage("");
       setReservationErrorMessage("");
       setReservationSuccessMessage("");
@@ -1666,13 +1776,14 @@ export default function App() {
     setGeneratedPaymentLink(null);
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
+    setReservationCardPayment(null);
     setConfirmationCopyMessage("");
 
     try {
       let customerId = reservationForm.customerId
         ? Number(reservationForm.customerId)
         : null;
-      const depositAmountNumber = Number(reservationDepositAmount);
+      const depositAmountNumber = Number(reservationForm.depositAmount);
       const isCreatingReservation = !editingReservationId;
 
       if (
@@ -1767,7 +1878,12 @@ export default function App() {
 
       await refreshReservationAndSiteData();
       if (isCreatingReservation) {
-        await generatePaymentLink(created.id, depositAmountNumber, true, "Deposit link");
+        const paymentIntent = await createCardPaymentIntent(created.id, depositAmountNumber, true);
+
+        if (paymentIntent) {
+          setReservationCardPayment(paymentIntent);
+          setPaymentLinkSuccessMessage("Card form is ready.");
+        }
       }
       resetReservationForm(rememberedSite);
     } catch (error) {
@@ -1785,10 +1901,10 @@ export default function App() {
     try {
       const reservation = await apiRequest(`/reservations/${reservationId}`);
       setEditingReservationId(reservation.id);
-      setReservationDepositAmount("");
       setGeneratedPaymentLink(null);
       setPaymentLinkErrorMessage("");
       setPaymentLinkSuccessMessage("");
+      setReservationCardPayment(null);
       setCustomerForm({
         firstName: reservation.first_name || "",
         lastName: reservation.last_name || "",
@@ -1801,6 +1917,10 @@ export default function App() {
         status: reservation.status || "active",
         reservationTerm: reservation.reservation_term || "standard",
         billingMode: "manual_total",
+        depositAmount:
+          reservation.depositAmount !== null && reservation.depositAmount !== undefined
+            ? String(reservation.depositAmount)
+            : "",
         totalPrice: reservation.totalPrice !== null && reservation.totalPrice !== undefined
           ? String(reservation.totalPrice)
           : "",
@@ -1849,9 +1969,16 @@ export default function App() {
       return;
     }
 
+    const paymentContext =
+      reservationCardPayment?.reservationId === createdReservation.id
+        ? reservationCardPayment
+        : generatedPaymentLink?.reservationId === createdReservation.id
+          ? generatedPaymentLink
+          : null;
+
     try {
       await navigator.clipboard.writeText(
-        buildReservationConfirmationText(createdReservation, generatedPaymentLink)
+        buildReservationConfirmationText(createdReservation, paymentContext)
       );
       setConfirmationCopyMessage(`Copied confirmation for reservation #${createdReservation.id}.`);
     } catch {
@@ -1865,9 +1992,13 @@ export default function App() {
       return;
     }
 
-    const paymentLink =
-      generatedPaymentLink?.reservationId === reservation.id ? generatedPaymentLink : null;
-    const composeUrl = buildGmailComposeUrl(reservation, paymentLink);
+    const paymentContext =
+      reservationCardPayment?.reservationId === reservation.id
+        ? reservationCardPayment
+        : generatedPaymentLink?.reservationId === reservation.id
+          ? generatedPaymentLink
+          : null;
+    const composeUrl = buildGmailComposeUrl(reservation, paymentContext);
     window.open(composeUrl, "_blank", "noopener,noreferrer");
     setSuccessMessage(`Opened Gmail draft for reservation #${reservation.id}.`);
     setErrorMessage("");
@@ -1909,6 +2040,37 @@ export default function App() {
       setPaymentLinkErrorMessage("");
     } catch {
       setPaymentLinkErrorMessage("Copy failed. Open the payment link instead.");
+    }
+  }
+
+  async function createCardPaymentIntent(reservationId, amount, activateReservationOnPayment) {
+    if (!stripePublishableKey || !stripePromise) {
+      setPaymentLinkErrorMessage(
+        "Add VITE_STRIPE_PUBLISHABLE_KEY to the client before collecting card details on-site."
+      );
+      return null;
+    }
+
+    setPaymentLinkErrorMessage("");
+    setPaymentLinkSuccessMessage("");
+
+    try {
+      const amountNumber = Number(amount);
+
+      if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+        throw new Error("Enter a payment amount greater than zero.");
+      }
+
+      return await apiRequest(`/reservations/${reservationId}/payment-intents`, {
+        method: "POST",
+        body: JSON.stringify({
+          amount: amountNumber.toFixed(2),
+          activateReservationOnPayment
+        })
+      });
+    } catch (error) {
+      setPaymentLinkErrorMessage(error.message);
+      return null;
     }
   }
 
@@ -1979,16 +2141,15 @@ export default function App() {
   }
 
   async function handleSchedulePaymentLink(reservation) {
-    const result = await generatePaymentLink(
+    const result = await createCardPaymentIntent(
       reservation.id,
       activeSchedulePaymentAmount,
-      false,
-      "Payment link"
+      false
     );
 
     if (result) {
-      const refreshedReservation = await apiRequest(`/reservations/${reservation.id}`);
-      setActiveScheduleReservation(refreshedReservation);
+      setScheduleCardPayment(result);
+      setPaymentLinkSuccessMessage("Card form is ready.");
     }
   }
 
@@ -1999,7 +2160,10 @@ export default function App() {
 
     try {
       const updatedReservation = await apiRequest(`/reservations/${reservation.id}/mark-paid`, {
-        method: "POST"
+        method: "POST",
+        body: JSON.stringify({
+          paymentSource: "office_card_reader"
+        })
       });
 
       setReservations((current) =>
@@ -2010,10 +2174,33 @@ export default function App() {
         setActiveScheduleReservation(updatedReservation);
       }
 
+      if (scheduleCardPayment?.reservationId === updatedReservation.id) {
+        setScheduleCardPayment(null);
+      }
+
       setSuccessMessage(`Marked reservation #${updatedReservation.id} as fully paid.`);
     } catch (error) {
       setErrorMessage(error.message);
     }
+  }
+
+  async function finalizeCardPayment(reservationId) {
+    await apiRequest("/stripe/sync", { method: "POST" });
+    const refreshedReservation = await apiRequest(`/reservations/${reservationId}`);
+
+    setReservations((current) =>
+      current.map((entry) => (entry.id === refreshedReservation.id ? refreshedReservation : entry))
+    );
+
+    if (activeScheduleReservation?.id === refreshedReservation.id) {
+      setActiveScheduleReservation(refreshedReservation);
+    }
+
+    if (createdReservation?.id === refreshedReservation.id) {
+      setCreatedReservation(refreshedReservation);
+    }
+
+    return refreshedReservation;
   }
 
   async function deleteReservation(reservation) {
@@ -2052,6 +2239,7 @@ export default function App() {
     );
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
+    setScheduleCardPayment(null);
     setActiveScheduleReservation(reservation);
   }
 
@@ -2578,12 +2766,29 @@ export default function App() {
                         min="0.01"
                         step="0.01"
                         placeholder="Required"
-                        value={reservationDepositAmount}
-                        onChange={(event) => setReservationDepositAmount(event.target.value)}
+                        value={reservationForm.depositAmount}
+                        onChange={(event) =>
+                          updateReservationField("depositAmount", event.target.value)
+                        }
                         onWheel={(event) => event.currentTarget.blur()}
                       />
                     </label>
-                  ) : null}
+                  ) : (
+                    <label>
+                      Deposit amount
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={reservationForm.depositAmount}
+                        onChange={(event) =>
+                          updateReservationField("depositAmount", event.target.value)
+                        }
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                  )}
                   <label className="notes-field">
                     Notes
                     <textarea
@@ -2655,39 +2860,35 @@ export default function App() {
                 {paymentLinkErrorMessage ? (
                   <div className="message error">{paymentLinkErrorMessage}</div>
                 ) : null}
-                {paymentLinkSuccessMessage &&
-                generatedPaymentLink?.reservationId === createdReservation?.id &&
-                generatedPaymentLink?.label === "Deposit link" ? (
+                {paymentLinkSuccessMessage && reservationCardPayment?.reservationId === createdReservation?.id ? (
                   <div className="message success">{paymentLinkSuccessMessage}</div>
                 ) : null}
-                {generatedPaymentLink?.label === "Deposit link" ? (
+                {reservationCardPayment?.reservationId === createdReservation?.id ? (
                   <div className="payment-panel">
                     <div className="result-header">
-                      <h3>Deposit payment link</h3>
+                      <h3>Collect deposit card</h3>
                       <span className="balance-pill">
-                        {formatCurrency(generatedPaymentLink.amount)}
+                        {formatCurrency(reservationCardPayment.amount)}
                       </span>
                     </div>
                     <p className="muted">
-                      Reservation #{generatedPaymentLink.reservationId} is active while this deposit link remains available.
+                      Reservation #{reservationCardPayment.reservationId} will stay pending until this card payment goes through.
                     </p>
-                    <div className="button-row">
-                      <a
-                        className="primary-button payment-link-button"
-                        href={generatedPaymentLink.checkoutUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Open payment link
-                      </a>
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        onClick={copyPaymentLinkToClipboard}
-                      >
-                        Copy payment link
-                      </button>
-                    </div>
+                    <Elements stripe={stripePromise}>
+                      <CardPaymentForm
+                        amountLabel={formatCurrency(reservationCardPayment.amount)}
+                        clientSecret={reservationCardPayment.clientSecret}
+                        reservation={createdReservation}
+                        onCancel={() => setReservationCardPayment(null)}
+                        onSuccess={async () => {
+                          const refreshedReservation = await finalizeCardPayment(createdReservation.id);
+                          setReservationCardPayment(null);
+                          setPaymentLinkSuccessMessage(
+                            `Deposit payment completed for reservation #${refreshedReservation.id}.`
+                          );
+                        }}
+                      />
+                    </Elements>
                   </div>
                 ) : null}
                 {createdReservation ? (
@@ -3201,6 +3402,7 @@ export default function App() {
                           {formatCurrency(reservation.amountPaid)}
                         </p>
                         <div className="pricing-summary">
+                          <span>Deposit amount: {formatCurrency(reservation.depositAmount)}</span>
                           <span>Manual total: {formatCurrency(reservation.totalPrice)}</span>
                           <span>Remaining balance: {formatCurrency(reservation.remainingBalance)}</span>
                         </div>
@@ -3525,6 +3727,7 @@ export default function App() {
                 </span>
               </div>
               <div className="pricing-summary">
+                <span>Deposit amount: {formatCurrency(activeScheduleReservation.depositAmount)}</span>
                 <span>
                   Manual total: {formatCurrency(activeScheduleReservation.totalPrice)}
                 </span>
@@ -3548,14 +3751,30 @@ export default function App() {
                 ))}
               </ol>
               <div className="pricing-summary">
+                <span>Deposit amount: {formatCurrency(activeScheduleReservation.depositAmount)}</span>
                 <span>Manual total: {formatCurrency(activeScheduleReservation.totalPrice)}</span>
                 <span>Amount paid: {formatCurrency(activeScheduleReservation.amountPaid)}</span>
                 <span>Remaining balance: {formatCurrency(activeScheduleReservation.remainingBalance)}</span>
               </div>
+              {activeScheduleReservation.paymentEvents?.length ? (
+                <div className="timeline-card payment-history-card">
+                  <h3>Payment history</h3>
+                  <ul className="timeline-list">
+                    {activeScheduleReservation.paymentEvents.map((paymentEvent) => (
+                      <li key={paymentEvent.id}>
+                        {formatPaymentSource(paymentEvent.paymentSource)} •{" "}
+                        {formatCurrency(paymentEvent.amount)} •{" "}
+                        {new Date(paymentEvent.recordedAt).toLocaleString()}
+                        {paymentEvent.note ? ` • ${paymentEvent.note}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               {activeScheduleReservation.status !== "canceled" ? (
                 <div className="payment-panel">
                   <div className="result-header">
-                    <h3>Send another payment link</h3>
+                    <h3>Collect card payment</h3>
                     <span className="balance-pill">
                       Balance {formatCurrency(activeScheduleReservation.remainingBalance)}
                     </span>
@@ -3595,36 +3814,34 @@ export default function App() {
                       className="primary-button"
                       onClick={() => handleSchedulePaymentLink(activeScheduleReservation)}
                     >
-                      Generate payment link
+                      Pull up card info
                     </button>
                   </div>
                   {paymentLinkErrorMessage ? (
                     <div className="message error">{paymentLinkErrorMessage}</div>
                   ) : null}
                   {paymentLinkSuccessMessage &&
-                  generatedPaymentLink?.reservationId === activeScheduleReservation.id &&
-                  generatedPaymentLink?.label === "Payment link" ? (
+                  scheduleCardPayment?.reservationId === activeScheduleReservation.id ? (
                     <div className="message success">{paymentLinkSuccessMessage}</div>
                   ) : null}
-                  {generatedPaymentLink?.reservationId === activeScheduleReservation.id &&
-                  generatedPaymentLink?.label === "Payment link" ? (
-                    <div className="button-row">
-                      <a
-                        className="primary-button payment-link-button"
-                        href={generatedPaymentLink.checkoutUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Open payment link
-                      </a>
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        onClick={copyPaymentLinkToClipboard}
-                      >
-                        Copy payment link
-                      </button>
-                    </div>
+                  {scheduleCardPayment?.reservationId === activeScheduleReservation.id ? (
+                    <Elements stripe={stripePromise}>
+                      <CardPaymentForm
+                        amountLabel={formatCurrency(scheduleCardPayment.amount)}
+                        clientSecret={scheduleCardPayment.clientSecret}
+                        reservation={activeScheduleReservation}
+                        onCancel={() => setScheduleCardPayment(null)}
+                        onSuccess={async () => {
+                          const refreshedReservation = await finalizeCardPayment(
+                            activeScheduleReservation.id
+                          );
+                          setScheduleCardPayment(null);
+                          setPaymentLinkSuccessMessage(
+                            `Card payment completed for reservation #${refreshedReservation.id}.`
+                          );
+                        }}
+                      />
+                    </Elements>
                   ) : null}
                 </div>
               ) : null}
