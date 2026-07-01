@@ -1948,7 +1948,7 @@ export default function App() {
         }))
       });
       setCustomerSearch(`${reservation.first_name} ${reservation.last_name}`);
-      setCreatedReservation(reservation);
+      setCreatedReservation(null);
       window.requestAnimationFrame(() => {
         reservationFormRef.current?.scrollIntoView({
           behavior: "smooth",
