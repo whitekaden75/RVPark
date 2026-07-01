@@ -1177,6 +1177,25 @@ export default function App() {
   }, [sites, timelineSiteId]);
 
   useEffect(() => {
+    function preventNumberInputScroll(event) {
+      const activeElement = document.activeElement;
+
+      if (
+        activeElement instanceof HTMLInputElement &&
+        activeElement.type === "number"
+      ) {
+        event.preventDefault();
+      }
+    }
+
+    window.addEventListener("wheel", preventNumberInputScroll, { passive: false });
+
+    return () => {
+      window.removeEventListener("wheel", preventNumberInputScroll);
+    };
+  }, []);
+
+  useEffect(() => {
     setReservationForm((current) => {
       let hasChanges = false;
       const nextSiteStays = current.siteStays.map((stay) => {
