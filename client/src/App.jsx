@@ -1187,6 +1187,7 @@ export default function App() {
   const [reservationEditorErrorMessage, setReservationEditorErrorMessage] = useState("");
   const [reservationEditorSuccessMessage, setReservationEditorSuccessMessage] = useState("");
   const [activeReservationNote, setActiveReservationNote] = useState(null);
+  const [reservationCardPaymentAmount, setReservationCardPaymentAmount] = useState("");
   const [activeSchedulePaymentAmount, setActiveSchedulePaymentAmount] = useState("");
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
@@ -1735,6 +1736,7 @@ export default function App() {
     if (sectionKey === "reservation") {
       resetReservationForm();
       setCreatedReservation(null);
+      setReservationCardPaymentAmount("");
       setGeneratedPaymentLink(null);
       setPaymentLinkErrorMessage("");
       setPaymentLinkSuccessMessage("");
@@ -2006,6 +2008,7 @@ export default function App() {
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
     setReservationCardPayment(null);
+    setReservationCardPaymentAmount("");
     setConfirmationCopyMessage("");
 
     try {
@@ -2107,12 +2110,7 @@ export default function App() {
 
       await refreshReservationAndSiteData();
       if (isCreatingReservation) {
-        const paymentIntent = await createCardPaymentIntent(created.id, depositAmountNumber, true);
-
-        if (paymentIntent) {
-          setReservationCardPayment(paymentIntent);
-          setPaymentLinkSuccessMessage("Card form is ready.");
-        }
+        setReservationCardPaymentAmount(depositAmountNumber.toFixed(2));
       }
       resetReservationForm(rememberedSite);
     } catch (error) {
@@ -2307,6 +2305,19 @@ export default function App() {
       await refreshReservationAndSiteData();
     } catch (error) {
       setErrorMessage(error.message);
+    }
+  }
+
+  async function handleReservationCardPayment(reservation) {
+    const result = await createCardPaymentIntent(
+      reservation.id,
+      reservationCardPaymentAmount,
+      true
+    );
+
+    if (result) {
+      setReservationCardPayment(result);
+      setPaymentLinkSuccessMessage("Card form is ready.");
     }
   }
 
@@ -3554,32 +3565,64 @@ export default function App() {
                 {paymentLinkSuccessMessage && hasReservationCardPayment ? (
                   <div className="message success">{paymentLinkSuccessMessage}</div>
                 ) : null}
-                {hasReservationCardPayment ? (
+                {createdReservation && !editingReservationId ? (
                   <div className="payment-panel">
                     <div className="result-header">
                       <h3>Collect deposit card</h3>
                       <span className="balance-pill">
-                        {formatCurrency(reservationCardPayment.amount)}
+                        Deposit {formatCurrency(createdReservation.depositAmount)}
                       </span>
                     </div>
                     <p className="muted">
-                      Reservation #{reservationCardPayment.reservationId} will stay pending until this card payment goes through.
+                      Reservation #{createdReservation.id} will stay pending until this card payment goes through.
                     </p>
-                    <Elements stripe={getStripePromise()}>
-                      <CardPaymentForm
-                        amountLabel={formatCurrency(reservationCardPayment.amount)}
-                        clientSecret={reservationCardPayment.clientSecret}
-                        reservation={createdReservation}
-                        onCancel={() => setReservationCardPayment(null)}
-                        onSuccess={async () => {
-                          const refreshedReservation = await finalizeCardPayment(createdReservation.id);
-                          setReservationCardPayment(null);
-                          setPaymentLinkSuccessMessage(
-                            `Deposit payment completed for reservation #${refreshedReservation.id}.`
-                          );
-                        }}
-                      />
-                    </Elements>
+                    <div className="payment-grid">
+                      <label>
+                        Charge amount
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={reservationCardPaymentAmount}
+                          onChange={(event) => {
+                            setReservationCardPaymentAmount(event.target.value);
+                            setReservationCardPayment(null);
+                            setPaymentLinkSuccessMessage("");
+                          }}
+                          onWheel={(event) => event.currentTarget.blur()}
+                        />
+                      </label>
+                      <div className="pricing-summary">
+                        <span>Deposit amount: {formatCurrency(createdReservation.depositAmount)}</span>
+                        <span>Balance due: {formatCurrency(createdReservation.remainingBalance)}</span>
+                      </div>
+                    </div>
+                    <div className="button-row">
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => handleReservationCardPayment(createdReservation)}
+                      >
+                        Pull up card info
+                      </button>
+                    </div>
+                    {hasReservationCardPayment ? (
+                      <Elements stripe={getStripePromise()}>
+                        <CardPaymentForm
+                          amountLabel={formatCurrency(reservationCardPayment.amount)}
+                          clientSecret={reservationCardPayment.clientSecret}
+                          reservation={createdReservation}
+                          onCancel={() => setReservationCardPayment(null)}
+                          onSuccess={async () => {
+                            const refreshedReservation = await finalizeCardPayment(createdReservation.id);
+                            setReservationCardPayment(null);
+                            setPaymentLinkSuccessMessage(
+                              `Deposit payment completed for reservation #${refreshedReservation.id}.`
+                            );
+                          }}
+                        />
+                      </Elements>
+                    ) : null}
                   </div>
                 ) : null}
                 {createdReservation && !editingReservationId ? (
@@ -4930,7 +4973,11 @@ export default function App() {
                         min="0.01"
                         step="0.01"
                         value={activeSchedulePaymentAmount}
-                        onChange={(event) => setActiveSchedulePaymentAmount(event.target.value)}
+                        onChange={(event) => {
+                          setActiveSchedulePaymentAmount(event.target.value);
+                          setScheduleCardPayment(null);
+                          setPaymentLinkSuccessMessage("");
+                        }}
                         onWheel={(event) => event.currentTarget.blur()}
                       />
                     </label>
