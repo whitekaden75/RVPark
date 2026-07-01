@@ -204,6 +204,39 @@ export function buildAvailabilityLeadTimes(sites, futureStays, arrivalDate) {
   return leadTimes;
 }
 
+export function buildAvailabilityBookingContext(sites, siteStays, arrivalDate, leaveDate) {
+  const staysBySite = new Map();
+
+  for (const site of sites) {
+    staysBySite.set(site.id, []);
+  }
+
+  for (const stay of siteStays) {
+    if (staysBySite.has(stay.site_id)) {
+      staysBySite.get(stay.site_id).push(stay);
+    }
+  }
+
+  const bookingContext = new Map();
+
+  for (const site of sites) {
+    const sortedStays = (staysBySite.get(site.id) || []).sort((left, right) =>
+      left.arrival_date.localeCompare(right.arrival_date)
+    );
+    const previousStay = [...sortedStays]
+      .reverse()
+      .find((stay) => stay.leave_date <= arrivalDate);
+    const nextStay = sortedStays.find((stay) => stay.arrival_date >= leaveDate);
+
+    bookingContext.set(site.id, {
+      previousBookedUntil: previousStay?.leave_date || null,
+      nextBookedFrom: nextStay?.arrival_date || null
+    });
+  }
+
+  return bookingContext;
+}
+
 export function validateReservationSegments(siteStays, reservationTerm = "standard") {
   if (!Array.isArray(siteStays) || siteStays.length === 0) {
     return "At least one site stay is required.";

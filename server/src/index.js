@@ -5,6 +5,7 @@ import Stripe from "stripe";
 import { pool } from "./db.js";
 import {
   buildAvailabilityMap,
+  buildAvailabilityBookingContext,
   buildAvailabilityLeadTimes,
   buildSiteSwitchPlan,
   getDirectMatches,
@@ -1165,6 +1166,24 @@ async function loadFutureStays(siteIds, arrivalDate) {
   return result.rows;
 }
 
+async function loadAvailabilityContextStays(siteIds) {
+  if (siteIds.length === 0) {
+    return [];
+  }
+
+  const result = await pool.query(
+    `
+      SELECT site_id, arrival_date::text, leave_date::text
+      FROM reservation_site_stays
+      WHERE site_id = ANY($1::bigint[])
+      ORDER BY site_id, arrival_date
+    `,
+    [siteIds]
+  );
+
+  return result.rows;
+}
+
 async function fetchReservationDetails(queryable, reservationId) {
   const reservationResult = await queryable.query(
     `
@@ -1475,6 +1494,7 @@ app.post("/api/availability/search", async (req, res) => {
       filters.leaveDate
     );
     const futureStays = await loadFutureStays(siteIds, filters.arrivalDate);
+    const contextStays = await loadAvailabilityContextStays(siteIds);
     const availability = buildAvailabilityMap(
       sites,
       conflictingStays,
@@ -1485,6 +1505,12 @@ app.post("/api/availability/search", async (req, res) => {
       sites,
       futureStays,
       filters.arrivalDate
+    );
+    const bookingContext = buildAvailabilityBookingContext(
+      sites,
+      contextStays,
+      filters.arrivalDate,
+      filters.leaveDate
     );
     const directMatches = getDirectMatches(
       availability,
@@ -1501,6 +1527,10 @@ app.post("/api/availability/search", async (req, res) => {
         availableDays: null,
         availableUntil: null,
         openEnded: false
+      }),
+      ...(bookingContext.get(site.id) || {
+        previousBookedUntil: null,
+        nextBookedFrom: null
       }),
       ...getPricingForSiteAndNights(site, numberOfNights, pricingLookup)
     }));

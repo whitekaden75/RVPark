@@ -773,6 +773,37 @@ textarea {
   grid-column: 1 / -1;
 }
 
+.notes-snippet-button {
+  margin-top: 12px;
+  border: 1px solid rgba(36, 74, 49, 0.12);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #4a5c4f;
+  text-align: left;
+  cursor: pointer;
+}
+
+.availability-context-text {
+  display: block;
+  margin-top: 6px;
+  color: #5b6d60;
+  font-size: 0.94rem;
+}
+
+.note-modal-card {
+  width: min(680px, calc(100% - 32px));
+}
+
+.note-modal-body {
+  margin-top: 12px;
+  white-space: pre-wrap;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 16px;
+  color: #1f2a21;
+}
+
 .payment-history-item {
   display: flex;
   align-items: center;

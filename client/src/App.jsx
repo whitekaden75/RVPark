@@ -87,7 +87,7 @@ function createEmptySiteStay(defaultSite = null) {
 function createEmptyReservation(defaultSite = null) {
   return {
     customerId: "",
-    bookedDate: "",
+    bookedDate: formatDateInput(new Date()),
     status: "active",
     reservationTerm: "standard",
     billingMode: "manual_total",
@@ -162,6 +162,20 @@ function createReservationEditorState(reservation) {
       }))
     }
   };
+}
+
+function getReservationNotesSnippet(notes, maxLength = 120) {
+  const normalized = String(notes || "").replaceAll(/\s+/g, " ").trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength).trimEnd()}...`;
 }
 
 function CardActionMenu({ menuId, openMenuId, onToggle, onClose, actions }) {
@@ -1172,6 +1186,7 @@ export default function App() {
   const [reservationEditor, setReservationEditor] = useState(null);
   const [reservationEditorErrorMessage, setReservationEditorErrorMessage] = useState("");
   const [reservationEditorSuccessMessage, setReservationEditorSuccessMessage] = useState("");
+  const [activeReservationNote, setActiveReservationNote] = useState(null);
   const [activeSchedulePaymentAmount, setActiveSchedulePaymentAmount] = useState("");
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
@@ -2793,6 +2808,22 @@ export default function App() {
     setReservationEditFocusSection("");
   }
 
+  function openReservationNote(reservation) {
+    if (!reservation?.notes?.trim()) {
+      return;
+    }
+
+    setActiveReservationNote({
+      reservationId: reservation.id,
+      guestName: `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim(),
+      notes: reservation.notes.trim()
+    });
+  }
+
+  function closeReservationNote() {
+    setActiveReservationNote(null);
+  }
+
   async function saveReservationEditor() {
     if (!reservationEditor) {
       return;
@@ -3102,6 +3133,15 @@ export default function App() {
                               : ""}
                             {" "}• Normal {formatCurrency(site.normalPrice)} • Discount{" "}
                             {formatCurrency(site.discountPrice)}
+                          </span>
+                          <span className="availability-context-text">
+                            {site.previousBookedUntil
+                              ? `Last booked day: ${formatDisplayDate(site.previousBookedUntil)}`
+                              : "Last booked day: open before your arrival"}
+                            {" "}•{" "}
+                            {site.nextBookedFrom
+                              ? `Next reservation starts ${formatDisplayDate(site.nextBookedFrom)}`
+                              : "Next reservation: none scheduled"}
                           </span>
                         </li>
                       ))}
@@ -3702,6 +3742,15 @@ export default function App() {
                               </li>
                             ))}
                           </ol>
+                          {reservation.notes?.trim() ? (
+                            <button
+                              type="button"
+                              className="notes-snippet-button"
+                              onClick={() => openReservationNote(reservation)}
+                            >
+                              Note: {getReservationNotesSnippet(reservation.notes)}
+                            </button>
+                          ) : null}
                         </article>
                       ))}
                     </div>
@@ -3778,6 +3827,15 @@ export default function App() {
                               : ""}
                             {` • Paid ${formatCurrency(reservation.amountPaid)} • Balance ${formatCurrency(reservation.remainingBalance)}`}
                           </p>
+                          {reservation.notes?.trim() ? (
+                            <button
+                              type="button"
+                              className="notes-snippet-button"
+                              onClick={() => openReservationNote(reservation)}
+                            >
+                              Note: {getReservationNotesSnippet(reservation.notes)}
+                            </button>
+                          ) : null}
                         </article>
                       ))}
                     </div>
@@ -3866,6 +3924,15 @@ export default function App() {
                                   : ""}
                                 {` • Paid ${formatCurrency(reservation.amountPaid)} • Balance ${formatCurrency(reservation.remainingBalance)}`}
                               </p>
+                              {reservation.notes?.trim() ? (
+                                <button
+                                  type="button"
+                                  className="notes-snippet-button"
+                                  onClick={() => openReservationNote(reservation)}
+                                >
+                                  Note: {getReservationNotesSnippet(reservation.notes)}
+                                </button>
+                              ) : null}
                             </article>
                           ))}
                         </div>
@@ -4077,6 +4144,15 @@ export default function App() {
                             </li>
                           ))}
                         </ol>
+                        {reservation.notes?.trim() ? (
+                          <button
+                            type="button"
+                            className="notes-snippet-button"
+                            onClick={() => openReservationNote(reservation)}
+                          >
+                            Note: {getReservationNotesSnippet(reservation.notes)}
+                          </button>
+                        ) : null}
                         {reservation.status === "canceled" && reservation.canceled_at ? (
                           <p className="muted">
                             Canceled {new Date(reservation.canceled_at).toLocaleString()}
@@ -4570,6 +4646,37 @@ export default function App() {
               {reservationEditorSuccessMessage ? (
                 <div className="message success">{reservationEditorSuccessMessage}</div>
               ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {activeReservationNote ? (
+          <div
+            className="modal-backdrop"
+            role="presentation"
+            onClick={closeReservationNote}
+          >
+            <div
+              className="modal-card note-modal-card"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="reservation-note-modal-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="result-header">
+                <div>
+                  <h3 id="reservation-note-modal-title">Reservation note</h3>
+                  <p className="muted">
+                    {activeReservationNote.guestName || `Reservation #${activeReservationNote.reservationId}`}
+                  </p>
+                </div>
+                <button type="button" className="ghost-button" onClick={closeReservationNote}>
+                  Close
+                </button>
+              </div>
+              <div className="note-modal-body">
+                {activeReservationNote.notes}
+              </div>
             </div>
           </div>
         ) : null}
