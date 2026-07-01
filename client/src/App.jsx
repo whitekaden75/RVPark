@@ -95,6 +95,23 @@ function createEmptyReservation(defaultSite = null) {
   };
 }
 
+function createSchedulePaymentForm(reservation = null) {
+  return {
+    depositAmount:
+      reservation?.depositAmount !== null && reservation?.depositAmount !== undefined
+        ? String(reservation.depositAmount)
+        : "",
+    totalPrice:
+      reservation?.totalPrice !== null && reservation?.totalPrice !== undefined
+        ? String(reservation.totalPrice)
+        : "",
+    amountPaid:
+      reservation?.amountPaid !== null && reservation?.amountPaid !== undefined
+        ? String(reservation.amountPaid)
+        : ""
+  };
+}
+
 const rvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
 const siteNumberCollator = new Intl.Collator(undefined, {
   numeric: true,
@@ -1059,6 +1076,12 @@ export default function App() {
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] = useState("");
   const [reservationCardPayment, setReservationCardPayment] = useState(null);
   const [scheduleCardPayment, setScheduleCardPayment] = useState(null);
+  const [isEditingSchedulePaymentInfo, setIsEditingSchedulePaymentInfo] = useState(false);
+  const [schedulePaymentForm, setSchedulePaymentForm] = useState(() =>
+    createSchedulePaymentForm()
+  );
+  const [schedulePaymentErrorMessage, setSchedulePaymentErrorMessage] = useState("");
+  const [schedulePaymentSuccessMessage, setSchedulePaymentSuccessMessage] = useState("");
   const [confirmationCopyMessage, setConfirmationCopyMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [reservationErrorMessage, setReservationErrorMessage] = useState("");
@@ -1132,6 +1155,20 @@ export default function App() {
       setActiveScheduleReservation(refreshedReservation);
     }
   }, [activeScheduleReservation, reservations]);
+
+  useEffect(() => {
+    if (!activeScheduleReservation) {
+      setIsEditingSchedulePaymentInfo(false);
+      setSchedulePaymentForm(createSchedulePaymentForm());
+      setSchedulePaymentErrorMessage("");
+      setSchedulePaymentSuccessMessage("");
+      return;
+    }
+
+    setSchedulePaymentForm(createSchedulePaymentForm(activeScheduleReservation));
+    setSchedulePaymentErrorMessage("");
+    setSchedulePaymentSuccessMessage("");
+  }, [activeScheduleReservation]);
 
   useEffect(() => {
     if (!timelineSiteId && sites.length > 0) {
@@ -1538,6 +1575,7 @@ export default function App() {
       setIsWholeScheduleOpen(false);
       setIsArrivalsTodayOpen(false);
       setActiveScheduleReservation(null);
+      setIsEditingSchedulePaymentInfo(false);
       return;
     }
 
@@ -2216,6 +2254,73 @@ export default function App() {
     return refreshedReservation;
   }
 
+  function updateSchedulePaymentField(field, value) {
+    setSchedulePaymentForm((current) => ({
+      ...current,
+      [field]: value
+    }));
+  }
+
+  async function saveSchedulePaymentInfo() {
+    if (!activeScheduleReservation) {
+      return;
+    }
+
+    setSchedulePaymentErrorMessage("");
+    setSchedulePaymentSuccessMessage("");
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const updatedReservation = await apiRequest(`/reservations/${activeScheduleReservation.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          customerId: activeScheduleReservation.customer_id,
+          bookedDate: activeScheduleReservation.booked_date,
+          status: activeScheduleReservation.status || "active",
+          reservationTerm: activeScheduleReservation.reservation_term || "standard",
+          billingMode: activeScheduleReservation.billing_mode || "manual_total",
+          depositAmount: schedulePaymentForm.depositAmount,
+          totalPrice: schedulePaymentForm.totalPrice,
+          monthlyRentPrice: activeScheduleReservation.monthlyRentPrice,
+          electricMeterReading: activeScheduleReservation.electricMeterReading,
+          rvKind: activeScheduleReservation.rv_kind,
+          motorhomeClassA: Boolean(activeScheduleReservation.motorhome_class_a),
+          motorhomeClassC: Boolean(activeScheduleReservation.motorhome_class_c),
+          motorhomeWithTow: Boolean(activeScheduleReservation.motorhome_with_tow),
+          rigLengthFeet: activeScheduleReservation.rig_length_feet ?? "",
+          amountPaid: schedulePaymentForm.amountPaid,
+          notes: activeScheduleReservation.notes || "",
+          siteStays: (activeScheduleReservation.siteStays || []).map((segment) => ({
+            siteId: String(segment.site_id),
+            arrivalDate: segment.arrival_date,
+            leaveDate: isOpenEndedStay(segment.leave_date) ? "" : segment.leave_date
+          }))
+        })
+      });
+
+      setReservations((current) =>
+        current.map((entry) => (entry.id === updatedReservation.id ? updatedReservation : entry))
+      );
+      setActiveScheduleReservation(updatedReservation);
+
+      if (createdReservation?.id === updatedReservation.id) {
+        setCreatedReservation(updatedReservation);
+      }
+
+      setActiveSchedulePaymentAmount(
+        Number(updatedReservation.remainingBalance || 0) > 0
+          ? Number(updatedReservation.remainingBalance).toFixed(2)
+          : ""
+      );
+      setSchedulePaymentSuccessMessage(`Saved payment info for reservation #${updatedReservation.id}.`);
+      setSuccessMessage(`Saved payment info for reservation #${updatedReservation.id}.`);
+      setIsEditingSchedulePaymentInfo(false);
+    } catch (error) {
+      setSchedulePaymentErrorMessage(error.message);
+    }
+  }
+
   async function deleteReservation(reservation) {
     const shouldDelete = window.confirm(
       `Delete reservation #${reservation.id} for ${reservation.first_name} ${reservation.last_name}? This cannot be undone.`
@@ -2244,7 +2349,9 @@ export default function App() {
     }
   }
 
-  function openScheduleReservation(reservation) {
+  function openScheduleReservation(reservation, options = {}) {
+    const { openPaymentEditor = false } = options;
+
     setActiveSchedulePaymentAmount(
       Number(reservation.remainingBalance || 0) > 0
         ? Number(reservation.remainingBalance).toFixed(2)
@@ -2253,6 +2360,10 @@ export default function App() {
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
     setScheduleCardPayment(null);
+    setSchedulePaymentForm(createSchedulePaymentForm(reservation));
+    setSchedulePaymentErrorMessage("");
+    setSchedulePaymentSuccessMessage("");
+    setIsEditingSchedulePaymentInfo(openPaymentEditor);
     setActiveScheduleReservation(reservation);
   }
 
@@ -3033,6 +3144,15 @@ export default function App() {
                               <button
                                 type="button"
                                 className="ghost-button"
+                                onClick={() =>
+                                  openScheduleReservation(reservation, { openPaymentEditor: true })
+                                }
+                              >
+                                Edit payment info
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button"
                                 onClick={() => startEditingReservation(reservation.id)}
                               >
                                 Edit
@@ -3106,6 +3226,15 @@ export default function App() {
                                 onClick={() => openScheduleReservation(reservation)}
                               >
                                 View booking
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                onClick={() =>
+                                  openScheduleReservation(reservation, { openPaymentEditor: true })
+                                }
+                              >
+                                Edit payment info
                               </button>
                               <button
                                 type="button"
@@ -3200,6 +3329,17 @@ export default function App() {
                                     onClick={() => openScheduleReservation(reservation)}
                                   >
                                     View booking
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ghost-button"
+                                    onClick={() =>
+                                      openScheduleReservation(reservation, {
+                                        openPaymentEditor: true
+                                      })
+                                    }
+                                  >
+                                    Edit payment info
                                   </button>
                                   <button
                                     type="button"
@@ -3307,6 +3447,17 @@ export default function App() {
                             <button
                               type="button"
                               className="ghost-button"
+                              onClick={() =>
+                                openScheduleReservation(entry.reservation, {
+                                  openPaymentEditor: true
+                                })
+                              }
+                            >
+                              Edit payment info
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button"
                               onClick={() => startEditingReservation(entry.reservationId)}
                             >
                               Edit
@@ -3399,6 +3550,15 @@ export default function App() {
                             <button
                               type="button"
                               className="ghost-button"
+                              onClick={() =>
+                                openScheduleReservation(reservation, { openPaymentEditor: true })
+                              }
+                            >
+                              Edit payment info
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button"
                               onClick={() => startEditingReservation(reservation.id)}
                             >
                               Edit
@@ -3484,6 +3644,15 @@ export default function App() {
                             onClick={() => openScheduleReservation(reservation)}
                           >
                             View booking
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() =>
+                              openScheduleReservation(reservation, { openPaymentEditor: true })
+                            }
+                          >
+                            Edit payment info
                           </button>
                           <button
                             type="button"
@@ -3703,6 +3872,13 @@ export default function App() {
                 <div className="button-row schedule-card-actions">
                   <button
                     type="button"
+                    className="ghost-button"
+                    onClick={() => setIsEditingSchedulePaymentInfo((current) => !current)}
+                  >
+                    {isEditingSchedulePaymentInfo ? "Hide payment info" : "Edit payment info"}
+                  </button>
+                  <button
+                    type="button"
                     className="ghost-button danger-button"
                     onClick={() => deleteReservation(activeScheduleReservation)}
                   >
@@ -3782,6 +3958,84 @@ export default function App() {
                       </li>
                     ))}
                   </ul>
+                </div>
+              ) : null}
+              {isEditingSchedulePaymentInfo ? (
+                <div className="payment-panel">
+                  <div className="result-header">
+                    <h3>Edit payment info</h3>
+                    <span className="balance-pill">
+                      Balance {formatCurrency(activeScheduleReservation.remainingBalance)}
+                    </span>
+                  </div>
+                  <div className="field-grid compact-grid">
+                    <label>
+                      Deposit amount
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={schedulePaymentForm.depositAmount}
+                        onChange={(event) =>
+                          updateSchedulePaymentField("depositAmount", event.target.value)
+                        }
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                    <label>
+                      Manual total
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={schedulePaymentForm.totalPrice}
+                        onChange={(event) =>
+                          updateSchedulePaymentField("totalPrice", event.target.value)
+                        }
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                    <label>
+                      Amount paid
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={schedulePaymentForm.amountPaid}
+                        onChange={(event) =>
+                          updateSchedulePaymentField("amountPaid", event.target.value)
+                        }
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => {
+                        setSchedulePaymentForm(createSchedulePaymentForm(activeScheduleReservation));
+                        setSchedulePaymentErrorMessage("");
+                        setSchedulePaymentSuccessMessage("");
+                        setIsEditingSchedulePaymentInfo(false);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={saveSchedulePaymentInfo}
+                    >
+                      Save payment info
+                    </button>
+                  </div>
+                  {schedulePaymentErrorMessage ? (
+                    <div className="message error">{schedulePaymentErrorMessage}</div>
+                  ) : null}
+                  {schedulePaymentSuccessMessage ? (
+                    <div className="message success">{schedulePaymentSuccessMessage}</div>
+                  ) : null}
                 </div>
               ) : null}
               {activeScheduleReservation.status !== "canceled" ? (
