@@ -1,4 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  Container,
+  Paper,
+  Stack,
+  Tab,
+  Tabs,
+  TextField,
+  Typography
+} from "@mui/material";
 import { CardElement, Elements, useElements, useStripe } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
 
@@ -234,6 +246,11 @@ const emptySiteFilters = {
   minSizeFeet: "",
   maxSizeFeet: ""
 };
+
+const riverCategoryOptions = [
+  { value: "normal_river", label: "Non-prime river" },
+  { value: "prime_river", label: "Prime river" }
+];
 
 function nightsBetween(arrivalDate, leaveDate) {
   if (!arrivalDate || !leaveDate || leaveDate === openEndedStayDate) {
@@ -601,6 +618,16 @@ function getSiteTypeLabel(site) {
   return site.is_on_river || site.isOnRiver ? "Riverfront" : "Standard";
 }
 
+function createSiteEditorForm(site) {
+  return {
+    siteNumber: site.site_number || "",
+    sizeFeet: String(site.size_feet ?? ""),
+    isOnRiver: Boolean(site.is_on_river),
+    riverCategory: site.river_category || "normal_river",
+    isBigRig: Boolean(site.is_big_rig)
+  };
+}
+
 function matchesSiteTypeFilter(site, selectedTypes) {
   const matches = {
     riverfront: site.is_on_river,
@@ -810,6 +837,105 @@ function BookingSiteCalendar({ segment, bookedRanges, onSelectRange, reservation
         <span><i className="legend-box selected" /> selected stay</span>
         <span><i className="legend-box departure" /> depart</span>
         <span><i className="legend-box booked" /> booked</span>
+      </div>
+    </div>
+  );
+}
+
+function AvailabilitySearchCalendar({ arrivalDate, leaveDate, onSelectRange }) {
+  const [monthCursor, setMonthCursor] = useState(() =>
+    startOfMonth(arrivalDate || formatDateInput(new Date()))
+  );
+
+  useEffect(() => {
+    if (arrivalDate) {
+      setMonthCursor(startOfMonth(arrivalDate));
+    }
+  }, [arrivalDate]);
+
+  const monthStart = new Date(monthCursor);
+  const monthLabel = formatMonthLabel(monthStart);
+  const calendarStart = new Date(monthStart);
+  calendarStart.setUTCDate(calendarStart.getUTCDate() - calendarStart.getUTCDay());
+  const selectedEndDate = leaveDate || (arrivalDate ? addDays(arrivalDate, 1) : "");
+  const days = Array.from({ length: 42 }, (_, index) => {
+    const current = new Date(calendarStart);
+    current.setUTCDate(calendarStart.getUTCDate() + index);
+    const dateString = formatDateInput(current);
+    const isDepartureDate = Boolean(leaveDate) && dateString === leaveDate;
+
+    return {
+      dateString,
+      dayNumber: current.getUTCDate(),
+      isCurrentMonth: current.getUTCMonth() === monthStart.getUTCMonth(),
+      isSelectedWindow:
+        arrivalDate &&
+        selectedEndDate &&
+        dateString >= arrivalDate &&
+        dateString < selectedEndDate,
+      isDepartureDate
+    };
+  });
+
+  function changeMonth(offset) {
+    setMonthCursor((current) => {
+      const next = new Date(current);
+      next.setUTCMonth(next.getUTCMonth() + offset);
+      return new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth(), 1));
+    });
+  }
+
+  function handleDaySelect(dateString) {
+    if (!arrivalDate || leaveDate) {
+      onSelectRange(dateString, "");
+      return;
+    }
+
+    if (dateString <= arrivalDate) {
+      onSelectRange(dateString, "");
+      return;
+    }
+
+    onSelectRange(arrivalDate, dateString);
+  }
+
+  return (
+    <div className="calendar-card">
+      <div className="result-header">
+        <button type="button" className="ghost-button" onClick={() => changeMonth(-1)}>
+          Previous
+        </button>
+        <h3>{monthLabel}</h3>
+        <button type="button" className="ghost-button" onClick={() => changeMonth(1)}>
+          Next
+        </button>
+      </div>
+      <p className="muted calendar-hint">
+        Click once for arrival. Click a later day for the departure date.
+      </p>
+      <div className="calendar-grid calendar-weekdays">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+          <span key={day}>{day}</span>
+        ))}
+      </div>
+      <div className="calendar-grid">
+        {days.map((day, index) => (
+          <button
+            key={`${day.dateString}-${index}`}
+            type="button"
+            className={`calendar-day ${day.isCurrentMonth ? "" : "outside"} ${
+              day.isSelectedWindow ? "selected" : ""
+            } ${day.isDepartureDate ? "departure" : ""}`}
+            onClick={() => handleDaySelect(day.dateString)}
+          >
+            <span>{day.dayNumber}</span>
+            {day.isDepartureDate ? <small className="calendar-day-tag">Depart</small> : null}
+          </button>
+        ))}
+      </div>
+      <div className="calendar-legend">
+        <span><i className="legend-box selected" /> selected stay</span>
+        <span><i className="legend-box departure" /> depart</span>
       </div>
     </div>
   );
@@ -1066,7 +1192,7 @@ function CardPaymentForm({
   const [errorMessage, setErrorMessage] = useState("");
 
   async function handleSubmit(event) {
-    event.preventDefault();
+    event?.preventDefault?.();
     setErrorMessage("");
 
     if (!stripe || !elements) {
@@ -1112,7 +1238,7 @@ function CardPaymentForm({
   }
 
   return (
-    <form className="card-payment-form" onSubmit={handleSubmit}>
+    <div className="card-payment-form">
       <div className="result-header">
         <h3>Card payment</h3>
         <span className="balance-pill">{amountLabel}</span>
@@ -1120,20 +1246,33 @@ function CardPaymentForm({
       <div className="card-element-shell">
         <CardElement options={cardElementOptions} />
       </div>
-      {errorMessage ? <div className="message error">{errorMessage}</div> : null}
+      {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
       <div className="button-row">
-        <button type="submit" className="primary-button" disabled={!stripe || isSubmitting}>
+        <Button
+          type="button"
+          variant="contained"
+          onClick={handleSubmit}
+          disabled={!stripe || isSubmitting}
+        >
           {isSubmitting ? "Processing..." : "Charge card"}
-        </button>
-        <button type="button" className="ghost-button" onClick={onCancel} disabled={isSubmitting}>
+        </Button>
+        <Button type="button" variant="outlined" onClick={onCancel} disabled={isSubmitting}>
           Cancel
-        </button>
+        </Button>
       </div>
-    </form>
+    </div>
   );
 }
 
 export default function App() {
+  const appPages = [
+    { key: "availability", label: "Availability" },
+    { key: "reservation", label: "Reservations" },
+    { key: "schedule", label: "Schedule" },
+    { key: "history", label: "History" },
+    { key: "yearly", label: "Yearly" },
+    { key: "sites", label: "Sites" }
+  ];
   const stripeReturnState = getStripeReturnState();
   const [isUnlocked, setIsUnlocked] = useState(() => {
     if (typeof window === "undefined") {
@@ -1164,6 +1303,7 @@ export default function App() {
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerBookingSearch, setCustomerBookingSearch] = useState("");
   const [isTypeMenuOpen, setIsTypeMenuOpen] = useState(false);
+  const [isAvailabilityCalendarOpen, setIsAvailabilityCalendarOpen] = useState(false);
   const [isWholeScheduleOpen, setIsWholeScheduleOpen] = useState(false);
   const [isArrivalsTodayOpen, setIsArrivalsTodayOpen] = useState(false);
   const [activeScheduleReservation, setActiveScheduleReservation] = useState(null);
@@ -1182,6 +1322,7 @@ export default function App() {
   const [showAllSwitchPlanSegments, setShowAllSwitchPlanSegments] = useState(false);
   const [createdReservation, setCreatedReservation] = useState(null);
   const [editingReservationId, setEditingReservationId] = useState(null);
+  const [activePage, setActivePage] = useState("availability");
   const [reservationEditFocusSection, setReservationEditFocusSection] = useState("");
   const [reservationEditor, setReservationEditor] = useState(null);
   const [reservationEditorErrorMessage, setReservationEditorErrorMessage] = useState("");
@@ -1196,6 +1337,10 @@ export default function App() {
   const [scheduleCardPayment, setScheduleCardPayment] = useState(null);
   const [openCardActionMenuId, setOpenCardActionMenuId] = useState("");
   const [isEditingSchedulePaymentInfo, setIsEditingSchedulePaymentInfo] = useState(false);
+  const [activeSiteEditorId, setActiveSiteEditorId] = useState(null);
+  const [siteEditorForm, setSiteEditorForm] = useState(null);
+  const [siteEditorErrorMessage, setSiteEditorErrorMessage] = useState("");
+  const [siteEditorSuccessMessage, setSiteEditorSuccessMessage] = useState("");
   const [schedulePaymentForm, setSchedulePaymentForm] = useState(() =>
     createSchedulePaymentForm()
   );
@@ -1206,21 +1351,12 @@ export default function App() {
   const [reservationErrorMessage, setReservationErrorMessage] = useState("");
   const [reservationSuccessMessage, setReservationSuccessMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
-  const [isStripeSyncing, setIsStripeSyncing] = useState(false);
   const reservationFormRef = useRef(null);
   const reservationCustomerSectionRef = useRef(null);
   const reservationDatesSectionRef = useRef(null);
   const reservationRigSectionRef = useRef(null);
   const reservationNotesSectionRef = useRef(null);
   const reservationSiteSectionRef = useRef(null);
-  const [openSections, setOpenSections] = useState({
-    availability: false,
-    reservation: false,
-    schedule: false,
-    history: false,
-    yearly: false,
-    sites: false
-  });
 
   useEffect(() => {
     async function loadInitialData() {
@@ -1725,6 +1861,7 @@ export default function App() {
 
     if (sectionKey === "availability") {
       setSearchForm(emptySearch);
+      setIsAvailabilityCalendarOpen(false);
       setDirectMatches([]);
       setSwitchPlan(null);
       setSwitchPlanTotals(null);
@@ -1775,6 +1912,10 @@ export default function App() {
       setSiteFilters(emptySiteFilters);
       setIsTypeMenuOpen(false);
       setOpenSitePricing({});
+      setActiveSiteEditorId(null);
+      setSiteEditorForm(null);
+      setSiteEditorErrorMessage("");
+      setSiteEditorSuccessMessage("");
     }
   }
 
@@ -2126,10 +2267,7 @@ export default function App() {
     setPaymentLinkSuccessMessage("");
     setReservationCardPayment(null);
     setReservationEditFocusSection(focusSection);
-    setOpenSections((current) => ({
-      ...current,
-      reservation: true
-    }));
+    setActivePage("reservation");
 
     try {
       const reservation = await apiRequest(`/reservations/${reservationId}`);
@@ -2308,6 +2446,111 @@ export default function App() {
     }
   }
 
+  function startEditingSite(site) {
+    setActiveSiteEditorId(site.id);
+    setSiteEditorForm(createSiteEditorForm(site));
+    setSiteEditorErrorMessage("");
+    setSiteEditorSuccessMessage("");
+  }
+
+  function cancelSiteEditing() {
+    setActiveSiteEditorId(null);
+    setSiteEditorForm(null);
+    setSiteEditorErrorMessage("");
+    setSiteEditorSuccessMessage("");
+  }
+
+  function updateSiteEditorField(field, value) {
+    setSiteEditorForm((current) => {
+      if (!current) {
+        return current;
+      }
+
+      if (field === "isOnRiver") {
+        return {
+          ...current,
+          isOnRiver: value,
+          riverCategory: value ? current.riverCategory || "normal_river" : ""
+        };
+      }
+
+      return {
+        ...current,
+        [field]: value
+      };
+    });
+  }
+
+  async function saveSiteDetails() {
+    if (!activeSiteEditorId || !siteEditorForm) {
+      return;
+    }
+
+    setSiteEditorErrorMessage("");
+    setSiteEditorSuccessMessage("");
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const updatedSite = await apiRequest(`/sites/${activeSiteEditorId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          siteNumber: siteEditorForm.siteNumber,
+          sizeFeet: siteEditorForm.sizeFeet,
+          isOnRiver: siteEditorForm.isOnRiver,
+          riverCategory: siteEditorForm.isOnRiver ? siteEditorForm.riverCategory : "",
+          isBigRig: siteEditorForm.isBigRig
+        })
+      });
+
+      await refreshSites();
+      setSiteEditorSuccessMessage(
+        `Saved site ${updatedSite.site_number || updatedSite.siteNumber}.`
+      );
+      setSuccessMessage(`Saved site ${updatedSite.site_number || updatedSite.siteNumber}.`);
+      setActiveSiteEditorId(null);
+      setSiteEditorForm(null);
+    } catch (error) {
+      setSiteEditorErrorMessage(error.message);
+    }
+  }
+
+  async function deleteSite(site) {
+    const shouldDelete = window.confirm(`Delete site ${site.site_number}?`);
+
+    if (!shouldDelete) {
+      return;
+    }
+
+    setSiteEditorErrorMessage("");
+    setSiteEditorSuccessMessage("");
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const deletedSite = await apiRequest(`/sites/${site.id}`, {
+        method: "DELETE"
+      });
+
+      setSites((current) => current.filter((entry) => entry.id !== site.id));
+      setOpenSitePricing((current) => {
+        const next = { ...current };
+        delete next[site.id];
+        return next;
+      });
+
+      if (activeSiteEditorId === site.id) {
+        setActiveSiteEditorId(null);
+        setSiteEditorForm(null);
+      }
+
+      setSiteEditorSuccessMessage(`Deleted site ${deletedSite.siteNumber}.`);
+      setSuccessMessage(`Deleted site ${deletedSite.siteNumber}.`);
+    } catch (error) {
+      setSiteEditorErrorMessage(error.message);
+    }
+  }
+
   async function handleReservationCardPayment(reservation) {
     const result = await createCardPaymentIntent(
       reservation.id,
@@ -2318,27 +2561,6 @@ export default function App() {
     if (result) {
       setReservationCardPayment(result);
       setPaymentLinkSuccessMessage("Card form is ready.");
-    }
-  }
-
-  async function handleStripeSync() {
-    setIsStripeSyncing(true);
-    setErrorMessage("");
-    setSuccessMessage("");
-
-    try {
-      const result = await apiRequest("/stripe/sync", {
-        method: "POST"
-      });
-
-      await refreshReservationAndSiteData();
-      setSuccessMessage(
-        `Stripe sync finished. Checked ${result.checkedCount || 0} open payments and updated ${result.updatedCount || 0}.`
-      );
-    } catch (error) {
-      setErrorMessage(error.message);
-    } finally {
-      setIsStripeSyncing(false);
     }
   }
 
@@ -2460,6 +2682,44 @@ export default function App() {
           : ""
       );
       setSuccessMessage(`Recorded office payment for reservation #${updatedReservation.id}.`);
+    } catch (error) {
+      setPaymentLinkErrorMessage(error.message);
+    }
+  }
+
+  async function recordCreatedReservationOfficePayment(reservation) {
+    setErrorMessage("");
+    setSuccessMessage("");
+    setPaymentLinkErrorMessage("");
+    setPaymentLinkSuccessMessage("");
+
+    try {
+      const amountNumber = Number(reservationCardPaymentAmount);
+
+      if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+        throw new Error("Enter an office payment amount greater than zero.");
+      }
+
+      const updatedReservation = await apiRequest(`/reservations/${reservation.id}/record-payment`, {
+        method: "POST",
+        body: JSON.stringify({
+          amount: amountNumber.toFixed(2),
+          paymentSource: "office_card_reader"
+        })
+      });
+
+      setReservations((current) =>
+        current.map((entry) => (entry.id === updatedReservation.id ? updatedReservation : entry))
+      );
+      setCreatedReservation(updatedReservation);
+      setReservationCardPayment(null);
+      setReservationCardPaymentAmount(
+        Number(updatedReservation.remainingBalance || 0) > 0
+          ? Number(updatedReservation.remainingBalance).toFixed(2)
+          : ""
+      );
+      setSuccessMessage(`Recorded office payment for reservation #${updatedReservation.id}.`);
+      setPaymentLinkSuccessMessage(`Recorded office payment for reservation #${updatedReservation.id}.`);
     } catch (error) {
       setPaymentLinkErrorMessage(error.message);
     }
@@ -2779,6 +3039,7 @@ export default function App() {
   function openScheduleReservation(reservation, options = {}) {
     const { openPaymentEditor = false } = options;
 
+    setActivePage("schedule");
     setActiveSchedulePaymentAmount(
       Number(reservation.remainingBalance || 0) > 0
         ? Number(reservation.remainingBalance).toFixed(2)
@@ -2921,10 +3182,7 @@ export default function App() {
   }
 
   function openReservationSection() {
-    setOpenSections((current) => ({
-      ...current,
-      reservation: true
-    }));
+    setActivePage("reservation");
 
     window.requestAnimationFrame(() => {
       reservationFormRef.current?.scrollIntoView({
@@ -2982,63 +3240,70 @@ export default function App() {
     });
   }
 
-  function toggleSection(sectionKey) {
-    setOpenSections((current) => ({
-      ...current,
-      [sectionKey]: !current[sectionKey]
-    }));
-  }
-
   if (!isUnlocked) {
     return (
-      <div className="passcode-shell">
-        <form className="passcode-card" onSubmit={handleUnlock}>
-          <h1>RV Park Access</h1>
-          <p className="muted">Enter the passcode to open the reservation app.</p>
-          <label>
-            Passcode
-            <input
+      <Box className="passcode-shell">
+        <Paper
+          component="form"
+          className="passcode-card"
+          onSubmit={handleUnlock}
+          elevation={0}
+        >
+          <Stack spacing={2.5}>
+            <div>
+              <Typography variant="h1">RV Park Access</Typography>
+              <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
+                Enter the passcode to open the reservation app.
+              </Typography>
+            </div>
+            <TextField
+              label="Passcode"
               type="password"
               value={passcodeInput}
               onChange={(event) => setPasscodeInput(event.target.value)}
+              fullWidth
             />
-          </label>
-          {passcodeError ? <div className="message error">{passcodeError}</div> : null}
-          <button type="submit" className="primary-button">
-            Unlock
-          </button>
-        </form>
-      </div>
+            {passcodeError ? <Alert severity="error">{passcodeError}</Alert> : null}
+            <Button type="submit" variant="contained" size="large">
+              Unlock
+            </Button>
+          </Stack>
+        </Paper>
+      </Box>
     );
   }
 
   return (
-    <div className="page-shell">
-      {errorMessage ? <div className="message error">{errorMessage}</div> : null}
-      {successMessage ? <div className="message success">{successMessage}</div> : null}
+    <Container className="page-shell" maxWidth="xl">
+      <Paper component="header" className="app-header" elevation={0}>
+        <Stack spacing={2.5}>
+          <div>
+            <Typography variant="h1">RV Park Reservations</Typography>
+            <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
+              Switch between pages from the top navigation.
+            </Typography>
+          </div>
+          <Tabs
+            value={activePage}
+            onChange={(_event, nextValue) => setActivePage(nextValue)}
+            variant="scrollable"
+            scrollButtons="auto"
+            allowScrollButtonsMobile
+            aria-label="Primary"
+          >
+            {appPages.map((page) => (
+              <Tab key={page.key} value={page.key} label={page.label} />
+            ))}
+          </Tabs>
+        </Stack>
+      </Paper>
+      {errorMessage ? <Alert severity="error" sx={{ mb: 2 }}>{errorMessage}</Alert> : null}
+      {successMessage ? <Alert severity="success" sx={{ mb: 2 }}>{successMessage}</Alert> : null}
 
       <main className="layout">
-        <section className="card">
-          <div className="section-toggle-row">
-            <h2>Stripe Sync</h2>
-            <div className="section-actions">
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={handleStripeSync}
-                disabled={isStripeSyncing}
-              >
-                {isStripeSyncing ? "Syncing Stripe..." : "Sync Stripe payments"}
-              </button>
-            </div>
-          </div>
-          <div className="section-heading">
-            <p>Use this to backfill older Stripe payments into reservation balances after webhooks go live.</p>
-          </div>
-        </section>
-
-        <section className="card">
-          <div className="section-toggle-row">
+        {activePage === "availability" ? (
+        <Paper component="section" className="card" elevation={0}>
+          <div className="page-section-header">
             <h2>Availability Search</h2>
             <div className="section-actions">
               <button
@@ -3048,38 +3313,44 @@ export default function App() {
               >
                 Clear section
               </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => toggleSection("availability")}
-              >
-                {openSections.availability ? "Hide search" : "Open search"}
-              </button>
             </div>
           </div>
-          {openSections.availability ? (
             <>
               <div className="section-heading">
                 <p>Find sites that fit the full stay or build a switch plan across multiple sites.</p>
               </div>
               <form onSubmit={handleAvailabilitySearch}>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => setIsAvailabilityCalendarOpen((current) => !current)}
+                  >
+                    {isAvailabilityCalendarOpen ? "Hide calendar" : "Show calendar"}
+                  </button>
+                </div>
+                {searchForm.arrivalDate ? (
+                  <p className="muted">
+                    {searchForm.leaveDate
+                      ? `Selected stay: ${formatDisplayDate(searchForm.arrivalDate)} through ${formatDisplayDate(
+                          searchForm.leaveDate
+                        )} (${nightsBetween(searchForm.arrivalDate, searchForm.leaveDate)} nights)`
+                      : `Arrival selected: ${formatDisplayDate(
+                          searchForm.arrivalDate
+                        )}. Pick a later day to finish the stay.`}
+                  </p>
+                ) : null}
+                {isAvailabilityCalendarOpen ? (
+                  <AvailabilitySearchCalendar
+                    arrivalDate={searchForm.arrivalDate}
+                    leaveDate={searchForm.leaveDate}
+                    onSelectRange={(arrivalDate, leaveDate) => {
+                      updateSearchField("arrivalDate", arrivalDate);
+                      updateSearchField("leaveDate", leaveDate);
+                    }}
+                  />
+                ) : null}
                 <div className="field-grid">
-                  <label>
-                    Arrival
-                    <input
-                      type="date"
-                      value={searchForm.arrivalDate}
-                      onChange={(event) => updateSearchField("arrivalDate", event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    Leave
-                    <input
-                      type="date"
-                      value={searchForm.leaveDate}
-                      onChange={(event) => updateSearchField("leaveDate", event.target.value)}
-                    />
-                  </label>
                   <label>
                     Minimum size
                     <input
@@ -3206,11 +3477,12 @@ export default function App() {
                 </div>
               </div>
             </>
-          ) : null}
-        </section>
+        </Paper>
+        ) : null}
 
-        <section ref={reservationFormRef} className="card">
-          <div className="section-toggle-row">
+        {activePage === "reservation" ? (
+        <Paper component="section" ref={reservationFormRef} className="card" elevation={0}>
+          <div className="page-section-header">
             <h2>{editingReservationId ? `Edit Reservation #${editingReservationId}` : "Create Reservation"}</h2>
             <div className="section-actions">
               <button
@@ -3220,16 +3492,8 @@ export default function App() {
               >
                 Clear section
               </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => toggleSection("reservation")}
-              >
-                {openSections.reservation ? "Hide booking form" : "Open booking form"}
-              </button>
             </div>
           </div>
-          {openSections.reservation ? (
             <div>
               <div className="section-heading">
                 <p>
@@ -3562,23 +3826,23 @@ export default function App() {
                 {paymentLinkErrorMessage ? (
                   <div className="message error">{paymentLinkErrorMessage}</div>
                 ) : null}
-                {paymentLinkSuccessMessage && hasReservationCardPayment ? (
+                {paymentLinkSuccessMessage ? (
                   <div className="message success">{paymentLinkSuccessMessage}</div>
                 ) : null}
                 {createdReservation && !editingReservationId ? (
                   <div className="payment-panel">
                     <div className="result-header">
-                      <h3>Collect deposit card</h3>
+                      <h3>Collect deposit payment</h3>
                       <span className="balance-pill">
                         Deposit {formatCurrency(createdReservation.depositAmount)}
                       </span>
                     </div>
                     <p className="muted">
-                      Reservation #{createdReservation.id} will stay pending until this card payment goes through.
+                      Reservation #{createdReservation.id}. Take a card payment or record an office payment here.
                     </p>
-                    <div className="payment-grid">
-                      <label>
-                        Charge amount
+                    <div className="payment-grid created-payment-grid">
+                      <label className="payment-amount-field">
+                        Payment amount
                         <input
                           type="number"
                           min="0.01"
@@ -3592,12 +3856,33 @@ export default function App() {
                           onWheel={(event) => event.currentTarget.blur()}
                         />
                       </label>
-                      <div className="pricing-summary">
-                        <span>Deposit amount: {formatCurrency(createdReservation.depositAmount)}</span>
-                        <span>Balance due: {formatCurrency(createdReservation.remainingBalance)}</span>
+                      <div className="created-payment-summary">
+                        <div className="payment-summary-row">
+                          <span>Deposit amount</span>
+                          <strong>{formatCurrency(createdReservation.depositAmount)}</strong>
+                        </div>
+                        <div className="payment-summary-row">
+                          <span>Status</span>
+                          <strong>{formatReservationStatus(createdReservation.status)}</strong>
+                        </div>
+                        <div className="payment-summary-row">
+                          <span>Amount paid</span>
+                          <strong>{formatCurrency(createdReservation.amountPaid)}</strong>
+                        </div>
+                        <div className="payment-summary-row">
+                          <span>Balance due</span>
+                          <strong>{formatCurrency(createdReservation.remainingBalance)}</strong>
+                        </div>
                       </div>
                     </div>
-                    <div className="button-row">
+                    <div className="button-row created-payment-actions">
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => recordCreatedReservationOfficePayment(createdReservation)}
+                      >
+                        Record office payment
+                      </button>
                       <button
                         type="button"
                         className="primary-button"
@@ -3672,11 +3957,12 @@ export default function App() {
                 ) : null}
               </form>
             </div>
-          ) : null}
-        </section>
+        </Paper>
+        ) : null}
 
-        <section className="card">
-          <div className="section-toggle-row">
+        {activePage === "schedule" ? (
+        <Paper component="section" className="card" elevation={0}>
+          <div className="page-section-header">
             <h2>Schedule</h2>
             <div className="section-actions">
               <button
@@ -3686,16 +3972,8 @@ export default function App() {
               >
                 Clear section
               </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => toggleSection("schedule")}
-              >
-                {openSections.schedule ? "Hide schedule" : "Open schedule"}
-              </button>
             </div>
           </div>
-          {openSections.schedule ? (
             <>
               <div className="section-heading">
                 <p>See who is in a site today, then inspect a single site timeline for any date window.</p>
@@ -4083,11 +4361,12 @@ export default function App() {
                 )}
               </div>
             </>
-          ) : null}
-        </section>
+        </Paper>
+        ) : null}
 
-        <section className="card">
-          <div className="section-toggle-row">
+        {activePage === "history" ? (
+        <Paper component="section" className="card" elevation={0}>
+          <div className="page-section-header">
             <h2>Reservation History</h2>
             <div className="section-actions">
               <button
@@ -4097,16 +4376,8 @@ export default function App() {
               >
                 Clear section
               </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => toggleSection("history")}
-              >
-                {openSections.history ? "Hide history" : "Open history"}
-              </button>
             </div>
           </div>
-          {openSections.history ? (
             <>
               <div className="section-heading">
                 <p>Browse reservations by booked date, then open a day to review and edit bookings.</p>
@@ -4209,11 +4480,12 @@ export default function App() {
                 )}
               </div>
             </>
-          ) : null}
-        </section>
+        </Paper>
+        ) : null}
 
-        <section className="card">
-          <div className="section-toggle-row">
+        {activePage === "yearly" ? (
+        <Paper component="section" className="card" elevation={0}>
+          <div className="page-section-header">
             <h2>Yearly Bookings</h2>
             <div className="section-actions">
               <button
@@ -4223,16 +4495,8 @@ export default function App() {
               >
                 Clear section
               </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => toggleSection("yearly")}
-              >
-                {openSections.yearly ? "Hide yearly bookings" : "Open yearly bookings"}
-              </button>
             </div>
           </div>
-          {openSections.yearly ? (
             <>
               <div className="section-heading">
                 <p>Manage open-ended yearly guests with quick booking, edit, and cancel actions.</p>
@@ -4299,11 +4563,12 @@ export default function App() {
                 <p className="muted">No active yearly bookings.</p>
               )}
             </>
-          ) : null}
-        </section>
+        </Paper>
+        ) : null}
 
-        <section className="card">
-          <div className="section-toggle-row">
+        {activePage === "sites" ? (
+        <Paper component="section" className="card" elevation={0}>
+          <div className="page-section-header">
             <h2>RV Sites</h2>
             <div className="section-actions">
               <button
@@ -4313,20 +4578,18 @@ export default function App() {
               >
                 Clear section
               </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => toggleSection("sites")}
-              >
-                {openSections.sites ? "Hide site list" : "Open site list"}
-              </button>
             </div>
           </div>
-          {openSections.sites ? (
             <>
               <div className="section-heading">
                 <p>Current site inventory with size and riverfront details.</p>
               </div>
+              {siteEditorErrorMessage ? (
+                <div className="message error">{siteEditorErrorMessage}</div>
+              ) : null}
+              {siteEditorSuccessMessage ? (
+                <div className="message success">{siteEditorSuccessMessage}</div>
+              ) : null}
               <div className="site-filter-bar">
                 <label>
                   Site lookup
@@ -4395,7 +4658,7 @@ export default function App() {
                   <article
                     key={site.id}
                     className={`site-tile ${site.is_on_river ? "river" : ""} ${
-                      openSitePricing[site.id] ? "expanded" : ""
+                      openSitePricing[site.id] || activeSiteEditorId === site.id ? "expanded" : ""
                     }`}
                   >
                     <h3>Site {site.site_number}</h3>
@@ -4404,13 +4667,111 @@ export default function App() {
                     <p>River category: {formatPricingCategory(site.river_category)}</p>
                     <p>Big rig: {site.is_big_rig ? "Yes" : "No"}</p>
                     <p>Pricing category: {formatPricingCategory(site.pricing_category)}</p>
-                    <button
-                      type="button"
-                      className="ghost-button site-price-button"
-                      onClick={() => toggleSitePricing(site.id)}
-                    >
-                      {openSitePricing[site.id] ? "Hide prices" : "Prices"}
-                    </button>
+                    <div className="button-row site-tile-actions">
+                      <button
+                        type="button"
+                        className="ghost-button site-price-button"
+                        onClick={() => toggleSitePricing(site.id)}
+                      >
+                        {openSitePricing[site.id] ? "Hide prices" : "Prices"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button site-price-button"
+                        onClick={() =>
+                          activeSiteEditorId === site.id ? cancelSiteEditing() : startEditingSite(site)
+                        }
+                      >
+                        {activeSiteEditorId === site.id ? "Cancel edit" : "Edit site"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button danger-button site-price-button"
+                        onClick={() => deleteSite(site)}
+                      >
+                        Delete site
+                      </button>
+                    </div>
+                    {activeSiteEditorId === site.id && siteEditorForm ? (
+                      <div className="site-editor-card">
+                        <div className="field-grid compact-grid">
+                          <label>
+                            Site number
+                            <input
+                              value={siteEditorForm.siteNumber}
+                              onChange={(event) =>
+                                updateSiteEditorField("siteNumber", event.target.value)
+                              }
+                            />
+                          </label>
+                          <label>
+                            Size (feet)
+                            <input
+                              type="number"
+                              min="1"
+                              value={siteEditorForm.sizeFeet}
+                              onChange={(event) =>
+                                updateSiteEditorField("sizeFeet", event.target.value)
+                              }
+                              onWheel={(event) => event.currentTarget.blur()}
+                            />
+                          </label>
+                          <label className="checkbox-row compact-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={siteEditorForm.isOnRiver}
+                              onChange={(event) =>
+                                updateSiteEditorField("isOnRiver", event.target.checked)
+                              }
+                            />
+                            Riverfront
+                          </label>
+                          <label className="checkbox-row compact-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={siteEditorForm.isBigRig}
+                              onChange={(event) =>
+                                updateSiteEditorField("isBigRig", event.target.checked)
+                              }
+                            />
+                            Big rig
+                          </label>
+                          {siteEditorForm.isOnRiver ? (
+                            <label>
+                              River category
+                              <select
+                                value={siteEditorForm.riverCategory}
+                                onChange={(event) =>
+                                  updateSiteEditorField("riverCategory", event.target.value)
+                                }
+                              >
+                                {riverCategoryOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          ) : null}
+                        </div>
+                        <div className="button-row">
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={cancelSiteEditing}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="primary-button"
+                            onClick={saveSiteDetails}
+                          >
+                            Save site
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                     {openSitePricing[site.id] ? (
                       <>
                         <div className="day-chip-row">
@@ -4452,8 +4813,8 @@ export default function App() {
                 <p className="muted">No sites match the current filters.</p>
               ) : null}
             </>
-          ) : null}
-        </section>
+        </Paper>
+        ) : null}
 
         {reservationEditor ? (
           <div
@@ -5049,6 +5410,6 @@ export default function App() {
           </div>
         ) : null}
       </main>
-    </div>
+    </Container>
   );
 }

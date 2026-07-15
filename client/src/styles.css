@@ -30,6 +30,43 @@ textarea {
   padding: 32px 0 56px;
 }
 
+.app-header {
+  display: grid;
+  gap: 18px;
+  margin-bottom: 24px;
+  padding: 24px 28px;
+  border-radius: 24px;
+  background: rgba(255, 252, 246, 0.82);
+  border: 1px solid rgba(77, 104, 79, 0.12);
+  box-shadow: 0 18px 42px rgba(48, 68, 47, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.app-header h1 {
+  margin: 0;
+}
+
+.page-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.page-nav-button {
+  border: 1px solid rgba(36, 74, 49, 0.18);
+  border-radius: 999px;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #244a31;
+  cursor: pointer;
+}
+
+.page-nav-button.active {
+  background: #244a31;
+  color: #f7fbf6;
+  box-shadow: 0 12px 24px rgba(36, 74, 49, 0.18);
+}
+
 .passcode-shell {
   min-height: 100vh;
   display: grid;
@@ -73,13 +110,21 @@ textarea {
   gap: 16px;
 }
 
+.page-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .section-actions {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.section-toggle-row h2 {
+.section-toggle-row h2,
+.page-section-header h2 {
   margin: 0;
 }
 
@@ -186,6 +231,21 @@ textarea {
   background: rgba(38, 92, 64, 0.1);
   color: #29513a;
   font-size: 0.9rem;
+}
+
+.site-tile-actions {
+  justify-content: flex-start;
+  margin-top: 12px;
+}
+
+.site-editor-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(36, 74, 49, 0.14);
+  background: rgba(255, 255, 255, 0.7);
 }
 
 .pricing-table {
@@ -704,6 +764,45 @@ textarea {
   grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
   gap: 16px;
   align-items: end;
+}
+
+.created-payment-grid {
+  align-items: start;
+}
+
+.payment-amount-field {
+  display: grid;
+  gap: 8px;
+}
+
+.created-payment-summary {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(36, 74, 49, 0.12);
+  background: rgba(250, 247, 239, 0.82);
+}
+
+.payment-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.payment-summary-row span {
+  color: #5c6c60;
+  font-size: 0.95rem;
+}
+
+.payment-summary-row strong {
+  color: #244a31;
+  font-size: 0.96rem;
+}
+
+.created-payment-actions {
+  justify-content: flex-start;
 }
 
 .payment-link-button {

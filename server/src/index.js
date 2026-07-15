@@ -162,6 +162,34 @@ function normalizeBillingMode(value) {
   return "standard";
 }
 
+function normalizeSitePayload(body) {
+  const siteNumber = String(body?.siteNumber || "").trim();
+  const sizeFeet = Number(body?.sizeFeet);
+  const isOnRiver = Boolean(body?.isOnRiver);
+  const isBigRig = Boolean(body?.isBigRig);
+  const riverCategory = String(body?.riverCategory || "").trim();
+
+  if (!siteNumber) {
+    return { error: "Site number is required." };
+  }
+
+  if (!Number.isFinite(sizeFeet) || sizeFeet <= 0) {
+    return { error: "Site size must be greater than zero." };
+  }
+
+  if (isOnRiver && !["prime_river", "normal_river"].includes(riverCategory)) {
+    return { error: "River category must be prime river or non-prime river." };
+  }
+
+  return {
+    siteNumber,
+    sizeFeet,
+    isOnRiver,
+    riverCategory,
+    isBigRig
+  };
+}
+
 function toMeterNumber(value) {
   return value === null || value === undefined || value === "" ? null : Number(value);
 }
@@ -1392,6 +1420,118 @@ app.get("/api/sites", async (_req, res) => {
     res.json(
       sitesResult.rows.map((site) => decorateSiteWithPricingTable(site, pricingRulesByCategory))
     );
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.put("/api/sites/:id", async (req, res) => {
+  const siteId = Number(req.params.id);
+
+  if (!siteId) {
+    return res.status(400).json({ message: "Site ID is required." });
+  }
+
+  const parsed = normalizeSitePayload(req.body);
+
+  if (parsed.error) {
+    return res.status(400).json({ message: parsed.error });
+  }
+
+  try {
+    const existingSiteResult = await pool.query(
+      `
+        SELECT id, river_category
+        FROM rv_sites
+        WHERE id = $1
+      `,
+      [siteId]
+    );
+
+    if (existingSiteResult.rowCount === 0) {
+      return res.status(404).json({ message: "Site not found." });
+    }
+
+    const existingSite = existingSiteResult.rows[0];
+    const nextRiverCategory = parsed.isOnRiver
+      ? parsed.riverCategory
+      : existingSite.river_category || "off_river";
+
+    const result = await pool.query(
+      `
+        UPDATE rv_sites
+        SET
+          site_number = $2,
+          size_feet = $3,
+          is_on_river = $4,
+          river_category = $5,
+          is_big_rig = $6
+        WHERE id = $1
+        RETURNING
+          id,
+          site_number,
+          size_feet,
+          is_on_river,
+          river_category,
+          is_big_rig
+      `,
+      [
+        siteId,
+        parsed.siteNumber,
+        parsed.sizeFeet,
+        parsed.isOnRiver,
+        nextRiverCategory,
+        parsed.isBigRig
+      ]
+    );
+
+    const pricingRulesByCategory = buildPricingRulesByCategory(await loadPricingRules());
+    res.json(decorateSiteWithPricingTable(result.rows[0], pricingRulesByCategory));
+  } catch (error) {
+    res.status(500).json({ message: error.detail || error.message });
+  }
+});
+
+app.delete("/api/sites/:id", async (req, res) => {
+  const siteId = Number(req.params.id);
+
+  if (!siteId) {
+    return res.status(400).json({ message: "Site ID is required." });
+  }
+
+  try {
+    const usageResult = await pool.query(
+      `
+        SELECT COUNT(*)::int AS reservation_count
+        FROM reservation_site_stays
+        WHERE site_id = $1
+      `,
+      [siteId]
+    );
+
+    if ((usageResult.rows[0]?.reservation_count || 0) > 0) {
+      return res.status(400).json({
+        message: "This site cannot be deleted because it is already tied to reservation history."
+      });
+    }
+
+    const deleteResult = await pool.query(
+      `
+        DELETE FROM rv_sites
+        WHERE id = $1
+        RETURNING id, site_number
+      `,
+      [siteId]
+    );
+
+    if (deleteResult.rowCount === 0) {
+      return res.status(404).json({ message: "Site not found." });
+    }
+
+    res.json({
+      id: deleteResult.rows[0].id,
+      siteNumber: deleteResult.rows[0].site_number
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
