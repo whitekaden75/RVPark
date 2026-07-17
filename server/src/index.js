@@ -23,6 +23,8 @@ const appPasscodeHeader = "x-app-passcode";
 const stripeApiVersion = "2026-02-25.clover";
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
+const cardPriceMultiplier = 1.03;
+const pricingPreviewDays = Array.from({ length: 28 }, (_, index) => index + 1);
 const stripe = stripeSecretKey
   ? new Stripe(stripeSecretKey, { apiVersion: stripeApiVersion })
   : null;
@@ -88,7 +90,13 @@ app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), asyn
 app.use(express.json());
 
 app.use("/api", (req, res, next) => {
-  if (req.path === "/health") {
+  if (
+    req.path === "/health" ||
+    req.path === "/availability/search" ||
+    req.path === "/availability/plan" ||
+    req.path === "/availability/flexible-search" ||
+    req.path.startsWith("/guest/")
+  ) {
     return next();
   }
 
@@ -105,6 +113,12 @@ function nightsBetween(arrivalDate, leaveDate) {
   const start = new Date(`${arrivalDate}T00:00:00Z`);
   const end = new Date(`${leaveDate}T00:00:00Z`);
   return Math.round((end - start) / 86400000);
+}
+
+function addDays(dateString, numberOfDays) {
+  const date = new Date(`${dateString}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + numberOfDays);
+  return date.toISOString().slice(0, 10);
 }
 
 function formatDisplayDate(dateString) {
@@ -132,6 +146,37 @@ function toAmountCents(value) {
   }
 
   return Math.round(parsed * 100);
+}
+
+function roundCurrency(value) {
+  return value === null || value === undefined
+    ? null
+    : Math.round(Number(value) * 100) / 100;
+}
+
+function getCardPrice(value) {
+  const amount = toPriceNumber(value);
+
+  if (amount === null) {
+    return null;
+  }
+
+  const cardAmount = amount * cardPriceMultiplier;
+  return roundCurrency(Math.ceil(cardAmount - 0.99) + 0.99);
+}
+
+function getBaseAmountFromCardPayment(value) {
+  const amount = toPriceNumber(value);
+
+  if (amount === null) {
+    return null;
+  }
+
+  return roundCurrency(amount / cardPriceMultiplier);
+}
+
+function isCardPaymentMethodType(value) {
+  return String(value || "").toLowerCase() === "card";
 }
 
 function normalizeReservationStatus(value) {
@@ -219,12 +264,12 @@ function getEffectiveReservationTotal(billingMode, totals, totalPrice, monthlyRe
     return rent + utilityPrice;
   }
 
-  if (totals.discountPrice !== null && totals.discountPrice !== undefined) {
-    return totals.discountPrice;
-  }
-
   if (totals.normalPrice !== null && totals.normalPrice !== undefined) {
     return totals.normalPrice;
+  }
+
+  if (totals.discountPrice !== null && totals.discountPrice !== undefined) {
+    return totals.discountPrice;
   }
 
   return toPriceNumber(totalPrice);
@@ -246,11 +291,23 @@ function getPricingCategory(site) {
   return site.is_big_rig ? "off_river_big_rig" : "off_river_small_rig";
 }
 
+function calculateChargeableNights(numberOfNights) {
+  if (!Number.isFinite(numberOfNights) || numberOfNights <= 0 || numberOfNights > 28) {
+    return null;
+  }
+
+  return numberOfNights - Math.floor(numberOfNights / 7);
+}
+
 function buildPricingRuleLookup(pricingRules) {
   const lookup = new Map();
 
   for (const rule of pricingRules) {
-    lookup.set(`${rule.site_category}:${rule.number_of_days}`, {
+    if (Number(rule.number_of_days) !== 1) {
+      continue;
+    }
+
+    lookup.set(rule.site_category, {
       numberOfDays: rule.number_of_days,
       normalPrice: toPriceNumber(rule.normal_price),
       discountPrice: toPriceNumber(rule.discount_price)
@@ -264,19 +321,32 @@ function buildPricingRulesByCategory(pricingRules) {
   const byCategory = new Map();
 
   for (const rule of pricingRules) {
-    const current = byCategory.get(rule.site_category) || [];
-    current.push({
-      numberOfDays: rule.number_of_days,
+    if (Number(rule.number_of_days) !== 1) {
+      continue;
+    }
+
+    const baseRule = {
+      numberOfDays: 1,
       normalPrice: toPriceNumber(rule.normal_price),
       discountPrice: toPriceNumber(rule.discount_price)
-    });
-    byCategory.set(rule.site_category, current);
-  }
-
-  for (const [category, rules] of byCategory) {
+    };
     byCategory.set(
-      category,
-      rules.sort((left, right) => left.numberOfDays - right.numberOfDays)
+      rule.site_category,
+      pricingPreviewDays.map((numberOfDays) => {
+        const chargeableNights = calculateChargeableNights(numberOfDays);
+
+        return {
+          numberOfDays,
+          normalPrice:
+            baseRule.normalPrice !== null
+              ? roundCurrency(baseRule.normalPrice * chargeableNights)
+              : null,
+          discountPrice:
+            baseRule.discountPrice !== null
+              ? roundCurrency(baseRule.discountPrice * chargeableNights)
+              : null
+        };
+      })
     );
   }
 
@@ -311,14 +381,27 @@ function buildBillingSummary(reservationRow, totals) {
 
   return {
     depositAmount: toPriceNumber(reservationRow.deposit_amount) ?? 0,
+    cardDepositAmount: getCardPrice(reservationRow.deposit_amount) ?? 0,
     totalPrice: toPriceNumber(reservationRow.total_price),
     monthlyRentPrice: toPriceNumber(reservationRow.monthly_rent_price),
     electricMeterReading: toMeterNumber(reservationRow.electric_meter_reading),
     utilityPrice,
     effectiveTotalPrice,
+    cardTotalPrice: getCardPrice(effectiveTotalPrice),
     remainingBalance:
       effectiveTotalPrice !== null && effectiveTotalPrice !== undefined
-        ? effectiveTotalPrice - (toPriceNumber(reservationRow.amount_paid) ?? 0)
+        ? roundCurrency(
+            effectiveTotalPrice - (toPriceNumber(reservationRow.amount_paid) ?? 0)
+          )
+        : null,
+    cardRemainingBalance:
+      effectiveTotalPrice !== null && effectiveTotalPrice !== undefined
+        ? getCardPrice(
+            Math.max(
+              effectiveTotalPrice - (toPriceNumber(reservationRow.amount_paid) ?? 0),
+              0
+            )
+          )
         : null
   };
 }
@@ -508,6 +591,10 @@ async function findStripePaymentRecordForUpdate(client, { checkoutSessionId = nu
 
 async function applyStripePaymentSettlement(client, paymentRecord, details) {
   const wasAlreadyPaid = paymentRecord.payment_status === "paid";
+  const collectedAmount = Number(paymentRecord.amount_cents) / 100;
+  const amountPaidToApply = isCardPaymentMethodType(details.paymentMethodType)
+    ? getBaseAmountFromCardPayment(collectedAmount)
+    : collectedAmount;
 
   if (!wasAlreadyPaid) {
     await client.query(
@@ -523,7 +610,7 @@ async function applyStripePaymentSettlement(client, paymentRecord, details) {
       `,
       [
         paymentRecord.reservation_id,
-        Number(paymentRecord.amount_cents) / 100,
+        amountPaidToApply,
         paymentRecord.activate_reservation_on_payment
       ]
     );
@@ -531,7 +618,7 @@ async function applyStripePaymentSettlement(client, paymentRecord, details) {
     await insertReservationPaymentEvent(client, {
       reservationId: paymentRecord.reservation_id,
       stripePaymentRecordId: paymentRecord.id,
-      amount: Number(paymentRecord.amount_cents) / 100,
+      amount: collectedAmount,
       paymentSource: "stripe",
       note: details.paymentIntentId ? `Stripe PaymentIntent ${details.paymentIntentId}` : "Stripe payment",
       recordedAt: details.paidAt || new Date().toISOString()
@@ -993,14 +1080,25 @@ async function syncOpenStripePayments() {
 
 function getPricingForSiteAndNights(site, numberOfNights, pricingLookup) {
   const pricingCategory = getPricingCategory(site);
-  const rule = pricingLookup.get(`${pricingCategory}:${numberOfNights}`) || null;
+  const baseRule = pricingLookup.get(pricingCategory) || null;
+  const chargeableNights = calculateChargeableNights(numberOfNights);
 
   return {
     pricingCategory,
     numberOfNights,
-    pricingConfigured: Boolean(rule),
-    normalPrice: rule?.normalPrice ?? null,
-    discountPrice: rule?.discountPrice ?? null
+    pricingConfigured: Boolean(baseRule && chargeableNights !== null),
+    normalPrice:
+      baseRule?.normalPrice !== null &&
+      baseRule?.normalPrice !== undefined &&
+      chargeableNights !== null
+        ? roundCurrency(baseRule.normalPrice * chargeableNights)
+        : null,
+    discountPrice:
+      baseRule?.discountPrice !== null &&
+      baseRule?.discountPrice !== undefined &&
+      chargeableNights !== null
+        ? roundCurrency(baseRule.discountPrice * chargeableNights)
+        : null
   };
 }
 
@@ -1035,6 +1133,8 @@ function parseAvailabilityFilters(body) {
   const leaveDate = body.leaveDate;
   const minSizeFeet = body.minSizeFeet ? Number(body.minSizeFeet) : null;
   const riverfrontOnly = Boolean(body.riverfrontOnly);
+  const rigLengthFeet = body.rigLengthFeet ? Number(body.rigLengthFeet) : null;
+  const isOversizedFifthWheel = body.rvKind === "5th wheel" && rigLengthFeet > 43;
 
   if (!arrivalDate || !leaveDate || arrivalDate >= leaveDate) {
     return { error: "Arrival date must be before leave date." };
@@ -1044,8 +1144,158 @@ function parseAvailabilityFilters(body) {
     arrivalDate,
     leaveDate,
     minSizeFeet,
-    riverfrontOnly
+    riverfrontOnly,
+    isOversizedFifthWheel
   };
+}
+
+function parseFlexibleAvailabilityFilters(body) {
+  const flexibleStartDate = body.flexibleStartDate;
+  const flexibleEndDate = body.flexibleEndDate;
+  const minSizeFeet = body.minSizeFeet ? Number(body.minSizeFeet) : null;
+  const riverfrontOnly = Boolean(body.riverfrontOnly);
+  const rigLengthFeet = body.rigLengthFeet ? Number(body.rigLengthFeet) : null;
+  const isOversizedFifthWheel = body.rvKind === "5th wheel" && rigLengthFeet > 43;
+  const stayLengthValue = String(body.stayLengthRange || "");
+  const stayLengthMatch = /^(\d+)-(\d+)$/.exec(stayLengthValue);
+
+  if (!flexibleStartDate || !flexibleEndDate || flexibleStartDate >= flexibleEndDate) {
+    return { error: "Flexible search start date must be before the end date." };
+  }
+
+  if (!stayLengthMatch) {
+    return { error: "Choose how many days the guest wants to stay." };
+  }
+
+  const minNights = Number(stayLengthMatch[1]);
+  const maxNights = Number(stayLengthMatch[2]);
+
+  if (!Number.isFinite(minNights) || !Number.isFinite(maxNights) || minNights <= 0 || maxNights < minNights) {
+    return { error: "Stay length range is invalid." };
+  }
+
+  return {
+    flexibleStartDate,
+    flexibleEndDate,
+    minSizeFeet,
+    riverfrontOnly,
+    minNights,
+    maxNights,
+    isOversizedFifthWheel
+  };
+}
+
+function buildFlexibleOpenWindows(site, siteStays, flexibleStartDate, flexibleEndDate, minNights, maxNights) {
+  const windows = [];
+  const sortedStays = [...siteStays].sort((left, right) =>
+    left.arrival_date.localeCompare(right.arrival_date)
+  );
+  let cursor = flexibleStartDate;
+
+  for (const stay of sortedStays) {
+    if (stay.leave_date <= flexibleStartDate) {
+      continue;
+    }
+
+    if (stay.arrival_date >= flexibleEndDate) {
+      break;
+    }
+
+    const gapEnd = stay.arrival_date < flexibleEndDate ? stay.arrival_date : flexibleEndDate;
+    const availableNights = nightsBetween(cursor, gapEnd);
+
+    if (availableNights >= minNights) {
+      windows.push({
+        arrivalDate: cursor,
+        leaveDate: gapEnd,
+        availableNights,
+        minStayNights: minNights,
+        maxStayNights: Math.min(maxNights, availableNights),
+        latestArrivalDate: addDays(gapEnd, -minNights)
+      });
+    }
+
+    if (stay.leave_date > cursor) {
+      cursor = stay.leave_date;
+    }
+
+    if (cursor >= flexibleEndDate) {
+      break;
+    }
+  }
+
+  if (cursor < flexibleEndDate) {
+    const availableNights = nightsBetween(cursor, flexibleEndDate);
+
+    if (availableNights >= minNights) {
+      windows.push({
+        arrivalDate: cursor,
+        leaveDate: flexibleEndDate,
+        availableNights,
+        minStayNights: minNights,
+        maxStayNights: Math.min(maxNights, availableNights),
+        latestArrivalDate: addDays(flexibleEndDate, -minNights)
+      });
+    }
+  }
+
+  return windows;
+}
+
+async function buildFlexibleAvailabilitySearchResult({
+  flexibleStartDate,
+  flexibleEndDate,
+  minSizeFeet,
+  riverfrontOnly = false,
+  minNights,
+  maxNights
+}) {
+  const sites = await loadCandidateSites(minSizeFeet, riverfrontOnly);
+  const siteIds = sites.map((site) => site.id);
+  const contextStays = await loadAvailabilityContextStays(siteIds);
+  const staysBySite = new Map();
+
+  for (const site of sites) {
+    staysBySite.set(site.id, []);
+  }
+
+  for (const stay of contextStays) {
+    if (!staysBySite.has(stay.site_id)) {
+      continue;
+    }
+
+    staysBySite.get(stay.site_id).push(stay);
+  }
+
+  const matches = sites
+    .map((site) => {
+      const openWindows = buildFlexibleOpenWindows(
+        site,
+        staysBySite.get(site.id) || [],
+        flexibleStartDate,
+        flexibleEndDate,
+        minNights,
+        maxNights
+      );
+
+      if (!openWindows.length) {
+        return null;
+      }
+
+      return {
+        siteId: site.id,
+        siteNumber: site.site_number,
+        sizeFeet: site.size_feet,
+        isOnRiver: site.is_on_river,
+        riverCategory: site.river_category,
+        isBigRig: site.is_big_rig,
+        maxAvailableNights: Math.max(...openWindows.map((window) => window.availableNights)),
+        openWindows
+      };
+    })
+    .filter(Boolean);
+
+  return { matches };
 }
 
 async function loadCandidateSites(minSizeFeet, riverfrontOnly) {
@@ -1112,9 +1362,17 @@ async function loadPricingRules(numberOfDays = null) {
   return result.rows;
 }
 
-async function loadConflictingStays(siteIds, arrivalDate, leaveDate) {
+async function loadConflictingStays(siteIds, arrivalDate, leaveDate, excludedReservationId = null) {
   if (siteIds.length === 0) {
     return [];
+  }
+
+  const values = [siteIds, arrivalDate, leaveDate];
+  let excludeClause = "";
+
+  if (excludedReservationId) {
+    values.push(excludedReservationId);
+    excludeClause = `AND reservation_id <> $4`;
   }
 
   const result = await pool.query(
@@ -1124,9 +1382,10 @@ async function loadConflictingStays(siteIds, arrivalDate, leaveDate) {
       WHERE site_id = ANY($1::bigint[])
         AND arrival_date < $3
         AND leave_date > $2
+        ${excludeClause}
       ORDER BY arrival_date
     `,
-    [siteIds, arrivalDate, leaveDate]
+    values
   );
 
   return result.rows;
@@ -1175,9 +1434,17 @@ async function findReservationOverlap(queryable, normalizedSegments, excludedRes
   return null;
 }
 
-async function loadFutureStays(siteIds, arrivalDate) {
+async function loadFutureStays(siteIds, arrivalDate, excludedReservationId = null) {
   if (siteIds.length === 0) {
     return [];
+  }
+
+  const values = [siteIds, arrivalDate];
+  let excludeClause = "";
+
+  if (excludedReservationId) {
+    values.push(excludedReservationId);
+    excludeClause = `AND reservation_id <> $3`;
   }
 
   const result = await pool.query(
@@ -1186,27 +1453,36 @@ async function loadFutureStays(siteIds, arrivalDate) {
       FROM reservation_site_stays
       WHERE site_id = ANY($1::bigint[])
         AND leave_date > $2
+        ${excludeClause}
       ORDER BY site_id, arrival_date
     `,
-    [siteIds, arrivalDate]
+    values
   );
 
   return result.rows;
 }
 
-async function loadAvailabilityContextStays(siteIds) {
+async function loadAvailabilityContextStays(siteIds, excludedReservationId = null) {
   if (siteIds.length === 0) {
     return [];
+  }
+
+  const values = [siteIds];
+  let excludeClause = "";
+
+  if (excludedReservationId) {
+    values.push(excludedReservationId);
+    excludeClause = `WHERE site_id = ANY($1::bigint[]) AND reservation_id <> $2`;
   }
 
   const result = await pool.query(
     `
       SELECT site_id, arrival_date::text, leave_date::text
       FROM reservation_site_stays
-      WHERE site_id = ANY($1::bigint[])
+      ${excludeClause || "WHERE site_id = ANY($1::bigint[])"}
       ORDER BY site_id, arrival_date
     `,
-    [siteIds]
+    values
   );
 
   return result.rows;
@@ -1333,14 +1609,7 @@ async function fetchReservationDetails(queryable, reservationId) {
     stayRows = staysResult.rows;
   }
 
-  const uniqueNightCounts = [
-    ...new Set(
-      stayRows
-        .filter((segment) => !isOpenEndedSegment(segment, reservationRow.reservation_term))
-        .map((segment) => nightsBetween(segment.arrival_date, segment.leave_date))
-    )
-  ];
-  const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
+  const pricingLookup = buildPricingRuleLookup(await loadPricingRules());
   const pricedSiteStays = stayRows.map((segment) => ({
     ...(function buildSegment() {
       if (isOpenEndedSegment(segment, reservationRow.reservation_term)) {
@@ -1385,6 +1654,369 @@ async function fetchReservationDetails(queryable, reservationId) {
       createdAt: row.created_at
     })),
     siteStays: pricedSiteStays
+  };
+}
+
+function buildReservationDetailsFromParts(
+  reservationRow,
+  paymentEventRows,
+  stayRows,
+  pricingLookup
+) {
+  const pricedSiteStays = stayRows.map((segment) => ({
+    ...(function buildSegment() {
+      if (isOpenEndedSegment(segment, reservationRow.reservation_term)) {
+        return {
+          ...segment,
+          pricingCategory: null,
+          numberOfNights: null,
+          pricingConfigured: false,
+          normalPrice: null,
+          discountPrice: null,
+          isOpenEnded: true
+        };
+      }
+
+      return {
+        ...segment,
+        ...getPricingForSiteAndNights(
+          segment,
+          nightsBetween(segment.arrival_date, segment.leave_date),
+          pricingLookup
+        ),
+        isOpenEnded: false
+      };
+    })()
+  }));
+  const totals = sumReservationTotals(pricedSiteStays);
+  const balances = applyBalanceSummary(reservationRow.amount_paid, totals);
+  const billing = buildBillingSummary(reservationRow, totals);
+
+  return {
+    ...reservationRow,
+    totals,
+    ...balances,
+    ...billing,
+    paymentEvents: paymentEventRows.map((row) => ({
+      id: row.id,
+      stripePaymentRecordId: row.stripe_payment_record_id,
+      amount: toPriceNumber(row.amount),
+      paymentSource: row.payment_source,
+      note: row.note || "",
+      recordedAt: row.recorded_at,
+      createdAt: row.created_at
+    })),
+    siteStays: pricedSiteStays
+  };
+}
+
+async function fetchReservationList(queryable) {
+  const reservationsResult = await queryable.query(
+    `
+      SELECT
+        r.id,
+        r.customer_id,
+        r.booked_date::text,
+        r.status,
+        r.reservation_term,
+        r.billing_mode,
+        r.deposit_amount,
+        r.total_price,
+        r.monthly_rent_price,
+        r.electric_meter_reading,
+        r.canceled_at,
+        r.canceled_site_stays,
+        r.rv_kind,
+        r.motorhome_class_a,
+        r.motorhome_class_c,
+        r.motorhome_with_tow,
+        r.rig_length_feet,
+        r.amount_paid,
+        r.notes,
+        r.created_at,
+        c.first_name,
+        c.last_name,
+        c.email,
+        c.phone_number
+      FROM reservations r
+      JOIN customers c ON c.id = r.customer_id
+      ORDER BY r.booked_date DESC, r.id DESC
+    `
+  );
+
+  if (reservationsResult.rowCount === 0) {
+    return [];
+  }
+
+  const reservationRows = reservationsResult.rows;
+  const reservationIds = reservationRows.map((row) => row.id);
+  const [paymentEventsResult, activeStaysResult, pricingRules] = await Promise.all([
+    queryable.query(
+      `
+        SELECT
+          id,
+          reservation_id,
+          stripe_payment_record_id,
+          amount,
+          payment_source,
+          note,
+          recorded_at,
+          created_at
+        FROM reservation_payment_events
+        WHERE reservation_id = ANY($1::bigint[])
+        ORDER BY reservation_id, recorded_at DESC, id DESC
+      `,
+      [reservationIds]
+    ),
+    queryable.query(
+      `
+        SELECT
+          rss.id,
+          rss.reservation_id,
+          rss.site_id,
+          s.site_number,
+          s.river_category,
+          s.is_big_rig,
+          rss.arrival_date::text,
+          rss.leave_date::text
+        FROM reservation_site_stays rss
+        JOIN rv_sites s ON s.id = rss.site_id
+        WHERE rss.reservation_id = ANY($1::bigint[])
+        ORDER BY rss.reservation_id, rss.arrival_date
+      `,
+      [reservationIds]
+    ),
+    loadPricingRules()
+  ]);
+
+  const paymentEventsByReservationId = new Map();
+  for (const row of paymentEventsResult.rows) {
+    const reservationPaymentEvents =
+      paymentEventsByReservationId.get(row.reservation_id) || [];
+    reservationPaymentEvents.push(row);
+    paymentEventsByReservationId.set(row.reservation_id, reservationPaymentEvents);
+  }
+
+  const activeStaysByReservationId = new Map();
+  for (const row of activeStaysResult.rows) {
+    const reservationStays = activeStaysByReservationId.get(row.reservation_id) || [];
+    reservationStays.push(row);
+    activeStaysByReservationId.set(row.reservation_id, reservationStays);
+  }
+
+  const canceledSiteIds = [
+    ...new Set(
+      reservationRows.flatMap((row) =>
+        (Array.isArray(row.canceled_site_stays) ? row.canceled_site_stays : [])
+          .map((segment) => Number(segment.siteId))
+          .filter(Boolean)
+      )
+    )
+  ];
+  const canceledSitesById = new Map();
+
+  if (canceledSiteIds.length) {
+    const canceledSitesResult = await queryable.query(
+      `
+        SELECT id, site_number, river_category, is_big_rig
+        FROM rv_sites
+        WHERE id = ANY($1::bigint[])
+      `,
+      [canceledSiteIds]
+    );
+
+    for (const site of canceledSitesResult.rows) {
+      canceledSitesById.set(Number(site.id), site);
+    }
+  }
+
+  const pricingLookup = buildPricingRuleLookup(pricingRules);
+
+  return reservationRows.map((reservationRow) => {
+    const paymentEventRows =
+      paymentEventsByReservationId.get(reservationRow.id) || [];
+    let stayRows = [];
+
+    if (reservationRow.status === "canceled") {
+      const archivedStays = Array.isArray(reservationRow.canceled_site_stays)
+        ? reservationRow.canceled_site_stays
+        : [];
+
+      stayRows = archivedStays
+        .map((segment, index) => {
+          const site = canceledSitesById.get(Number(segment.siteId));
+
+          if (!site || !segment.arrivalDate || !segment.leaveDate) {
+            return null;
+          }
+
+          return {
+            id: `canceled-${reservationRow.id}-${index}`,
+            site_id: Number(segment.siteId),
+            site_number: site.site_number,
+            river_category: site.river_category,
+            is_big_rig: site.is_big_rig,
+            arrival_date: segment.arrivalDate,
+            leave_date: segment.leaveDate
+          };
+        })
+        .filter(Boolean);
+    } else {
+      stayRows = activeStaysByReservationId.get(reservationRow.id) || [];
+    }
+
+    return buildReservationDetailsFromParts(
+      reservationRow,
+      paymentEventRows,
+      stayRows,
+      pricingLookup
+    );
+  });
+}
+
+function normalizeGuestPhone(value) {
+  return String(value || "").replaceAll(/\D/g, "").slice(-10);
+}
+
+async function findGuestCustomer(credentials = {}) {
+  const firstName = String(credentials.firstName || "").trim();
+  const lastName = String(credentials.lastName || "").trim();
+  const phoneNumber = normalizeGuestPhone(credentials.phoneNumber);
+
+  if (!firstName || !lastName || phoneNumber.length !== 10) {
+    return null;
+  }
+
+  const result = await pool.query(
+    `
+      SELECT id, first_name, last_name, email, phone_number
+      FROM customers
+      WHERE LOWER(TRIM(first_name)) = LOWER($1)
+        AND LOWER(TRIM(last_name)) = LOWER($2)
+        AND RIGHT(REGEXP_REPLACE(COALESCE(phone_number, ''), '[^0-9]', '', 'g'), 10) = $3
+      LIMIT 1
+    `,
+    [firstName, lastName, phoneNumber]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function authenticateGuestReservation(reservationId, credentials) {
+  const customer = await findGuestCustomer(credentials);
+
+  if (!customer) {
+    return null;
+  }
+
+  const ownershipResult = await pool.query(
+    `
+      SELECT id
+      FROM reservations
+      WHERE id = $1 AND customer_id = $2
+    `,
+    [reservationId, customer.id]
+  );
+
+  if (ownershipResult.rowCount === 0) {
+    return null;
+  }
+
+  return customer;
+}
+
+function sanitizeGuestReservation(reservation) {
+  return {
+    id: reservation.id,
+    booked_date: reservation.booked_date,
+    status: reservation.status,
+    reservation_term: reservation.reservation_term,
+    first_name: reservation.first_name,
+    last_name: reservation.last_name,
+    email: reservation.email || "",
+    phone_number: reservation.phone_number || "",
+    rv_kind: reservation.rv_kind,
+    motorhome_class_a: Boolean(reservation.motorhome_class_a),
+    motorhome_class_c: Boolean(reservation.motorhome_class_c),
+    motorhome_with_tow: Boolean(reservation.motorhome_with_tow),
+    rig_length_feet: reservation.rig_length_feet,
+    depositAmount: reservation.depositAmount,
+    cardDepositAmount: reservation.cardDepositAmount,
+    totalPrice: reservation.totalPrice,
+    effectiveTotalPrice: reservation.effectiveTotalPrice,
+    cardTotalPrice: reservation.cardTotalPrice,
+    amountPaid: reservation.amountPaid,
+    remainingBalance: reservation.remainingBalance,
+    cardRemainingBalance: reservation.cardRemainingBalance,
+    siteStays: reservation.siteStays.map((segment) => ({
+      id: segment.id,
+      site_id: segment.site_id,
+      site_number: segment.site_number,
+      arrival_date: segment.arrival_date,
+      leave_date: segment.leave_date,
+      numberOfNights: segment.numberOfNights,
+      isOpenEnded: segment.isOpenEnded
+    })),
+    paymentEvents: reservation.paymentEvents.map((event) => ({
+      id: event.id,
+      amount: event.amount,
+      paymentSource: event.paymentSource,
+      recordedAt: event.recordedAt
+    }))
+  };
+}
+
+async function buildAvailabilitySearchResult({
+  arrivalDate,
+  leaveDate,
+  minSizeFeet,
+  riverfrontOnly = false,
+  excludedReservationId = null
+}) {
+  const sites = await loadCandidateSites(minSizeFeet, riverfrontOnly);
+  const numberOfNights = nightsBetween(arrivalDate, leaveDate);
+  const pricingLookup = buildPricingRuleLookup(await loadPricingRules());
+  const siteIds = sites.map((site) => site.id);
+  const conflictingStays = await loadConflictingStays(
+    siteIds,
+    arrivalDate,
+    leaveDate,
+    excludedReservationId
+  );
+  const futureStays = await loadFutureStays(siteIds, arrivalDate, excludedReservationId);
+  const contextStays = await loadAvailabilityContextStays(siteIds, excludedReservationId);
+  const availability = buildAvailabilityMap(sites, conflictingStays, arrivalDate, leaveDate);
+  const availabilityLeadTimes = buildAvailabilityLeadTimes(sites, futureStays, arrivalDate);
+  const bookingContext = buildAvailabilityBookingContext(
+    sites,
+    contextStays,
+    arrivalDate,
+    leaveDate
+  );
+  const directMatches = getDirectMatches(availability, arrivalDate, leaveDate).map((site) => ({
+    id: site.id,
+    siteNumber: site.site_number,
+    sizeFeet: site.size_feet,
+    isOnRiver: site.is_on_river,
+    riverCategory: site.river_category,
+    isBigRig: site.is_big_rig,
+    ...(availabilityLeadTimes.get(site.id) || {
+      availableDays: null,
+      availableUntil: null,
+      openEnded: false
+    }),
+    ...(bookingContext.get(site.id) || {
+      previousBookedUntil: null,
+      nextBookedFrom: null
+    }),
+    ...getPricingForSiteAndNights(site, numberOfNights, pricingLookup)
+  }));
+
+  return {
+    numberOfNights,
+    directMatches,
+    contextStays,
+    bookingContext
   };
 }
 
@@ -1623,59 +2255,58 @@ app.post("/api/availability/search", async (req, res) => {
     return res.status(400).json({ message: filters.error });
   }
 
-  try {
-    const sites = await loadCandidateSites(filters.minSizeFeet, filters.riverfrontOnly);
-    const numberOfNights = nightsBetween(filters.arrivalDate, filters.leaveDate);
-    const pricingLookup = buildPricingRuleLookup(await loadPricingRules(numberOfNights));
-    const siteIds = sites.map((site) => site.id);
-    const conflictingStays = await loadConflictingStays(
-      siteIds,
-      filters.arrivalDate,
-      filters.leaveDate
-    );
-    const futureStays = await loadFutureStays(siteIds, filters.arrivalDate);
-    const contextStays = await loadAvailabilityContextStays(siteIds);
-    const availability = buildAvailabilityMap(
-      sites,
-      conflictingStays,
-      filters.arrivalDate,
-      filters.leaveDate
-    );
-    const availabilityLeadTimes = buildAvailabilityLeadTimes(
-      sites,
-      futureStays,
-      filters.arrivalDate
-    );
-    const bookingContext = buildAvailabilityBookingContext(
-      sites,
-      contextStays,
-      filters.arrivalDate,
-      filters.leaveDate
-    );
-    const directMatches = getDirectMatches(
-      availability,
-      filters.arrivalDate,
-      filters.leaveDate
-    ).map((site) => ({
-      id: site.id,
-      siteNumber: site.site_number,
-      sizeFeet: site.size_feet,
-      isOnRiver: site.is_on_river,
-      riverCategory: site.river_category,
-      isBigRig: site.is_big_rig,
-      ...(availabilityLeadTimes.get(site.id) || {
-        availableDays: null,
-        availableUntil: null,
-        openEnded: false
-      }),
-      ...(bookingContext.get(site.id) || {
-        previousBookedUntil: null,
-        nextBookedFrom: null
-      }),
-      ...getPricingForSiteAndNights(site, numberOfNights, pricingLookup)
-    }));
+  if (filters.isOversizedFifthWheel) {
+    return res.json({
+      numberOfNights: nightsBetween(filters.arrivalDate, filters.leaveDate),
+      directMatches: [],
+      restriction: "oversized_fifth_wheel"
+    });
+  }
 
-    res.json({ numberOfNights, directMatches });
+  try {
+    const result = await buildAvailabilitySearchResult({
+      arrivalDate: filters.arrivalDate,
+      leaveDate: filters.leaveDate,
+      minSizeFeet: filters.minSizeFeet,
+      riverfrontOnly: filters.riverfrontOnly
+    });
+
+    res.json({
+      numberOfNights: result.numberOfNights,
+      directMatches: result.directMatches
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/availability/flexible-search", async (req, res) => {
+  const filters = parseFlexibleAvailabilityFilters(req.body);
+
+  if (filters.error) {
+    return res.status(400).json({ message: filters.error });
+  }
+
+  if (filters.isOversizedFifthWheel) {
+    return res.json({
+      matches: [],
+      restriction: "oversized_fifth_wheel"
+    });
+  }
+
+  try {
+    const result = await buildFlexibleAvailabilitySearchResult({
+      flexibleStartDate: filters.flexibleStartDate,
+      flexibleEndDate: filters.flexibleEndDate,
+      minSizeFeet: filters.minSizeFeet,
+      riverfrontOnly: filters.riverfrontOnly,
+      minNights: filters.minNights,
+      maxNights: filters.maxNights
+    });
+
+    res.json({
+      matches: result.matches
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -1686,6 +2317,14 @@ app.post("/api/availability/plan", async (req, res) => {
 
   if (filters.error) {
     return res.status(400).json({ message: filters.error });
+  }
+
+  if (filters.isOversizedFifthWheel) {
+    return res.json({
+      plan: null,
+      totals: null,
+      restriction: "oversized_fifth_wheel"
+    });
   }
 
   try {
@@ -1707,8 +2346,7 @@ app.post("/api/availability/plan", async (req, res) => {
       return res.json({ plan: null, totals: null });
     }
 
-    const uniqueNightCounts = [...new Set(plan.map((segment) => nightsBetween(segment.arrivalDate, segment.leaveDate)))];
-    const pricingLookup = buildPricingRuleLookup(await loadPricingRules(uniqueNightCounts));
+    const pricingLookup = buildPricingRuleLookup(await loadPricingRules());
     const siteLookup = new Map(sites.map((site) => [site.id, site]));
     const pricedPlan = plan.map((segment) => {
       const site = siteLookup.get(segment.siteId);
@@ -1742,23 +2380,531 @@ app.post("/api/availability/plan", async (req, res) => {
   }
 });
 
-app.get("/api/reservations", async (_req, res) => {
+app.post("/api/guest/reservations/sign-in", async (req, res) => {
   try {
-    await syncOpenStripePayments();
+    const customer = await findGuestCustomer(req.body);
 
+    if (!customer) {
+      return res.status(401).json({
+        message: "We could not find a booking with that name and phone number."
+      });
+    }
+
+    await syncOpenStripePayments();
     const reservationsResult = await pool.query(
       `
-        SELECT r.id
-        FROM reservations r
-        ORDER BY r.booked_date DESC, r.id DESC
-      `
+        SELECT id
+        FROM reservations
+        WHERE customer_id = $1
+        ORDER BY booked_date DESC, id DESC
+      `,
+      [customer.id]
     );
-
     const reservations = await Promise.all(
       reservationsResult.rows.map((row) => fetchReservationDetails(pool, row.id))
     );
 
-    res.json(reservations.filter(Boolean));
+    res.json({
+      customer: {
+        firstName: customer.first_name,
+        lastName: customer.last_name,
+        phoneNumber: customer.phone_number
+      },
+      reservations: reservations.filter(Boolean).map(sanitizeGuestReservation)
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/guest/reservations", async (req, res) => {
+  const firstName = String(req.body.firstName || "").trim();
+  const lastName = String(req.body.lastName || "").trim();
+  const email = String(req.body.email || "").trim();
+  const phoneNumber = normalizeGuestPhone(req.body.phoneNumber);
+  const arrivalDate = req.body.arrivalDate;
+  const leaveDate = req.body.leaveDate;
+  const siteId = Number(req.body.siteId);
+  const rigLengthFeet = Number(req.body.rigLengthFeet);
+  const discounts = Array.isArray(req.body.discounts) ? req.body.discounts : [];
+  const allowedRvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
+  const rvKind = allowedRvKinds.includes(req.body.rvKind) ? req.body.rvKind : "";
+  const numberOfNights = nightsBetween(arrivalDate, leaveDate);
+  const applyDiscountPricing = discounts.length > 0;
+
+  if (!firstName || !lastName || phoneNumber.length !== 10) {
+    return res.status(400).json({ message: "Name and a valid phone number are required." });
+  }
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ message: "A valid email is required." });
+  }
+
+  if (!arrivalDate || !leaveDate || arrivalDate >= leaveDate || numberOfNights <= 0) {
+    return res.status(400).json({ message: "Choose valid arrival and departure dates." });
+  }
+
+  if (numberOfNights > 14) {
+    return res.status(400).json({
+      message: "Stays longer than two weeks must be reserved by calling 541-295-1269."
+    });
+  }
+
+  if (!siteId || !rvKind || !Number.isFinite(rigLengthFeet) || rigLengthFeet <= 0) {
+    return res.status(400).json({ message: "Site and rig details are required." });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const siteResult = await client.query(
+      `
+        SELECT id, site_number, size_feet, is_on_river, river_category, is_big_rig
+        FROM rv_sites
+        WHERE id = $1
+      `,
+      [siteId]
+    );
+
+    if (siteResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "That site is no longer available." });
+    }
+
+    const site = siteResult.rows[0];
+
+    if (site.size_feet < Math.max(1, rigLengthFeet - 5)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "That site does not fit the entered rig length." });
+    }
+
+    const segment = { siteId, arrivalDate, leaveDate };
+    const overlap = await findReservationOverlap(client, [segment]);
+
+    if (overlap) {
+      await client.query("ROLLBACK");
+      return res.status(409).json(overlap);
+    }
+
+    const pricingLookup = buildPricingRuleLookup(await loadPricingRules());
+    const stayPricing = getPricingForSiteAndNights(site, numberOfNights, pricingLookup);
+    const depositPricing = getPricingForSiteAndNights(site, 1, pricingLookup);
+    const totalPrice = applyDiscountPricing
+      ? stayPricing.discountPrice ?? stayPricing.normalPrice
+      : stayPricing.normalPrice ?? stayPricing.discountPrice;
+    const oneNightDeposit = applyDiscountPricing
+      ? depositPricing.discountPrice ?? depositPricing.normalPrice
+      : depositPricing.normalPrice ?? depositPricing.discountPrice;
+
+    if (totalPrice === null || oneNightDeposit === null) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "Online pricing is not configured for this stay. Please call 541-295-1269."
+      });
+    }
+
+    let customer = await findGuestCustomer({ firstName, lastName, phoneNumber });
+
+    if (customer) {
+      await client.query(
+        `UPDATE customers SET email = $2 WHERE id = $1`,
+        [customer.id, email]
+      );
+    } else {
+      const customerResult = await client.query(
+        `
+          INSERT INTO customers (first_name, last_name, email, phone_number)
+          VALUES ($1, $2, $3, $4)
+          RETURNING id, first_name, last_name, email, phone_number
+        `,
+        [firstName, lastName, email, phoneNumber]
+      );
+      customer = customerResult.rows[0];
+    }
+
+    const reservationResult = await client.query(
+      `
+        INSERT INTO reservations (
+          customer_id,
+          booked_date,
+          status,
+          reservation_term,
+          billing_mode,
+          deposit_amount,
+          total_price,
+          rv_kind,
+          motorhome_class_a,
+          motorhome_class_c,
+          motorhome_with_tow,
+          rig_length_feet,
+          amount_paid,
+          notes
+        )
+        VALUES ($1, CURRENT_DATE, 'pending', 'standard', 'standard', $2, $3, $4, $5, $6, $7, $8, 0, $9)
+        RETURNING id
+      `,
+      [
+        customer.id,
+        Math.min(oneNightDeposit, totalPrice),
+        totalPrice,
+        rvKind,
+        rvKind === "motor home" ? Boolean(req.body.motorhomeClassA) : false,
+        rvKind === "motor home" ? Boolean(req.body.motorhomeClassC) : false,
+        rvKind === "motor home" ? Boolean(req.body.motorhomeWithTow) : false,
+        rigLengthFeet,
+        applyDiscountPricing
+          ? `Created through the public website. Requested discounts: ${discounts.join(", ")}.`
+          : "Created through the public website."
+      ]
+    );
+    const reservationId = reservationResult.rows[0].id;
+
+    await client.query(
+      `
+        INSERT INTO reservation_site_stays (reservation_id, site_id, arrival_date, leave_date)
+        VALUES ($1, $2, $3, $4)
+      `,
+      [reservationId, siteId, arrivalDate, leaveDate]
+    );
+    await client.query("COMMIT");
+
+    const reservation = await fetchReservationDetails(pool, reservationId);
+    res.status(201).json(sanitizeGuestReservation(reservation));
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.code === "23P01") {
+      return res.status(409).json({
+        message: "That site was just reserved for these dates. Please choose another site."
+      });
+    }
+
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/guest/reservations/:id/availability-preview", async (req, res) => {
+  const reservationId = Number(req.params.id);
+
+  if (!reservationId) {
+    return res.status(400).json({ message: "Reservation is required." });
+  }
+
+  try {
+    const customer = await authenticateGuestReservation(reservationId, req.body.credentials);
+
+    if (!customer) {
+      return res.status(401).json({ message: "Your booking sign-in has expired or is invalid." });
+    }
+
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation || reservation.status === "canceled") {
+      return res.status(400).json({ message: "This reservation cannot be changed online." });
+    }
+
+    const rigLengthFeet = Number(req.body.rigLengthFeet);
+    const requestedStays = Array.isArray(req.body.siteStays) ? req.body.siteStays : [];
+    const currentSiteIds = reservation.siteStays.map((segment) => Number(segment.site_id)).sort();
+    const requestedSiteIds = requestedStays.map((segment) => Number(segment.siteId)).sort();
+
+    if (!Number.isFinite(rigLengthFeet) || rigLengthFeet <= 0) {
+      return res.status(400).json({ message: "Enter a valid rig length." });
+    }
+
+    if (
+      requestedSiteIds.length !== currentSiteIds.length ||
+      requestedSiteIds.some((siteId, index) => siteId !== currentSiteIds[index])
+    ) {
+      return res.status(400).json({
+        message: "Guests can change dates online, but site changes must be handled by the office."
+      });
+    }
+
+    const minSizeFeet = Math.max(1, rigLengthFeet - 5);
+    const stays = [];
+
+    for (const [index, stay] of requestedStays.entries()) {
+      const siteId = Number(stay.siteId);
+      const arrivalDate = String(stay.arrivalDate || "");
+      const leaveDate =
+        reservation.reservation_term === "yearly"
+          ? addDays(arrivalDate, 1)
+          : String(stay.leaveDate || "");
+
+      if (!siteId || !arrivalDate || !leaveDate || arrivalDate >= leaveDate) {
+        stays.push({
+          index,
+          siteId,
+          currentSiteAvailable: null,
+          bookedRanges: [],
+          directMatches: [],
+          previousBookedUntil: null,
+          nextBookedFrom: null
+        });
+        continue;
+      }
+
+      const searchResult = await buildAvailabilitySearchResult({
+        arrivalDate,
+        leaveDate,
+        minSizeFeet,
+        excludedReservationId: reservationId
+      });
+      const currentSiteContext = searchResult.bookingContext.get(siteId) || {
+        previousBookedUntil: null,
+        nextBookedFrom: null
+      };
+
+      stays.push({
+        index,
+        siteId,
+        currentSiteAvailable: searchResult.directMatches.some(
+          (site) => Number(site.id) === siteId
+        ),
+        bookedRanges: searchResult.contextStays.filter(
+          (segment) => Number(segment.site_id) === siteId
+        ),
+        directMatches: searchResult.directMatches,
+        previousBookedUntil: currentSiteContext.previousBookedUntil || null,
+        nextBookedFrom: currentSiteContext.nextBookedFrom || null
+      });
+    }
+
+    res.json({ stays });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.put("/api/guest/reservations/:id", async (req, res) => {
+  const reservationId = Number(req.params.id);
+
+  if (!reservationId) {
+    return res.status(400).json({ message: "Reservation is required." });
+  }
+
+  try {
+    const customer = await authenticateGuestReservation(reservationId, req.body.credentials);
+
+    if (!customer) {
+      return res.status(401).json({ message: "Your booking sign-in has expired or is invalid." });
+    }
+
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation || reservation.status === "canceled") {
+      return res.status(400).json({ message: "This reservation cannot be changed online." });
+    }
+
+    const allowedRvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
+    const rvKind = allowedRvKinds.includes(req.body.rvKind)
+      ? req.body.rvKind
+      : reservation.rv_kind;
+    const rigLengthFeet = Number(req.body.rigLengthFeet);
+    const email = String(req.body.email || "").trim();
+    const requestedStays = Array.isArray(req.body.siteStays) ? req.body.siteStays : [];
+    const currentSiteIds = reservation.siteStays.map((segment) => Number(segment.site_id)).sort();
+    const requestedSiteIds = requestedStays.map((segment) => Number(segment.siteId)).sort();
+
+    if (!Number.isFinite(rigLengthFeet) || rigLengthFeet <= 0) {
+      return res.status(400).json({ message: "Enter a valid rig length." });
+    }
+
+    if (
+      requestedSiteIds.length !== currentSiteIds.length ||
+      requestedSiteIds.some((siteId, index) => siteId !== currentSiteIds[index])
+    ) {
+      return res.status(400).json({
+        message: "Guests can change dates online, but site changes must be handled by the office."
+      });
+    }
+
+    const validationMessage = validateReservationSegments(
+      requestedStays,
+      reservation.reservation_term
+    );
+
+    if (validationMessage) {
+      return res.status(400).json({ message: validationMessage });
+    }
+
+    const normalizedSegments = normalizeSegments(requestedStays, reservation.reservation_term);
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+      const overlap = await findReservationOverlap(client, normalizedSegments, reservationId);
+
+      if (overlap) {
+        await client.query("ROLLBACK");
+        return res.status(409).json(overlap);
+      }
+
+      await client.query(
+        `
+          UPDATE customers
+          SET email = $2
+          WHERE id = $1
+        `,
+        [customer.id, email || null]
+      );
+      await client.query(
+        `
+          UPDATE reservations
+          SET
+            rv_kind = $2,
+            motorhome_class_a = $3,
+            motorhome_class_c = $4,
+            motorhome_with_tow = $5,
+            rig_length_feet = $6
+          WHERE id = $1
+        `,
+        [
+          reservationId,
+          rvKind,
+          rvKind === "motor home" ? Boolean(req.body.motorhomeClassA) : false,
+          rvKind === "motor home" ? Boolean(req.body.motorhomeClassC) : false,
+          rvKind === "motor home" ? Boolean(req.body.motorhomeWithTow) : false,
+          rigLengthFeet
+        ]
+      );
+      await client.query("DELETE FROM reservation_site_stays WHERE reservation_id = $1", [
+        reservationId
+      ]);
+
+      for (const segment of normalizedSegments) {
+        await client.query(
+          `
+            INSERT INTO reservation_site_stays (
+              reservation_id,
+              site_id,
+              arrival_date,
+              leave_date
+            )
+            VALUES ($1, $2, $3, $4)
+          `,
+          [reservationId, segment.siteId, segment.arrivalDate, segment.leaveDate]
+        );
+      }
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const updatedReservation = await fetchReservationDetails(pool, reservationId);
+    res.json(sanitizeGuestReservation(updatedReservation));
+  } catch (error) {
+    if (error.code === "23P01") {
+      return res.status(409).json({
+        message: "Those dates overlap another reservation. Please choose different dates."
+      });
+    }
+
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/guest/reservations/:id/payment-intents", async (req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  const reservationId = Number(req.params.id);
+  const amountCents = toAmountCents(req.body.amount);
+
+  if (!reservationId || !amountCents) {
+    return res.status(400).json({ message: "Reservation and payment amount are required." });
+  }
+
+  try {
+    const customer = await authenticateGuestReservation(reservationId, req.body.credentials);
+
+    if (!customer) {
+      return res.status(401).json({ message: "Your booking sign-in has expired or is invalid." });
+    }
+
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation || reservation.status === "canceled") {
+      return res.status(400).json({ message: "This reservation cannot accept payments." });
+    }
+
+    const remainingBalanceCents = toAmountCents(reservation.cardRemainingBalance);
+
+    if (!remainingBalanceCents) {
+      return res.status(400).json({ message: "This reservation does not have a remaining balance." });
+    }
+
+    if (amountCents > remainingBalanceCents) {
+      return res.status(400).json({
+        message: "Payment amount cannot be greater than the current remaining balance."
+      });
+    }
+
+    const activateReservationOnPayment =
+      reservation.status === "pending" && Boolean(req.body.activateReservationOnPayment);
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amountCents,
+      currency: "usd",
+      payment_method_types: ["card"],
+      receipt_email: reservation.email || undefined,
+      metadata: {
+        reservation_id: String(reservation.id),
+        payment_amount_cents: String(amountCents),
+        activate_reservation_on_payment: activateReservationOnPayment ? "true" : "false"
+      }
+    });
+
+    await pool.query(
+      `
+        INSERT INTO stripe_payment_records (
+          reservation_id,
+          stripe_checkout_session_id,
+          stripe_payment_intent_id,
+          amount_cents,
+          currency,
+          payment_status,
+          activate_reservation_on_payment,
+          stripe_customer_email
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `,
+      [
+        reservation.id,
+        null,
+        paymentIntent.id,
+        amountCents,
+        paymentIntent.currency || "usd",
+        paymentIntent.status === "succeeded" ? "paid" : "unpaid",
+        activateReservationOnPayment,
+        reservation.email || null
+      ]
+    );
+
+    res.json({
+      reservationId: reservation.id,
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      amount: (amountCents / 100).toFixed(2)
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reservations", async (_req, res) => {
+  try {
+    await syncOpenStripePayments();
+    const reservations = await fetchReservationList(pool);
+    res.json(reservations);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -2124,7 +3270,7 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
       return res.status(400).json({ message: "Canceled reservations cannot accept payments." });
     }
 
-    const remainingBalanceCents = toAmountCents(reservation.remainingBalance);
+    const remainingBalanceCents = toAmountCents(reservation.cardRemainingBalance);
 
     if (!remainingBalanceCents) {
       return res.status(400).json({ message: "This reservation does not have a remaining balance." });
@@ -2224,7 +3370,7 @@ app.post("/api/reservations/:id/payment-intents", async (req, res) => {
       return res.status(400).json({ message: "Canceled reservations cannot accept payments." });
     }
 
-    const remainingBalanceCents = toAmountCents(reservation.remainingBalance);
+    const remainingBalanceCents = toAmountCents(reservation.cardRemainingBalance);
 
     if (!remainingBalanceCents) {
       return res.status(400).json({ message: "This reservation does not have a remaining balance." });
@@ -2328,6 +3474,10 @@ app.post("/api/reservations/:id/mark-paid", async (req, res) => {
       Number(reservation.effectiveTotalPrice) - (Number(reservation.amountPaid || 0) || 0),
       0
     );
+    const cardAmountToRecord = Math.max(
+      Number(reservation.cardRemainingBalance || 0) || 0,
+      0
+    );
 
     if (amountToRecord <= 0) {
       return res.status(400).json({ message: "This reservation is already fully paid." });
@@ -2354,7 +3504,7 @@ app.post("/api/reservations/:id/mark-paid", async (req, res) => {
 
       await insertReservationPaymentEvent(client, {
         reservationId,
-        amount: amountToRecord,
+        amount: cardAmountToRecord || amountToRecord,
         paymentSource,
         note: paymentNote || "Office card reader payment"
       });
