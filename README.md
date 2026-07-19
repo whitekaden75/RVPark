@@ -82,6 +82,11 @@ Required values:
 - `APP_PASSCODE`
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
+- `SENDGRID_API_KEY`
+- `SENDGRID_FROM_EMAIL`
+- `SENDGRID_FROM_NAME`
+- `SENDGRID_REPLY_TO`
+- `GUEST_AUTH_SECRET`
 
 Install and run yourself:
 
@@ -90,6 +95,18 @@ cd server
 npm install
 npm run dev
 ```
+
+### SendGrid email setup
+
+Create one SendGrid Restricted Access API key with only `Mail Send` set to Full Access. Add it to the backend environment as `SENDGRID_API_KEY`; never add it to the client or use a `VITE_` prefix.
+
+- `SENDGRID_API_KEY`: the secret SendGrid API key, beginning with `SG.`
+- `SENDGRID_FROM_EMAIL`: the verified address guests see as the sender
+- `SENDGRID_FROM_NAME`: the display name, such as `Riverpark RV Resort`
+- `SENDGRID_REPLY_TO`: a real inbox where guest replies should be delivered
+- `GUEST_AUTH_SECRET`: a long random server-only secret used to sign guest email sessions; generate one with `openssl rand -hex 32`
+
+The From address must use a SendGrid-verified Single Sender or an authenticated domain. After changing these backend variables, redeploy the server.
 
 ### 2. Frontend
 
@@ -125,6 +142,11 @@ Your Postgres already lives on Railway, so the main task is connecting a backend
    - `APP_PASSCODE`
    - `STRIPE_SECRET_KEY`
    - `STRIPE_WEBHOOK_SECRET`
+   - `SENDGRID_API_KEY`
+   - `SENDGRID_FROM_EMAIL`
+   - `SENDGRID_FROM_NAME`
+   - `SENDGRID_REPLY_TO`
+   - `GUEST_AUTH_SECRET`
 6. For `DATABASE_URL`, use the connection string from your existing Railway Postgres instance.
 7. Deploy the backend.
 8. After deploy, copy the generated public backend URL.
@@ -174,6 +196,9 @@ Then redeploy the backend.
 - `POST /api/availability/plan`
 - `POST /api/reservations`
 - `GET /api/reservations/:id`
+- `POST /api/reservations/:id/email-confirmation`
+- `POST /api/guest/reservations/request-code`
+- `POST /api/guest/reservations/sign-in`
 - `POST /api/reservations/:id/payment-links`
 - `POST /api/stripe/sync`
 - `POST /api/stripe/webhooks`

@@ -1,4 +1,5 @@
 import cors from "cors";
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import dotenv from "dotenv";
 import express from "express";
 import Stripe from "stripe";
@@ -23,6 +24,13 @@ const appPasscodeHeader = "x-app-passcode";
 const stripeApiVersion = "2026-02-25.clover";
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
+const sendGridApiKey = process.env.SENDGRID_API_KEY || "";
+const sendGridFromEmail = process.env.SENDGRID_FROM_EMAIL || "";
+const sendGridFromName = process.env.SENDGRID_FROM_NAME || "Riverpark RV Resort";
+const sendGridReplyTo = process.env.SENDGRID_REPLY_TO || sendGridFromEmail;
+const guestAuthSecret = process.env.GUEST_AUTH_SECRET || "";
+const guestVerificationRequests = new Map();
+const guestVerificationAttempts = new Map();
 const cardPriceMultiplier = 1.03;
 const pricingPreviewDays = Array.from({ length: 28 }, (_, index) => index + 1);
 const stripe = stripeSecretKey
@@ -128,6 +136,262 @@ function formatDisplayDate(dateString) {
     year: "numeric",
     timeZone: "UTC"
   }).format(new Date(`${dateString}T00:00:00Z`));
+}
+
+function formatEmailCurrency(value) {
+  const amount = Number(value);
+
+  if (!Number.isFinite(amount)) {
+    return "Not set";
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD"
+  }).format(amount);
+}
+
+function buildEmailConfirmationCode(reservation) {
+  const bookedDate = String(reservation.booked_date || "")
+    .replaceAll("-", "")
+    .slice(2);
+
+  return `#${reservation.id}${bookedDate ? `-${bookedDate}` : ""}`;
+}
+
+function escapeEmailHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function buildReservationConfirmationEmail(reservation) {
+  const primaryStay = reservation.siteStays?.[0] || null;
+  const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+  const confirmationCode = buildEmailConfirmationCode(reservation);
+  const departureDate = primaryStay?.isOpenEnded
+    ? "Open-ended yearly stay"
+    : primaryStay?.leave_date
+      ? formatDisplayDate(primaryStay.leave_date)
+      : "Not set";
+  const text = [
+    "Riverpark RV Resort",
+    "RESERVATION CONFIRMATION",
+    `Confirmation: ${confirmationCode}`,
+    "",
+    `Hi ${customerName || "Guest"},`,
+    "",
+    `Email: ${reservation.email || "Not set"}`,
+    `Phone: ${reservation.phone_number || "Not set"}`,
+    "",
+    "Deposit",
+    "Non Refundable",
+    "1 night per reservation, per week. We have a 3% surcharge for credit card. (No Debit cards) you may write a check, or cash with no surcharge on arrival balance.",
+    `Deposit amount: ${formatEmailCurrency(reservation.depositAmount)}`,
+    `Arrival: ${primaryStay?.arrival_date ? formatDisplayDate(primaryStay.arrival_date) : "Not set"}`,
+    "(Check-in 1:00 P.M.)",
+    `Depart: ${departureDate}`,
+    "(Check-out 11:00 A.M.)",
+    "",
+    "Important information",
+    "***Upon arrival, please stop at office to register",
+    "**We welcome your fur babies, but out of respect for other campers, & office please: keep pets on a leash at all times; immediately pick-up your pets doo, droppings**",
+    "or we will ask you to leave!! No Exceptions!",
+    "***There are no WOOD fires allowed in the park. No exceptions!",
+    "** Charcoal barbecue's, & propane are okay",
+    "(1 car or truck) per site reserved",
+    "$5.00 charge extra car",
+    "***PLEASE BE RESPECTFUL AND NEVER WALK THROUGH ANOTHER GUESTS SITE!!! This includes walking behind other RV's that are parked along the river!! The rose bush area is fine to cut through!!!",
+    "***SITE AND RATES ARE SUBJECT TO CHANGE***",
+    "***Contact us as soon as possible if any corrections are necessary.",
+    "Please note!! No AT&T cell towers close by & signal is weak or may not work",
+    "",
+    "Thank you for booking with us!",
+    "Makayla",
+    "",
+    "Riverpark RV Resort",
+    "2956 Rogue River Hwy",
+    "Grants Pass, OR 97527",
+    "",
+    "541-295-1269 (cell)",
+    "Text message okay"
+  ].join("\n");
+  const escapedText = text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\n", "<br>");
+
+  return {
+    subject: `Riverpark RV Resort reservation confirmation ${confirmationCode}`,
+    text,
+    html: `<div style="max-width:680px;margin:0 auto;padding:24px;color:#17372f;font-family:Arial,sans-serif;font-size:16px;line-height:1.6">${escapedText}</div>`
+  };
+}
+
+async function sendEmailWithSendGrid({ to, toName = "", subject, text, html }) {
+  if (!sendGridApiKey || !sendGridFromEmail) {
+    throw new Error(
+      "Email is not configured. Add SENDGRID_API_KEY and SENDGRID_FROM_EMAIL to the server."
+    );
+  }
+
+  const payload = {
+    personalizations: [
+      {
+        to: [
+          {
+            email: to,
+            ...(toName ? { name: toName } : {})
+          }
+        ]
+      }
+    ],
+    from: {
+      email: sendGridFromEmail,
+      name: sendGridFromName
+    },
+    ...(sendGridReplyTo ? { reply_to: { email: sendGridReplyTo } } : {}),
+    subject,
+    content: [
+      { type: "text/plain", value: text },
+      { type: "text/html", value: html }
+    ]
+  };
+  const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${sendGridApiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => null);
+    const sendGridMessage = errorBody?.errors?.[0]?.message;
+    throw new Error(sendGridMessage || `SendGrid rejected the email (${response.status}).`);
+  }
+}
+
+async function sendReservationConfirmationEmail(reservation) {
+  const message = buildReservationConfirmationEmail(reservation);
+  const recipientName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+
+  await sendEmailWithSendGrid({
+    to: reservation.email,
+    toName: recipientName,
+    ...message
+  });
+}
+
+function signGuestToken(payload) {
+  if (!guestAuthSecret) {
+    throw new Error("Guest email sign-in is not configured. Add GUEST_AUTH_SECRET to the server.");
+  }
+
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = createHmac("sha256", guestAuthSecret)
+    .update(encodedPayload)
+    .digest("base64url");
+
+  return `${encodedPayload}.${signature}`;
+}
+
+function readGuestToken(token, expectedType) {
+  if (!guestAuthSecret) {
+    return null;
+  }
+
+  const [encodedPayload, providedSignature, ...extraParts] = String(token || "").split(".");
+
+  if (!encodedPayload || !providedSignature || extraParts.length) {
+    return null;
+  }
+
+  const expectedSignature = createHmac("sha256", guestAuthSecret)
+    .update(encodedPayload)
+    .digest("base64url");
+  const providedBuffer = Buffer.from(providedSignature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+
+  if (
+    providedBuffer.length !== expectedBuffer.length ||
+    !timingSafeEqual(providedBuffer, expectedBuffer)
+  ) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+
+    if (
+      payload.type !== expectedType ||
+      !Number.isFinite(payload.expiresAt) ||
+      payload.expiresAt <= Date.now()
+    ) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function buildGuestCodeDigest(nonce, verificationCode) {
+  return createHmac("sha256", guestAuthSecret)
+    .update(`${nonce}:${verificationCode}`)
+    .digest("base64url");
+}
+
+function guestCodeMatches(challenge, verificationCode) {
+  const providedDigest = buildGuestCodeDigest(challenge.nonce, verificationCode);
+  const providedBuffer = Buffer.from(providedDigest);
+  const expectedBuffer = Buffer.from(challenge.codeDigest || "");
+
+  return (
+    providedBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(providedBuffer, expectedBuffer)
+  );
+}
+
+async function sendGuestVerificationEmail(customer, verificationCode) {
+  const guestName = `${customer.first_name || ""} ${customer.last_name || ""}`.trim();
+  const safeGuestName = escapeEmailHtml(guestName || "Guest");
+  const subject = "Your Riverpark booking verification code";
+  const text = [
+    `Hi ${guestName || "Guest"},`,
+    "",
+    "Use this verification code to manage your Riverpark RV Resort booking:",
+    "",
+    verificationCode,
+    "",
+    "This code expires in 10 minutes. If you did not request it, you can ignore this email.",
+    "",
+    "Riverpark RV Resort",
+    "541-295-1269"
+  ].join("\n");
+  const html = `
+    <div style="max-width:600px;margin:0 auto;padding:28px;color:#17372f;font-family:Arial,sans-serif;font-size:16px;line-height:1.6">
+      <p>Hi ${safeGuestName},</p>
+      <p>Use this verification code to manage your Riverpark RV Resort booking:</p>
+      <div style="margin:24px 0;padding:18px;border-radius:12px;background:#f3ede0;font-size:32px;font-weight:700;letter-spacing:8px;text-align:center">${verificationCode}</div>
+      <p>This code expires in 10 minutes. If you did not request it, you can ignore this email.</p>
+      <p>Riverpark RV Resort<br>541-295-1269</p>
+    </div>
+  `;
+
+  await sendEmailWithSendGrid({
+    to: customer.email,
+    toName: guestName,
+    subject,
+    text,
+    html
+  });
 }
 
 function toPriceNumber(value) {
@@ -1878,12 +2142,20 @@ function normalizeGuestPhone(value) {
   return String(value || "").replaceAll(/\D/g, "").slice(-10);
 }
 
-async function findGuestCustomer(credentials = {}) {
-  const firstName = String(credentials.firstName || "").trim();
-  const lastName = String(credentials.lastName || "").trim();
-  const phoneNumber = normalizeGuestPhone(credentials.phoneNumber);
+async function findGuestCustomerByIdentity({
+  firstName,
+  lastName,
+  phoneNumber
+} = {}) {
+  const normalizedFirstName = String(firstName || "").trim();
+  const normalizedLastName = String(lastName || "").trim();
+  const normalizedPhoneNumber = normalizeGuestPhone(phoneNumber);
 
-  if (!firstName || !lastName || phoneNumber.length !== 10) {
+  if (
+    !normalizedFirstName ||
+    !normalizedLastName ||
+    normalizedPhoneNumber.length !== 10
+  ) {
     return null;
   }
 
@@ -1896,14 +2168,49 @@ async function findGuestCustomer(credentials = {}) {
         AND RIGHT(REGEXP_REPLACE(COALESCE(phone_number, ''), '[^0-9]', '', 'g'), 10) = $3
       LIMIT 1
     `,
-    [firstName, lastName, phoneNumber]
+    [normalizedFirstName, normalizedLastName, normalizedPhoneNumber]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function findGuestCustomerByEmail(emailValue) {
+  const email = String(emailValue || "").trim().toLowerCase();
+
+  if (!email || !email.includes("@")) {
+    return null;
+  }
+
+  const result = await pool.query(
+    `
+      SELECT id, first_name, last_name, email, phone_number
+      FROM customers
+      WHERE LOWER(TRIM(email)) = $1
+      LIMIT 1
+    `,
+    [email]
   );
 
   return result.rows[0] || null;
 }
 
 async function authenticateGuestReservation(reservationId, credentials) {
-  const customer = await findGuestCustomer(credentials);
+  const session = readGuestToken(credentials?.accessToken, "guest_access");
+
+  if (!session?.customerId) {
+    return null;
+  }
+
+  const customerResult = await pool.query(
+    `
+      SELECT id, first_name, last_name, email, phone_number
+      FROM customers
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [session.customerId]
+  );
+  const customer = customerResult.rows[0] || null;
 
   if (!customer) {
     return null;
@@ -2380,13 +2687,118 @@ app.post("/api/availability/plan", async (req, res) => {
   }
 });
 
-app.post("/api/guest/reservations/sign-in", async (req, res) => {
+app.post("/api/guest/reservations/request-code", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const email = String(req.body.email || "").trim().toLowerCase();
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ message: "Enter a valid email address." });
+  }
+
+  if (!guestAuthSecret) {
+    return res.status(503).json({
+      message: "Guest email sign-in is not configured yet. Please call the office."
+    });
+  }
+
   try {
-    const customer = await findGuestCustomer(req.body);
+    const lastRequestAt = guestVerificationRequests.get(email) || 0;
+
+    if (Date.now() - lastRequestAt < 60000) {
+      return res.status(429).json({
+        message: "A code was recently requested. Wait one minute before trying again."
+      });
+    }
+
+    guestVerificationRequests.set(email, Date.now());
+    const customer = await findGuestCustomerByEmail(email);
+    const verificationCode = String(randomInt(100000, 1000000));
+    const nonce = randomBytes(18).toString("base64url");
+    const challengeToken = signGuestToken({
+      type: "guest_email_code",
+      email,
+      nonce,
+      codeDigest: buildGuestCodeDigest(nonce, verificationCode),
+      expiresAt: Date.now() + 10 * 60 * 1000
+    });
+    guestVerificationAttempts.set(nonce, 0);
+
+    if (customer) {
+      await sendGuestVerificationEmail(customer, verificationCode);
+    }
+
+    res.json({
+      challengeToken,
+      message: "If that email matches a booking, a verification code is on its way."
+    });
+  } catch (error) {
+    console.error("Unable to send guest verification code", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/guest/reservations/sign-in", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+
+  try {
+    let accessSession = readGuestToken(req.body.accessToken, "guest_access");
+
+    if (!accessSession) {
+      const challenge = readGuestToken(
+        req.body.challengeToken,
+        "guest_email_code"
+      );
+      const verificationCode = String(req.body.verificationCode || "").trim();
+      const failedAttempts = challenge?.nonce
+        ? guestVerificationAttempts.get(challenge.nonce) || 0
+        : 0;
+
+      if (
+        !challenge?.email ||
+        failedAttempts >= 5 ||
+        !/^\d{6}$/.test(verificationCode) ||
+        !guestCodeMatches(challenge, verificationCode)
+      ) {
+        if (challenge?.nonce) {
+          guestVerificationAttempts.set(challenge.nonce, failedAttempts + 1);
+        }
+
+        return res.status(401).json({
+          message: "That verification code is invalid or has expired."
+        });
+      }
+
+      guestVerificationAttempts.delete(challenge.nonce);
+      const verifiedCustomer = await findGuestCustomerByEmail(challenge.email);
+
+      if (!verifiedCustomer) {
+        return res.status(401).json({
+          message: "That verification code is invalid or has expired."
+        });
+      }
+
+      accessSession = {
+        type: "guest_access",
+        customerId: verifiedCustomer.id,
+        email: challenge.email,
+        expiresAt: Date.now() + 12 * 60 * 60 * 1000
+      };
+    }
+
+    const customerResult = await pool.query(
+      `
+        SELECT id, first_name, last_name, email, phone_number
+        FROM customers
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [accessSession.customerId]
+    );
+    const customer = customerResult.rows[0] || null;
 
     if (!customer) {
       return res.status(401).json({
-        message: "We could not find a booking with that name and phone number."
+        message: "That booking sign-in is invalid or has expired."
       });
     }
 
@@ -2408,8 +2820,9 @@ app.post("/api/guest/reservations/sign-in", async (req, res) => {
       customer: {
         firstName: customer.first_name,
         lastName: customer.last_name,
-        phoneNumber: customer.phone_number
+        email: customer.email
       },
+      accessToken: signGuestToken(accessSession),
       reservations: reservations.filter(Boolean).map(sanitizeGuestReservation)
     });
   } catch (error) {
@@ -2504,7 +2917,11 @@ app.post("/api/guest/reservations", async (req, res) => {
       });
     }
 
-    let customer = await findGuestCustomer({ firstName, lastName, phoneNumber });
+    let customer = await findGuestCustomerByIdentity({
+      firstName,
+      lastName,
+      phoneNumber
+    });
 
     if (customer) {
       await client.query(
@@ -2922,6 +3339,39 @@ app.get("/api/reservations/:id", async (req, res) => {
 
     res.json(reservation);
   } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/reservations/:id/email-confirmation", async (req, res) => {
+  const reservationId = Number(req.params.id);
+
+  if (!reservationId) {
+    return res.status(400).json({ message: "A valid reservation is required." });
+  }
+
+  try {
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation) {
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (!reservation.email || !reservation.email.includes("@")) {
+      return res.status(400).json({
+        message: "Add a valid customer email address before sending the confirmation."
+      });
+    }
+
+    await sendReservationConfirmationEmail(reservation);
+
+    res.json({
+      message: `Confirmation sent to ${reservation.email}.`,
+      reservationId: reservation.id,
+      recipient: reservation.email
+    });
+  } catch (error) {
+    console.error("Unable to send reservation confirmation", reservationId, error);
     res.status(500).json({ message: error.message });
   }
 });

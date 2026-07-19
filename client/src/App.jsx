@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Alert,
   Box,
@@ -213,37 +214,113 @@ function getReservationNotesSnippet(notes, maxLength = 120) {
 
 function CardActionMenu({ menuId, openMenuId, onToggle, onClose, actions }) {
   const isOpen = openMenuId === menuId;
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const [menuPosition, setMenuPosition] = useState(null);
+
+  useLayoutEffect(() => {
+    if (!isOpen || !triggerRef.current || !menuRef.current) {
+      setMenuPosition(null);
+      return undefined;
+    }
+
+    function updateMenuPosition() {
+      if (!triggerRef.current || !menuRef.current) {
+        return;
+      }
+
+      const viewportMargin = 12;
+      const menuGap = 8;
+      const triggerBounds = triggerRef.current.getBoundingClientRect();
+      const menuBounds = menuRef.current.getBoundingClientRect();
+      const menuHeight = Math.min(
+        menuBounds.height,
+        window.innerHeight - viewportMargin * 2
+      );
+      const availableBelow =
+        window.innerHeight - triggerBounds.bottom - menuGap;
+      const availableAbove = triggerBounds.top - menuGap;
+      const opensUpward =
+        availableBelow < menuHeight && availableAbove > availableBelow;
+      const preferredTop = opensUpward
+        ? triggerBounds.top - menuGap - menuHeight
+        : triggerBounds.bottom + menuGap;
+      const maxTop = Math.max(
+        viewportMargin,
+        window.innerHeight - menuHeight - viewportMargin
+      );
+      const maxLeft = Math.max(
+        viewportMargin,
+        window.innerWidth - menuBounds.width - viewportMargin
+      );
+
+      setMenuPosition({
+        left: Math.min(
+          Math.max(viewportMargin, triggerBounds.right - menuBounds.width),
+          maxLeft
+        ),
+        top: Math.min(Math.max(viewportMargin, preferredTop), maxTop),
+      });
+    }
+
+    updateMenuPosition();
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+
+    return () => {
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [isOpen, actions.length]);
 
   return (
-    <div
-      className="card-action-menu"
-      onClick={(event) => event.stopPropagation()}>
-      <button
-        type="button"
-        className="ghost-button card-action-trigger"
-        aria-haspopup="menu"
-        aria-expanded={isOpen}
-        onClick={() => onToggle(menuId)}>
-        ...
-      </button>
-      {isOpen ? (
-        <div className="card-action-dropdown" role="menu">
-          {actions.map((action) => (
-            <button
-              key={action.label}
-              type="button"
-              role="menuitem"
-              className={`card-action-item ${action.danger ? "danger" : ""}`}
-              onClick={() => {
-                onClose();
-                action.onClick();
-              }}>
-              {action.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <>
+      <div
+        className="card-action-menu"
+        onClick={(event) => event.stopPropagation()}>
+        <button
+          ref={triggerRef}
+          type="button"
+          className="ghost-button card-action-trigger"
+          aria-haspopup="menu"
+          aria-expanded={isOpen}
+          onClick={() => onToggle(menuId)}>
+          ...
+        </button>
+      </div>
+      {isOpen && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="card-action-dropdown card-action-dropdown-portal"
+              role="menu"
+              style={{
+                left: menuPosition?.left ?? 0,
+                top: menuPosition?.top ?? 0,
+                visibility: menuPosition ? "visible" : "hidden",
+              }}
+              onClick={(event) => event.stopPropagation()}>
+              {actions.map((action) => (
+                <button
+                  key={action.label}
+                  type="button"
+                  role="menuitem"
+                  className={`card-action-item ${
+                    action.danger ? "danger" : ""
+                  }`}
+                  disabled={action.disabled}
+                  onClick={() => {
+                    onClose();
+                    action.onClick();
+                  }}>
+                  {action.label}
+                </button>
+              ))}
+            </div>,
+            document.body
+          )
+        : null}
+    </>
   );
 }
 
@@ -716,24 +793,6 @@ function buildSmsComposeUrl(phoneNumber, messageBody) {
   return `sms:${phoneNumber}${separator}body=${encodeURIComponent(
     messageBody
   )}`;
-}
-
-function buildGmailComposeUrl(reservation, paymentLink) {
-  if (!reservation?.email) {
-    return "";
-  }
-
-  const params = new URLSearchParams({
-    view: "cm",
-    fs: "1",
-    to: reservation.email,
-    su: `Riverpark RV Resort reservation confirmation ${buildConfirmationCode(
-      reservation
-    )}`,
-    body: buildReservationConfirmationText(reservation, paymentLink),
-  });
-
-  return `https://mail.google.com/mail/?${params.toString()}`;
 }
 
 function calculateUtilityPrice(electricMeterReading) {
@@ -1640,6 +1699,7 @@ function PublicHome({
             </div>
             <div className="hero-details" aria-label="Park highlights">
               <span>Riverfront setting</span>
+              <span>No freeway noise</span>
               <span>Back-in RV sites</span>
               <span>Pet-friendly stays</span>
             </div>
@@ -1660,7 +1720,8 @@ function PublicHome({
             <p>
               Settle in close to the water, enjoy the shade, and use Riverpark
               as your home base for fishing, exploring, or simply taking the day
-              slowly.
+              slowly. Once you arrive, you cannot hear freeway traffic from the
+              park.
             </p>
           </div>
         </section>
@@ -1682,12 +1743,11 @@ function PublicHome({
             </p>
             <a href="#availability">Start a site search</a>
           </article>
-          <div
-            className="photo-placeholder wide-photo-placeholder"
-            role="img"
-            aria-label="Park grounds photo placeholder">
-            <span>PARK GROUNDS PHOTO</span>
-            <small>Wide landscape image</small>
+          <div className="wide-photo-placeholder park-grounds-photo">
+            <img
+              src="/Images/backofriver.jpg"
+              alt="Shaded RV sites along the tree-lined road through Riverpark RV Resort"
+            />
           </div>
         </section>
 
@@ -1700,8 +1760,8 @@ function PublicHome({
               can work for the full stay.
             </p>
             <p className="public-pricing-note">
-              Cash, check, and bank-transfer pricing use the standard rate.
-              Card payments are shown at 103% so the total is clear up front.
+              If you hate computers and would rather talk to a person, call us
+              and we can book you over the phone.
             </p>
             <a href="tel:+15412951269">Questions? Call or text 541-295-1269</a>
           </div>
@@ -2288,10 +2348,11 @@ function createGuestReservationEditor(reservation) {
 
 function GuestPortal({ onBackHome }) {
   const [credentials, setCredentials] = useState({
-    firstName: "",
-    lastName: "",
-    phoneNumber: "",
+    email: "",
   });
+  const [verificationCode, setVerificationCode] = useState("");
+  const [emailChallengeToken, setEmailChallengeToken] = useState("");
+  const [guestAccessToken, setGuestAccessToken] = useState("");
   const [reservations, setReservations] = useState([]);
   const [activeReservationId, setActiveReservationId] = useState(null);
   const [editor, setEditor] = useState(null);
@@ -2344,10 +2405,18 @@ function GuestPortal({ onBackHome }) {
     try {
       const result = await guestApiRequest("/guest/reservations/sign-in", {
         method: "POST",
-        body: JSON.stringify(credentials),
+        body: JSON.stringify(
+          guestAccessToken
+            ? { accessToken: guestAccessToken }
+            : {
+                challengeToken: emailChallengeToken,
+                verificationCode,
+              }
+        ),
       });
       const nextReservations = ensureArray(result.reservations, "Reservations");
 
+      setGuestAccessToken(result.accessToken || guestAccessToken);
       setReservations(nextReservations);
 
       if (!nextReservations.length) {
@@ -2385,6 +2454,40 @@ function GuestPortal({ onBackHome }) {
     event.preventDefault();
     setSuccessMessage("");
     loadGuestReservations();
+  }
+
+  async function requestGuestVerificationCode(event) {
+    event.preventDefault();
+    setIsSigningIn(true);
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const result = await guestApiRequest(
+        "/guest/reservations/request-code",
+        {
+          method: "POST",
+          body: JSON.stringify({ email: credentials.email }),
+        }
+      );
+
+      setEmailChallengeToken(result.challengeToken || "");
+      setVerificationCode("");
+      setSuccessMessage(
+        result.message || "Check your email for a verification code."
+      );
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setIsSigningIn(false);
+    }
+  }
+
+  function resetGuestEmailVerification() {
+    setEmailChallengeToken("");
+    setVerificationCode("");
+    setErrorMessage("");
+    setSuccessMessage("");
   }
 
   function updateEditorField(field, value) {
@@ -2450,7 +2553,7 @@ function GuestPortal({ onBackHome }) {
           {
             method: "POST",
             body: JSON.stringify({
-              credentials,
+              credentials: { accessToken: guestAccessToken },
               rvKind: editor.rvKind,
               rigLengthFeet: editor.rigLengthFeet,
               siteStays: editor.siteStays.map((stay) => ({
@@ -2501,7 +2604,7 @@ function GuestPortal({ onBackHome }) {
   }, [
     activeReservation?.id,
     activeReservation?.reservation_term,
-    credentials,
+    guestAccessToken,
     editor,
     guestAvailabilitySignature,
   ]);
@@ -2523,7 +2626,7 @@ function GuestPortal({ onBackHome }) {
         {
           method: "PUT",
           body: JSON.stringify({
-            credentials,
+            credentials: { accessToken: guestAccessToken },
             email: editor.email,
             rvKind: editor.rvKind,
             motorhomeClassA: editor.motorhomeClassA,
@@ -2569,7 +2672,10 @@ function GuestPortal({ onBackHome }) {
         `/guest/reservations/${activeReservation.id}/payment-intents`,
         {
           method: "POST",
-          body: JSON.stringify({ credentials, amount: paymentAmount }),
+          body: JSON.stringify({
+            credentials: { accessToken: guestAccessToken },
+            amount: paymentAmount,
+          }),
         }
       );
       setCardPayment(payment);
@@ -2593,7 +2699,10 @@ function GuestPortal({ onBackHome }) {
     setEditor(null);
     setCardPayment(null);
     setPaymentAmount("");
-    setCredentials({ firstName: "", lastName: "", phoneNumber: "" });
+    setCredentials({ email: "" });
+    setVerificationCode("");
+    setEmailChallengeToken("");
+    setGuestAccessToken("");
     setErrorMessage("");
     setSuccessMessage("");
     setGuestAvailabilityByStay({});
@@ -2630,68 +2739,107 @@ function GuestPortal({ onBackHome }) {
               View your dates and site, update your reservation details, and
               make a secure card payment.
             </p>
+            <p>
+              If you hate computers and would rather talk to a person, call us
+              and we can help with your reservation.
+            </p>
+            <p>
+              <a href="tel:+15412951269">Call or text 541-295-1269</a>
+            </p>
             <div className="guest-security-note">
-              <strong>Text verification is coming next.</strong>
+              <strong>Secure email verification.</strong>
               <span>
-                For now, use the exact name and phone number entered when you
-                booked.
+                We will email a short-lived code to the address on your
+                booking.
               </span>
             </div>
           </div>
-          <form className="guest-signin-card" onSubmit={handleSignIn}>
+          <form
+            className="guest-signin-card"
+            onSubmit={
+              emailChallengeToken ? handleSignIn : requestGuestVerificationCode
+            }>
             <p className="eyebrow">Find my booking</p>
-            <h2>Sign in to your stay</h2>
-            <label>
-              First name
-              <input
-                autoComplete="given-name"
-                value={credentials.firstName}
-                onChange={(event) =>
-                  setCredentials((current) => ({
-                    ...current,
-                    firstName: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Last name
-              <input
-                autoComplete="family-name"
-                value={credentials.lastName}
-                onChange={(event) =>
-                  setCredentials((current) => ({
-                    ...current,
-                    lastName: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Phone number
-              <input
-                type="tel"
-                autoComplete="tel"
-                inputMode="numeric"
-                placeholder="(541)555-1234"
-                value={credentials.phoneNumber}
-                onChange={(event) =>
-                  setCredentials((current) => ({
-                    ...current,
-                    phoneNumber: formatPhoneNumber(event.target.value),
-                  }))
-                }
-              />
-            </label>
+            <h2>
+              {emailChallengeToken
+                ? "Enter your email code"
+                : "Sign in to your stay"}
+            </h2>
+            {!emailChallengeToken ? (
+              <label>
+                Email address
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={credentials.email}
+                  onChange={(event) =>
+                    setCredentials({ email: event.target.value })
+                  }
+                  required
+                />
+              </label>
+            ) : (
+              <>
+                <p className="guest-verification-copy">
+                  Enter the six-digit code sent to{" "}
+                  <strong>{credentials.email}</strong>.
+                </p>
+                <label>
+                  Verification code
+                  <input
+                    type="text"
+                    autoComplete="one-time-code"
+                    inputMode="numeric"
+                    maxLength="6"
+                    placeholder="123456"
+                    value={verificationCode}
+                    onChange={(event) =>
+                      setVerificationCode(
+                        event.target.value.replaceAll(/\D/g, "").slice(0, 6)
+                      )
+                    }
+                    required
+                  />
+                </label>
+              </>
+            )}
             {errorMessage ? (
               <div className="public-search-message error">{errorMessage}</div>
+            ) : null}
+            {successMessage ? (
+              <div className="public-search-message success">
+                {successMessage}
+              </div>
             ) : null}
             <button
               type="submit"
               className="public-search-button"
               disabled={isSigningIn}>
-              {isSigningIn ? "Finding your booking..." : "View my reservation"}
+              {isSigningIn
+                ? emailChallengeToken
+                  ? "Verifying..."
+                  : "Sending code..."
+                : emailChallengeToken
+                  ? "Verify and view booking"
+                  : "Email me a code"}
             </button>
+            {emailChallengeToken ? (
+              <div className="guest-verification-actions">
+                <button
+                  type="button"
+                  className="guest-change-email-button"
+                  disabled={isSigningIn}
+                  onClick={requestGuestVerificationCode}>
+                  Send another code
+                </button>
+                <button
+                  type="button"
+                  className="guest-change-email-button"
+                  onClick={resetGuestEmailVerification}>
+                  Use a different email
+                </button>
+              </div>
+            ) : null}
             <p className="guest-help-copy">
               Trouble signing in? Call or text{" "}
               <a href="tel:+15412951269">541-295-1269</a>.
@@ -2710,7 +2858,7 @@ function GuestPortal({ onBackHome }) {
           <span>Riverpark RV Resort</span>
         </button>
         <div className="guest-header-actions">
-          <span>Welcome, {credentials.firstName}</span>
+          <span>Welcome, {activeReservation?.first_name || "Guest"}</span>
           <button
             type="button"
             className="public-calendar-toggle"
@@ -3587,6 +3735,7 @@ export default function App() {
     useState(false);
   const [isWholeScheduleOpen, setIsWholeScheduleOpen] = useState(false);
   const [isArrivalsTodayOpen, setIsArrivalsTodayOpen] = useState(false);
+  const [isSiteMovesOpen, setIsSiteMovesOpen] = useState(false);
   const [activeScheduleReservation, setActiveScheduleReservation] =
     useState(null);
   const [siteFilters, setSiteFilters] = useState(emptySiteFilters);
@@ -3650,13 +3799,20 @@ export default function App() {
     useState("");
   const [schedulePaymentSuccessMessage, setSchedulePaymentSuccessMessage] =
     useState("");
+  const [isOpeningReservationEditor, setIsOpeningReservationEditor] =
+    useState(false);
+  const [isSavingAdminEdit, setIsSavingAdminEdit] = useState(false);
+  const [adminSaveNotice, setAdminSaveNotice] = useState("");
   const [confirmationCopyMessage, setConfirmationCopyMessage] = useState("");
+  const [sendingConfirmationReservationId, setSendingConfirmationReservationId] =
+    useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [reservationErrorMessage, setReservationErrorMessage] = useState("");
   const [reservationSuccessMessage, setReservationSuccessMessage] =
     useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [isAdminHeaderCompact, setIsAdminHeaderCompact] = useState(false);
+  const [isAdminMobileMenuOpen, setIsAdminMobileMenuOpen] = useState(false);
   const reservationFormRef = useRef(null);
   const reservationCustomerSectionRef = useRef(null);
   const reservationDatesSectionRef = useRef(null);
@@ -3709,6 +3865,19 @@ export default function App() {
       window.removeEventListener("scroll", updateAdminHeaderState);
     };
   }, [activePage, isUnlocked]);
+
+  useEffect(() => {
+    setIsAdminMobileMenuOpen(false);
+  }, [activePage]);
+
+  useEffect(() => {
+    if (!adminSaveNotice) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => setAdminSaveNotice(""), 4000);
+    return () => window.clearTimeout(timeoutId);
+  }, [adminSaveNotice]);
 
   useEffect(() => {
     if (!isUnlocked) {
@@ -4130,27 +4299,14 @@ export default function App() {
       };
     })
     .filter(Boolean);
-  const arrivalsToday = scheduleReservations
-    .map((reservation) => {
-      const arrivingSiteStays = reservation.siteStays.filter(
-        (segment) => segment.arrival_date === today
-      );
-
-      if (!arrivingSiteStays.length) {
-        return null;
-      }
-
-      return {
-        ...reservation,
-        arrivingSiteStays,
-      };
-    })
-    .filter(Boolean);
-  const arrivalsOnSelectedDate = scheduleReservations
+  const selectedDateArrivalEntries = scheduleReservations
     .map((reservation) => {
       const arrivingSiteStays = reservation.siteStays.filter(
         (segment) => segment.arrival_date === selectedArrivalDate
       );
+      const departingSiteStays = reservation.siteStays.filter(
+        (segment) => segment.leave_date === selectedArrivalDate
+      );
 
       if (!arrivingSiteStays.length) {
         return null;
@@ -4159,9 +4315,16 @@ export default function App() {
       return {
         ...reservation,
         arrivingSiteStays,
+        departingSiteStays,
       };
     })
     .filter(Boolean);
+  const siteMovesOnSelectedDate = selectedDateArrivalEntries.filter(
+    (reservation) => reservation.departingSiteStays.length
+  );
+  const arrivalsOnSelectedDate = selectedDateArrivalEntries.filter(
+    (reservation) => !reservation.departingSiteStays.length
+  );
   const customerScheduleResults = [...reservations]
     .filter((reservation) => {
       if (!customerBookingSearchValue) {
@@ -4460,6 +4623,7 @@ export default function App() {
       setTimelineMonthCursor(startOfMonth(todayDate));
       setIsWholeScheduleOpen(false);
       setIsArrivalsTodayOpen(false);
+      setIsSiteMovesOpen(false);
       setActiveScheduleReservation(null);
       setIsEditingSchedulePaymentInfo(false);
       return;
@@ -4771,6 +4935,11 @@ export default function App() {
 
   async function handleReservationCreate(event) {
     event.preventDefault();
+    const isSavingExistingReservation = Boolean(editingReservationId);
+
+    if (isSavingExistingReservation) {
+      setIsSavingAdminEdit(true);
+    }
     setErrorMessage("");
     setSuccessMessage("");
     setReservationErrorMessage("");
@@ -4876,6 +5045,7 @@ export default function App() {
         setCreatedReservation(created);
         setSuccessMessage(`Updated reservation #${created.id}.`);
         setReservationSuccessMessage(`Updated reservation #${created.id}.`);
+        setAdminSaveNotice(`Reservation #${created.id} was saved.`);
       } else {
         setCreatedReservation(created);
         setSuccessMessage(`Created active reservation #${created.id}.`);
@@ -4911,6 +5081,10 @@ export default function App() {
       resetReservationForm(rememberedSite);
     } catch (error) {
       setReservationErrorMessage(error.message);
+    } finally {
+      if (isSavingExistingReservation) {
+        setIsSavingAdminEdit(false);
+      }
     }
   }
 
@@ -5015,38 +5189,44 @@ export default function App() {
     }
   }
 
-  function openReservationConfirmationInGmail(reservation) {
+  async function sendReservationConfirmation(reservation) {
     if (!reservation?.email) {
-      setErrorMessage(
-        "Add a customer email address before opening Gmail compose."
-      );
+      const message = "Add a customer email address before sending the confirmation.";
+      setErrorMessage(message);
+
+      if (createdReservation?.id === reservation?.id) {
+        setConfirmationCopyMessage(message);
+      }
+
       return;
     }
 
-    const paymentContext =
-      reservationCardPayment?.reservationId === reservation.id
-        ? reservationCardPayment
-        : generatedPaymentLink?.reservationId === reservation.id
-        ? generatedPaymentLink
-        : null;
-    const composeUrl = buildGmailComposeUrl(reservation, paymentContext);
-    window.open(composeUrl, "_blank", "noopener,noreferrer");
-    setSuccessMessage(`Opened Gmail draft for reservation #${reservation.id}.`);
+    setSendingConfirmationReservationId(reservation.id);
     setErrorMessage("");
-  }
+    setSuccessMessage("");
 
-  function openConfirmationInGmail() {
-    if (!createdReservation?.email) {
-      setConfirmationCopyMessage(
-        "Add a customer email address before opening Gmail compose."
+    try {
+      const result = await apiRequest(
+        `/reservations/${reservation.id}/email-confirmation`,
+        { method: "POST" }
       );
-      return;
-    }
+      const message = result.message || `Confirmation sent to ${reservation.email}.`;
 
-    openReservationConfirmationInGmail(createdReservation);
-    setConfirmationCopyMessage(
-      `Opened Gmail draft for reservation #${createdReservation.id}.`
-    );
+      setSuccessMessage(message);
+      setAdminSaveNotice(message);
+
+      if (createdReservation?.id === reservation.id) {
+        setConfirmationCopyMessage(message);
+      }
+    } catch (error) {
+      setErrorMessage(error.message);
+
+      if (createdReservation?.id === reservation.id) {
+        setConfirmationCopyMessage(error.message);
+      }
+    } finally {
+      setSendingConfirmationReservationId(null);
+    }
   }
 
   function openArrivalTextMessage(reservation, arrivalDate) {
@@ -5531,6 +5711,7 @@ export default function App() {
     setSchedulePaymentSuccessMessage("");
     setErrorMessage("");
     setSuccessMessage("");
+    setIsSavingAdminEdit(true);
 
     try {
       const updatedReservation = await apiRequest(
@@ -5598,9 +5779,14 @@ export default function App() {
       setSuccessMessage(
         `Saved payment info for reservation #${updatedReservation.id}.`
       );
+      setAdminSaveNotice(
+        `Payment information for reservation #${updatedReservation.id} was saved.`
+      );
       setIsEditingSchedulePaymentInfo(false);
     } catch (error) {
       setSchedulePaymentErrorMessage(error.message);
+    } finally {
+      setIsSavingAdminEdit(false);
     }
   }
 
@@ -5822,6 +6008,7 @@ export default function App() {
     setReservationEditorErrorMessage("");
     setReservationEditorSuccessMessage("");
     setReservationEditFocusSection(focusSection);
+    setIsOpeningReservationEditor(true);
 
     try {
       const reservation = await apiRequest(`/reservations/${reservationId}`);
@@ -5832,6 +6019,8 @@ export default function App() {
       });
     } catch (error) {
       setErrorMessage(error.message);
+    } finally {
+      setIsOpeningReservationEditor(false);
     }
   }
 
@@ -5869,6 +6058,7 @@ export default function App() {
     setReservationEditorSuccessMessage("");
     setErrorMessage("");
     setSuccessMessage("");
+    setIsSavingAdminEdit(true);
 
     try {
       const customerPayload = {
@@ -5938,17 +6128,13 @@ export default function App() {
         setCreatedReservation(updatedReservation);
       }
 
-      setReservationEditor({
-        id: updatedReservation.id,
-        focusSection: reservationEditor.focusSection,
-        ...createReservationEditorState(updatedReservation),
-      });
-      setReservationEditorSuccessMessage(
-        `Saved reservation #${updatedReservation.id}.`
-      );
       setSuccessMessage(`Saved reservation #${updatedReservation.id}.`);
+      setAdminSaveNotice(`Reservation #${updatedReservation.id} was saved.`);
+      closeReservationEditor();
     } catch (error) {
       setReservationEditorErrorMessage(error.message);
+    } finally {
+      setIsSavingAdminEdit(false);
     }
   }
 
@@ -6105,13 +6291,28 @@ export default function App() {
           <div>
             <div className="admin-title-row">
               <Typography variant="h1">RV Park Reservations</Typography>
-              <Button
-                type="button"
-                className="admin-home-button"
-                variant="outlined"
-                onClick={() => setActivePage("home")}>
-                Resort home
-              </Button>
+              <div className="admin-header-actions">
+                <button
+                  type="button"
+                  className="admin-mobile-menu-button"
+                  aria-label="Open admin navigation"
+                  aria-expanded={isAdminMobileMenuOpen}
+                  aria-controls="admin-mobile-menu"
+                  onClick={() =>
+                    setIsAdminMobileMenuOpen((current) => !current)
+                  }>
+                  <span />
+                  <span />
+                  <span />
+                </button>
+                <Button
+                  type="button"
+                  className="admin-home-button"
+                  variant="outlined"
+                  onClick={() => setActivePage("home")}>
+                  Resort home
+                </Button>
+              </div>
             </div>
             <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
               Switch between pages from the top navigation.
@@ -6128,6 +6329,21 @@ export default function App() {
               <Tab key={page.key} value={page.key} label={page.label} />
             ))}
           </Tabs>
+          {isAdminMobileMenuOpen ? (
+            <div className="admin-mobile-menu-panel" id="admin-mobile-menu">
+              {appPages.map((page) => (
+                <button
+                  key={page.key}
+                  type="button"
+                  className={`admin-mobile-menu-item ${
+                    activePage === page.key ? "active" : ""
+                  }`}
+                  onClick={() => setActivePage(page.key)}>
+                  {page.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </Stack>
       </Paper>
       {errorMessage ? (
@@ -6805,9 +7021,14 @@ export default function App() {
                       Cancel edit
                     </button>
                   ) : null}
-                  <button type="submit" className="primary-button">
+                  <button
+                    type="submit"
+                    className="primary-button"
+                    disabled={isSavingAdminEdit}>
                     {editingReservationId
-                      ? "Save reservation"
+                      ? isSavingAdminEdit
+                        ? "Saving..."
+                        : "Save reservation"
                       : "Create reservation"}
                   </button>
                 </div>
@@ -6957,8 +7178,17 @@ export default function App() {
                         <button
                           type="button"
                           className="ghost-button"
-                          onClick={openConfirmationInGmail}>
-                          Open in Gmail
+                          disabled={
+                            sendingConfirmationReservationId ===
+                            createdReservation.id
+                          }
+                          onClick={() =>
+                            sendReservationConfirmation(createdReservation)
+                          }>
+                          {sendingConfirmationReservationId ===
+                          createdReservation.id
+                            ? "Sending..."
+                            : "Send confirmation email"}
                         </button>
                         <button
                           type="button"
@@ -6993,7 +7223,7 @@ export default function App() {
                       </div>
                     ) : null}
                     <p className="muted">
-                      The customer confirmation is ready to copy and send.
+                      Send the confirmation directly or copy it as a backup.
                     </p>
                   </div>
                 ) : null}
@@ -7429,6 +7659,143 @@ export default function App() {
                     </div>
                   ) : null}
                 </div>
+
+                <div className="schedule-dropdown site-moves-dropdown">
+                  <button
+                    type="button"
+                    className="schedule-dropdown-trigger"
+                    onClick={() => setIsSiteMovesOpen((current) => !current)}>
+                    <span>
+                      {selectedArrivalDate === today
+                        ? "People moving sites today"
+                        : `People moving sites on ${formatDisplayDate(
+                            selectedArrivalDate
+                          )}`}
+                    </span>
+                    <span className="muted">
+                      {isSchedulePageLoading && !hasLoadedReservations
+                        ? "Loading site moves"
+                        : `${siteMovesOnSelectedDate.length} site ${
+                            siteMovesOnSelectedDate.length === 1
+                              ? "move"
+                              : "moves"
+                          }`} {" "}
+                      • {isSiteMovesOpen ? "Hide" : "Show"}
+                    </span>
+                  </button>
+                  {isSiteMovesOpen ? (
+                    <div className="schedule-dropdown-panel">
+                      {isSchedulePageLoading && !hasLoadedReservations ? (
+                        <p className="muted">Loading site moves...</p>
+                      ) : siteMovesOnSelectedDate.length ? (
+                        <div className="schedule-list">
+                          {siteMovesOnSelectedDate.map((reservation) => (
+                            <article
+                              key={reservation.id}
+                              className="timeline-card schedule-summary-card site-move-card">
+                              <div className="result-header">
+                                <h3>
+                                  {reservation.first_name}{" "}
+                                  {reservation.last_name}
+                                </h3>
+                                <div className="button-row schedule-card-actions">
+                                  <CardActionMenu
+                                    menuId={`site-move-${reservation.id}`}
+                                    openMenuId={openCardActionMenuId}
+                                    onToggle={toggleCardActionMenu}
+                                    onClose={closeCardActionMenu}
+                                    actions={[
+                                      ...(Number(
+                                        reservation.remainingBalance || 0
+                                      ) > 0
+                                        ? [
+                                            {
+                                              label: "Add payment",
+                                              onClick: () =>
+                                                openScheduleReservation(
+                                                  reservation
+                                                ),
+                                            },
+                                          ]
+                                        : []),
+                                      {
+                                        label: "View booking",
+                                        onClick: () =>
+                                          openScheduleReservation(reservation),
+                                      },
+                                      {
+                                        label: "Edit payment info",
+                                        onClick: () =>
+                                          openScheduleReservation(reservation, {
+                                            openPaymentEditor: true,
+                                          }),
+                                      },
+                                    ].concat(
+                                      buildReservationEditActions(
+                                        reservation.id
+                                      )
+                                    )}
+                                  />
+                                </div>
+                              </div>
+                              <p className="site-move-route">
+                                <strong>
+                                  Site{" "}
+                                  {
+                                    reservation.departingSiteStays[0]
+                                      ?.site_number
+                                  }
+                                </strong>
+                                <span aria-hidden="true">→</span>
+                                <strong>
+                                  Site{" "}
+                                  {
+                                    reservation.arrivingSiteStays[0]
+                                      ?.site_number
+                                  }
+                                </strong>
+                              </p>
+                              <p className="muted">
+                                Moving {formatDisplayDate(selectedArrivalDate)} •{" "}
+                                {reservation.rv_kind}
+                                {formatMotorhomeDetails(reservation)}
+                                {reservation.rig_length_feet
+                                  ? ` • ${reservation.rig_length_feet} ft rig`
+                                  : ""}
+                                {` • Paid ${formatCurrency(
+                                  reservation.amountPaid
+                                )} • Balance ${formatCurrency(
+                                  reservation.remainingBalance
+                                )}`}
+                              </p>
+                              {reservation.notes?.trim() ? (
+                                <button
+                                  type="button"
+                                  className="notes-snippet-button"
+                                  onClick={() =>
+                                    openReservationNote(reservation)
+                                  }>
+                                  Note:{" "}
+                                  {getReservationNotesSnippet(
+                                    reservation.notes
+                                  )}
+                                </button>
+                              ) : null}
+                            </article>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="muted">
+                          No guests are moving sites{" "}
+                          {selectedArrivalDate === today
+                            ? "today"
+                            : formatDisplayDate(selectedArrivalDate)}
+                          .
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
               <div className="timeline-controls">
@@ -7602,11 +7969,16 @@ export default function App() {
                               onClose={closeCardActionMenu}
                               actions={[
                                 {
-                                  label: "Open in Gmail",
+                                  label:
+                                    sendingConfirmationReservationId ===
+                                    reservation.id
+                                      ? "Sending..."
+                                      : "Send confirmation email",
+                                  disabled:
+                                    sendingConfirmationReservationId ===
+                                    reservation.id,
                                   onClick: () =>
-                                    openReservationConfirmationInGmail(
-                                      reservation
-                                    ),
+                                    sendReservationConfirmation(reservation),
                                 },
                                 {
                                   label: "View booking",
@@ -8103,6 +8475,27 @@ export default function App() {
           </Paper>
         ) : null}
 
+        {isOpeningReservationEditor || isSavingAdminEdit ? (
+          <div
+            className="admin-operation-overlay"
+            role="status"
+            aria-live="polite"
+            aria-label={
+              isOpeningReservationEditor ? "Loading editor" : "Saving changes"
+            }>
+            <span className="loading-spinner" aria-hidden="true" />
+            <strong>
+              {isOpeningReservationEditor ? "Loading editor..." : "Saving changes..."}
+            </strong>
+          </div>
+        ) : null}
+
+        {adminSaveNotice ? (
+          <div className="admin-save-notice" role="status" aria-live="polite">
+            {adminSaveNotice}
+          </div>
+        ) : null}
+
         {reservationEditor ? (
           <div
             className="modal-backdrop"
@@ -8376,8 +8769,9 @@ export default function App() {
                 <button
                   type="button"
                   className="primary-button"
+                  disabled={isSavingAdminEdit}
                   onClick={saveReservationEditor}>
-                  Save changes
+                  {isSavingAdminEdit ? "Saving..." : "Save changes"}
                 </button>
               </div>
               {reservationEditorErrorMessage ? (
@@ -8702,8 +9096,9 @@ export default function App() {
                     <button
                       type="button"
                       className="primary-button"
+                      disabled={isSavingAdminEdit}
                       onClick={saveSchedulePaymentInfo}>
-                      Save payment info
+                      {isSavingAdminEdit ? "Saving..." : "Save payment info"}
                     </button>
                   </div>
                   {schedulePaymentErrorMessage ? (
