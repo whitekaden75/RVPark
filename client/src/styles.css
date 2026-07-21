@@ -1123,6 +1123,18 @@ select option {
   padding: 8px 12px;
 }
 
+.booking-delete-row {
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.booking-delete-icon-button {
+  min-width: 48px;
+  padding: 10px 12px;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
 .payment-edit-sections {
   display: grid;
   gap: 16px;

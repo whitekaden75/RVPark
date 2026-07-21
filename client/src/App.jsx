@@ -1439,6 +1439,11 @@ function PublicHome({
     ? null
     : nightsBetween(searchForm.arrivalDate, searchForm.leaveDate);
   const isLongStay = Number(numberOfNights) > 14;
+  const isLocalPreviewHost =
+    typeof window !== "undefined" &&
+    ["localhost", "127.0.0.1"].includes(window.location.hostname);
+  const isPublicOnlineBookingEnabled =
+    import.meta.env.VITE_ENABLE_PUBLIC_BOOKING === "true" || isLocalPreviewHost;
   const [selectedBookingSite, setSelectedBookingSite] = useState(null);
   const [publicBookingForm, setPublicBookingForm] = useState({
     firstName: "",
@@ -1476,6 +1481,10 @@ function PublicHome({
   }, [isCalendarOpen]);
 
   function choosePublicSite(site) {
+    if (!isPublicOnlineBookingEnabled) {
+      return;
+    }
+
     setSelectedBookingSite(site);
     setCreatedPublicReservation(null);
     setPublicBookingPayment(null);
@@ -1905,12 +1914,20 @@ function PublicHome({
                           {site.numberOfNights} nights
                         </p>
                         {!isLongStay ? (
-                          <button
-                            type="button"
-                            className="public-reserve-site-button"
-                            onClick={() => choosePublicSite(site)}>
-                            Reserve this site
-                          </button>
+                          isPublicOnlineBookingEnabled ? (
+                            <button
+                              type="button"
+                              className="public-reserve-site-button"
+                              onClick={() => choosePublicSite(site)}>
+                              Reserve this site
+                            </button>
+                          ) : (
+                            <a
+                              className="public-reserve-site-button"
+                              href="tel:+15412951269">
+                              Call to book
+                            </a>
+                          )
                         ) : null}
                       </article>
                     ))}
@@ -1946,18 +1963,29 @@ function PublicHome({
                 ) : matchingSiteCount ? (
                   <div className="public-result-cta short-stay-callout">
                     <div>
-                      <strong>Choose an available site above.</strong>
+                      <strong>
+                        {isPublicOnlineBookingEnabled
+                          ? "Choose an available site above."
+                          : "These sites are available for your stay."}
+                      </strong>
                       <span>
-                        We’ll take you to the reservation form to finish
-                        booking.
+                        {isPublicOnlineBookingEnabled
+                          ? "We’ll take you to the reservation form to finish booking."
+                          : "Call us and we can book one of these sites for you over the phone."}
                       </span>
                     </div>
+                    {!isPublicOnlineBookingEnabled ? (
+                      <a href="tel:+15412951269">Call 541-295-1269</a>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
             ) : null}
 
-            {selectedBookingSite && !isLongStay && !isFlexibleSearch ? (
+            {selectedBookingSite &&
+            isPublicOnlineBookingEnabled &&
+            !isLongStay &&
+            !isFlexibleSearch ? (
               <section
                 className="public-create-reservation"
                 id="public-reservation-form">
@@ -8850,11 +8878,9 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    className="ghost-button danger-button"
-                    onClick={() =>
-                      deleteReservation(activeScheduleReservation)
-                    }>
-                    Delete reservation
+                    className="ghost-button"
+                    onClick={() => setActiveScheduleReservation(null)}>
+                    Cancel
                   </button>
                   <button
                     type="button"
@@ -9245,6 +9271,15 @@ export default function App() {
                   Notes: {activeScheduleReservation.notes}
                 </p>
               ) : null}
+              <div className="button-row booking-delete-row">
+                <button
+                  type="button"
+                  className="ghost-button danger-button booking-delete-icon-button"
+                  aria-label="Delete reservation"
+                  onClick={() => deleteReservation(activeScheduleReservation)}>
+                  🗑
+                </button>
+              </div>
             </div>
           </div>
         ) : null}
