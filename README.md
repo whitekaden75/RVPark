@@ -79,7 +79,7 @@ Required values:
 - `DATABASE_URL`
 - `PORT`
 - `CLIENT_ORIGIN`
-- `APP_PASSCODE`
+- `ADMIN_SESSION_SECRET`
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
 - `SENDGRID_API_KEY`
@@ -115,7 +115,6 @@ Create `client/.env` from [client/.env.example](/Users/kadenwhite/Desktop/RVPark
 Required value:
 
 - `VITE_API_BASE_URL`
-- `VITE_APP_PASSCODE`
 
 Install and run yourself:
 
@@ -139,7 +138,7 @@ Your Postgres already lives on Railway, so the main task is connecting a backend
    - `DATABASE_URL`
    - `CLIENT_ORIGIN`
    - `PORT`
-   - `APP_PASSCODE`
+   - `ADMIN_SESSION_SECRET`
    - `STRIPE_SECRET_KEY`
    - `STRIPE_WEBHOOK_SECRET`
    - `SENDGRID_API_KEY`
@@ -175,9 +174,8 @@ Use the Railway Postgres query window or your own SQL client and run [sql/001_rv
 2. Set its root directory to `client`.
 3. Add `VITE_API_BASE_URL` and set it to your deployed backend URL, for example:
    - `https://your-api.up.railway.app/api`
-4. Add `VITE_APP_PASSCODE` and set it to the same value as backend `APP_PASSCODE`.
-5. Deploy the frontend.
-6. Copy the frontend public URL.
+4. Deploy the frontend.
+5. Copy the frontend public URL.
 
 ### CORS
 

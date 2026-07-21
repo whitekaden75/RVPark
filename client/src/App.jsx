@@ -24,9 +24,7 @@ const apiBaseUrl = (
   import.meta.env.VITE_API_BASE_URL ||
   "https://rvpark-production.up.railway.app/api"
 ).replace(/\/+$/, "");
-const appPasscode = import.meta.env.VITE_APP_PASSCODE || "rvpark2026";
 const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
-const unlockStorageKey = "rvpark-unlocked";
 const lastBookedSiteStorageKey = "rvpark-last-booked-site";
 const openEndedStayDate = "9999-12-31";
 const cardElementOptions = {
@@ -884,13 +882,14 @@ function ensureArray(value, label) {
 }
 
 async function apiRequest(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
   const headers = {
     "Content-Type": "application/json",
-    "x-app-passcode": appPasscode,
     ...(options.headers || {}),
   };
 
   const response = await fetch(`${apiBaseUrl}${path}`, {
+    credentials: "include",
     headers,
     ...options,
   });
@@ -900,6 +899,14 @@ async function apiRequest(path, options = {}) {
   const data = isJson ? await response.json().catch(() => ({})) : null;
 
   if (!response.ok) {
+    if (
+      response.status === 401 &&
+      typeof window !== "undefined" &&
+      !(path === "/admin/session" && (method === "GET" || method === "POST"))
+    ) {
+      window.dispatchEvent(new CustomEvent("rvpark-admin-unauthorized"));
+    }
+
     throw new Error(data?.message || "Request failed.");
   }
 
@@ -3718,18 +3725,14 @@ export default function App() {
     { key: "sites", label: "Sites" },
   ];
   const stripeReturnState = getStripeReturnState();
-  const [isUnlocked, setIsUnlocked] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    return (
-      window.sessionStorage.getItem(unlockStorageKey) === "true" ||
-      stripeReturnState.shouldBypassPasscode
-    );
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [isCheckingAdminSession, setIsCheckingAdminSession] = useState(false);
+  const [adminLoginForm, setAdminLoginForm] = useState({
+    username: "",
+    password: "",
   });
-  const [passcodeInput, setPasscodeInput] = useState("");
-  const [passcodeError, setPasscodeError] = useState("");
+  const [adminLoginError, setAdminLoginError] = useState("");
+  const [isSigningInAdmin, setIsSigningInAdmin] = useState(false);
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [reservations, setReservations] = useState([]);
@@ -3792,9 +3795,7 @@ export default function App() {
   const [isSearchingAvailability, setIsSearchingAvailability] = useState(false);
   const [createdReservation, setCreatedReservation] = useState(null);
   const [editingReservationId, setEditingReservationId] = useState(null);
-  const [activePage, setActivePage] = useState(() =>
-    stripeReturnState.shouldBypassPasscode ? "schedule" : "home"
-  );
+  const [activePage, setActivePage] = useState("home");
   const [reservationEditFocusSection, setReservationEditFocusSection] =
     useState("");
   const [reservationEditor, setReservationEditor] = useState(null);
@@ -3856,23 +3857,54 @@ export default function App() {
       return;
     }
 
-    if (stripeReturnState.shouldBypassPasscode) {
-      window.sessionStorage.setItem(unlockStorageKey, "true");
-      setIsUnlocked(true);
-      setSuccessMessage(
-        stripeReturnState.reservationId
-          ? `Payment return opened reservation #${stripeReturnState.reservationId}.`
-          : "Payment return opened the app."
-      );
-    }
-
     const nextUrl = `${window.location.pathname}${window.location.hash || ""}`;
     window.history.replaceState({}, document.title, nextUrl);
-  }, [
-    stripeReturnState.paymentStatus,
-    stripeReturnState.reservationId,
-    stripeReturnState.shouldBypassPasscode,
-  ]);
+  }, [stripeReturnState.paymentStatus]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function checkAdminSession() {
+      setIsCheckingAdminSession(true);
+
+      try {
+        await apiRequest("/admin/session");
+
+        if (!isCancelled) {
+          setIsUnlocked(true);
+          setAdminLoginError("");
+        }
+      } catch {
+        if (!isCancelled) {
+          setIsUnlocked(false);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsCheckingAdminSession(false);
+        }
+      }
+    }
+
+    checkAdminSession();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleUnauthorized() {
+      setIsUnlocked(false);
+      setAdminLoginError("Your admin session expired. Sign in again.");
+      setIsAdminMobileMenuOpen(false);
+      setOpenCardActionMenuId("");
+    }
+
+    window.addEventListener("rvpark-admin-unauthorized", handleUnauthorized);
+    return () => {
+      window.removeEventListener("rvpark-admin-unauthorized", handleUnauthorized);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isUnlocked || activePage === "home" || activePage === "guest") {
@@ -4705,17 +4737,25 @@ export default function App() {
     });
   }
 
-  function handleUnlock(event) {
+  async function handleUnlock(event) {
     event.preventDefault();
 
-    if (passcodeInput !== appPasscode) {
-      setPasscodeError("Incorrect passcode.");
-      return;
-    }
+    setAdminLoginError("");
+    setIsSigningInAdmin(true);
 
-    window.sessionStorage.setItem(unlockStorageKey, "true");
-    setPasscodeError("");
-    setIsUnlocked(true);
+    try {
+      await apiRequest("/admin/session", {
+        method: "POST",
+        body: JSON.stringify(adminLoginForm),
+      });
+
+      setIsUnlocked(true);
+      setAdminLoginForm((current) => ({ ...current, password: "" }));
+    } catch (error) {
+      setAdminLoginError(error.message);
+    } finally {
+      setIsSigningInAdmin(false);
+    }
   }
 
   function updateSiteFilter(field, value) {
@@ -6279,23 +6319,46 @@ export default function App() {
           elevation={0}>
           <Stack spacing={2.5}>
             <div>
-              <Typography variant="h1">RV Park Access</Typography>
+              <Typography variant="h1">Admin Sign In</Typography>
               <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
-                Enter the passcode to open the reservation app.
+                Sign in with your admin username and password.
               </Typography>
             </div>
             <TextField
-              label="Passcode"
-              type="password"
-              value={passcodeInput}
-              onChange={(event) => setPasscodeInput(event.target.value)}
+              label="Username"
+              value={adminLoginForm.username}
+              onChange={(event) =>
+                setAdminLoginForm((current) => ({
+                  ...current,
+                  username: event.target.value,
+                }))
+              }
               fullWidth
             />
-            {passcodeError ? (
-              <Alert severity="error">{passcodeError}</Alert>
+            <TextField
+              label="Password"
+              type="password"
+              value={adminLoginForm.password}
+              onChange={(event) =>
+                setAdminLoginForm((current) => ({
+                  ...current,
+                  password: event.target.value,
+                }))
+              }
+              fullWidth
+            />
+            {adminLoginError ? (
+              <Alert severity="error">{adminLoginError}</Alert>
             ) : null}
-            <Button type="submit" variant="contained" size="large">
-              Unlock
+            {isCheckingAdminSession ? (
+              <Alert severity="info">Checking admin session...</Alert>
+            ) : null}
+            <Button
+              type="submit"
+              variant="contained"
+              size="large"
+              disabled={isSigningInAdmin || isCheckingAdminSession}>
+              {isSigningInAdmin ? "Signing in..." : "Sign in"}
             </Button>
             <Button
               type="button"
@@ -6339,6 +6402,24 @@ export default function App() {
                   variant="outlined"
                   onClick={() => setActivePage("home")}>
                   Resort home
+                </Button>
+                <Button
+                  type="button"
+                  className="admin-home-button"
+                  variant="outlined"
+                  onClick={async () => {
+                    try {
+                      await apiRequest("/admin/session", { method: "DELETE" });
+                    } catch {
+                      // Ignore logout transport errors and clear local state anyway.
+                    }
+
+                    setIsUnlocked(false);
+                    setAdminLoginForm({ username: "", password: "" });
+                    setAdminLoginError("");
+                    setActivePage("home");
+                  }}>
+                  Sign out
                 </Button>
               </div>
             </div>

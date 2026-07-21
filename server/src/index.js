@@ -1,5 +1,5 @@
 import cors from "cors";
-import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import dotenv from "dotenv";
 import express from "express";
 import Stripe from "stripe";
@@ -19,8 +19,6 @@ dotenv.config();
 
 const app = express();
 const port = Number(process.env.PORT || 4000);
-const appPasscode = process.env.APP_PASSCODE || "rvpark2026";
-const appPasscodeHeader = "x-app-passcode";
 const stripeApiVersion = "2026-02-25.clover";
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
@@ -29,18 +27,23 @@ const sendGridFromEmail = process.env.SENDGRID_FROM_EMAIL || "";
 const sendGridFromName = process.env.SENDGRID_FROM_NAME || "Riverpark RV Resort";
 const sendGridReplyTo = process.env.SENDGRID_REPLY_TO || sendGridFromEmail;
 const guestAuthSecret = process.env.GUEST_AUTH_SECRET || "";
+const adminSessionSecret = process.env.ADMIN_SESSION_SECRET || "";
 const guestVerificationRequests = new Map();
 const guestVerificationAttempts = new Map();
 const cardPriceMultiplier = 1.03;
 const pricingPreviewDays = Array.from({ length: 28 }, (_, index) => index + 1);
+const adminSessionCookieName = "rvpark_admin_session";
 const stripe = stripeSecretKey
   ? new Stripe(stripeSecretKey, { apiVersion: stripeApiVersion })
   : null;
 
+app.set("trust proxy", 1);
+
 app.use(
   cors({
-    origin: process.env.CLIENT_ORIGIN?.split(",").map((value) => value.trim()) || "*",
-    allowedHeaders: ["Content-Type", appPasscodeHeader]
+    origin: process.env.CLIENT_ORIGIN?.split(",").map((value) => value.trim()) || true,
+    credentials: true,
+    allowedHeaders: ["Content-Type"]
   })
 );
 
@@ -97,9 +100,174 @@ app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), asyn
 
 app.use(express.json());
 
+function parseCookies(cookieHeader = "") {
+  return cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((cookies, part) => {
+      const separatorIndex = part.indexOf("=");
+
+      if (separatorIndex === -1) {
+        return cookies;
+      }
+
+      const name = part.slice(0, separatorIndex).trim();
+      const value = part.slice(separatorIndex + 1).trim();
+      cookies[name] = decodeURIComponent(value);
+      return cookies;
+    }, {});
+}
+
+function encodeTokenPayload(payload) {
+  return Buffer.from(JSON.stringify(payload)).toString("base64url");
+}
+
+function signTokenPayload(encodedPayload, secret) {
+  return createHmac("sha256", secret).update(encodedPayload).digest("base64url");
+}
+
+function readSignedToken(token, secret, expectedType) {
+  if (!token || !secret) {
+    return null;
+  }
+
+  const [encodedPayload, providedSignature, ...extraParts] = String(token).split(".");
+
+  if (!encodedPayload || !providedSignature || extraParts.length > 0) {
+    return null;
+  }
+
+  const expectedSignature = signTokenPayload(encodedPayload, secret);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  const providedBuffer = Buffer.from(providedSignature);
+
+  if (
+    expectedBuffer.length !== providedBuffer.length ||
+    !timingSafeEqual(expectedBuffer, providedBuffer)
+  ) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+
+    if (payload?.type !== expectedType) {
+      return null;
+    }
+
+    if (!payload?.expiresAt || Date.now() >= Number(payload.expiresAt)) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function createAdminSessionToken(adminUser) {
+  const payload = {
+    type: "admin_session",
+    adminUserId: adminUser.id,
+    username: adminUser.username,
+    expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 14
+  };
+  const encodedPayload = encodeTokenPayload(payload);
+  const signature = signTokenPayload(encodedPayload, adminSessionSecret);
+  return `${encodedPayload}.${signature}`;
+}
+
+function buildAdminSessionCookie(token, requestHost = "") {
+  const isLocalHost = requestHost.includes("localhost") || requestHost.includes("127.0.0.1");
+  const parts = [
+    `${adminSessionCookieName}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "Max-Age=1209600"
+  ];
+
+  if (isLocalHost) {
+    parts.push("SameSite=Lax");
+  } else {
+    parts.push("SameSite=None", "Secure");
+  }
+
+  return parts.join("; ");
+}
+
+function buildExpiredAdminSessionCookie(requestHost = "") {
+  const isLocalHost = requestHost.includes("localhost") || requestHost.includes("127.0.0.1");
+  const parts = [
+    `${adminSessionCookieName}=`,
+    "Path=/",
+    "HttpOnly",
+    "Max-Age=0"
+  ];
+
+  if (isLocalHost) {
+    parts.push("SameSite=Lax");
+  } else {
+    parts.push("SameSite=None", "Secure");
+  }
+
+  return parts.join("; ");
+}
+
+function verifyAdminPassword(password, salt, storedHash) {
+  if (!password || !salt || !storedHash) {
+    return false;
+  }
+
+  const derivedHash = scryptSync(password, salt, 64).toString("hex");
+  const expectedBuffer = Buffer.from(storedHash, "hex");
+  const providedBuffer = Buffer.from(derivedHash, "hex");
+
+  return (
+    expectedBuffer.length === providedBuffer.length &&
+    timingSafeEqual(expectedBuffer, providedBuffer)
+  );
+}
+
+async function findAdminUserByUsername(username) {
+  const result = await pool.query(
+    `
+      SELECT id, username, password_hash, password_salt
+      FROM admin_users
+      WHERE LOWER(username) = LOWER($1) AND is_active = TRUE
+      LIMIT 1
+    `,
+    [username]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function authenticateAdminRequest(req) {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const session = readSignedToken(cookies[adminSessionCookieName], adminSessionSecret, "admin_session");
+
+  if (!session?.adminUserId) {
+    return null;
+  }
+
+  const result = await pool.query(
+    `
+      SELECT id, username
+      FROM admin_users
+      WHERE id = $1 AND is_active = TRUE
+      LIMIT 1
+    `,
+    [session.adminUserId]
+  );
+
+  return result.rows[0] || null;
+}
+
 app.use("/api", (req, res, next) => {
   if (
     req.path === "/health" ||
+    req.path === "/admin/session" ||
     req.path === "/availability/search" ||
     req.path === "/availability/plan" ||
     req.path === "/availability/flexible-search" ||
@@ -108,13 +276,77 @@ app.use("/api", (req, res, next) => {
     return next();
   }
 
-  const requestPasscode = req.header(appPasscodeHeader);
+  return authenticateAdminRequest(req)
+    .then((adminUser) => {
+      if (!adminUser) {
+        res.setHeader("Set-Cookie", buildExpiredAdminSessionCookie(req.hostname || ""));
+        return res.status(401).json({ message: "Admin sign-in required." });
+      }
 
-  if (requestPasscode !== appPasscode) {
-    return res.status(401).json({ message: "Invalid passcode." });
+      req.adminUser = adminUser;
+      return next();
+    })
+    .catch((error) => {
+      console.error("Unable to authenticate admin request", error);
+      return res.status(500).json({ message: "Unable to authenticate admin request." });
+    });
+});
+
+app.get("/api/admin/session", async (req, res) => {
+  if (!adminSessionSecret) {
+    return res.status(503).json({
+      message: "Admin session secret is not configured. Add ADMIN_SESSION_SECRET on the server first."
+    });
   }
 
-  return next();
+  try {
+    const adminUser = await authenticateAdminRequest(req);
+
+    if (!adminUser) {
+      res.setHeader("Set-Cookie", buildExpiredAdminSessionCookie(req.hostname || ""));
+      return res.status(401).json({ message: "Admin sign-in required." });
+    }
+
+    return res.json({ authenticated: true, username: adminUser.username });
+  } catch (error) {
+    console.error("Unable to read admin session", error);
+    return res.status(500).json({ message: "Unable to read admin session." });
+  }
+});
+
+app.post("/api/admin/session", async (req, res) => {
+  if (!adminSessionSecret) {
+    return res.status(503).json({
+      message: "Admin session secret is not configured. Add ADMIN_SESSION_SECRET on the server first."
+    });
+  }
+
+  const username = String(req.body?.username || "").trim();
+  const password = String(req.body?.password || "");
+
+  if (!username || !password) {
+    return res.status(400).json({ message: "Username and password are required." });
+  }
+
+  try {
+    const adminUser = await findAdminUserByUsername(username);
+
+    if (!adminUser || !verifyAdminPassword(password, adminUser.password_salt, adminUser.password_hash)) {
+      return res.status(401).json({ message: "Invalid username or password." });
+    }
+
+    const sessionToken = createAdminSessionToken(adminUser);
+    res.setHeader("Set-Cookie", buildAdminSessionCookie(sessionToken, req.hostname || ""));
+    return res.json({ authenticated: true, username: adminUser.username });
+  } catch (error) {
+    console.error("Unable to sign in admin user", error);
+    return res.status(500).json({ message: "Unable to sign in admin user." });
+  }
+});
+
+app.delete("/api/admin/session", (req, res) => {
+  res.setHeader("Set-Cookie", buildExpiredAdminSessionCookie(req.hostname || ""));
+  return res.status(204).end();
 });
 
 function nightsBetween(arrivalDate, leaveDate) {
