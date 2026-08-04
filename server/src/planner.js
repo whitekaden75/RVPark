@@ -51,17 +51,19 @@ export function buildAvailabilityMap(sites, conflictingStays, arrivalDate, leave
   const bySite = new Map();
 
   for (const site of sites) {
-    bySite.set(site.id, []);
+    bySite.set(String(site.id), []);
   }
 
   for (const stay of conflictingStays) {
-    if (bySite.has(stay.site_id)) {
-      bySite.get(stay.site_id).push(stay);
+    const siteId = String(stay.site_id);
+
+    if (bySite.has(siteId)) {
+      bySite.get(siteId).push(stay);
     }
   }
 
   const availability = sites.map((site) => {
-    const busyIntervals = (bySite.get(site.id) || []).sort((a, b) =>
+    const busyIntervals = (bySite.get(String(site.id)) || []).sort((a, b) =>
       a.arrival_date.localeCompare(b.arrival_date)
     );
 
@@ -155,19 +157,21 @@ export function buildAvailabilityLeadTimes(sites, futureStays, arrivalDate) {
   const staysBySite = new Map();
 
   for (const site of sites) {
-    staysBySite.set(site.id, []);
+    staysBySite.set(String(site.id), []);
   }
 
   for (const stay of futureStays) {
-    if (staysBySite.has(stay.site_id)) {
-      staysBySite.get(stay.site_id).push(stay);
+    const siteId = String(stay.site_id);
+
+    if (staysBySite.has(siteId)) {
+      staysBySite.get(siteId).push(stay);
     }
   }
 
   const leadTimes = new Map();
 
   for (const site of sites) {
-    const siteStays = (staysBySite.get(site.id) || []).sort((left, right) =>
+    const siteStays = (staysBySite.get(String(site.id)) || []).sort((left, right) =>
       left.arrival_date.localeCompare(right.arrival_date)
     );
     const blockingStay = siteStays.find(
@@ -208,19 +212,21 @@ export function buildAvailabilityBookingContext(sites, siteStays, arrivalDate, l
   const staysBySite = new Map();
 
   for (const site of sites) {
-    staysBySite.set(site.id, []);
+    staysBySite.set(String(site.id), []);
   }
 
   for (const stay of siteStays) {
-    if (staysBySite.has(stay.site_id)) {
-      staysBySite.get(stay.site_id).push(stay);
+    const siteId = String(stay.site_id);
+
+    if (staysBySite.has(siteId)) {
+      staysBySite.get(siteId).push(stay);
     }
   }
 
   const bookingContext = new Map();
 
   for (const site of sites) {
-    const sortedStays = (staysBySite.get(site.id) || []).sort((left, right) =>
+    const sortedStays = (staysBySite.get(String(site.id)) || []).sort((left, right) =>
       left.arrival_date.localeCompare(right.arrival_date)
     );
     const previousStay = [...sortedStays]

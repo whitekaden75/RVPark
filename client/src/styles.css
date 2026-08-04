@@ -1967,6 +1967,36 @@ select option {
   box-shadow: 0 20px 34px rgba(10, 44, 37, 0.18);
 }
 
+.guest-payment-button.guest-bank-payment-button {
+  margin-top: 0;
+  color: var(--pine-deep);
+  background: #d9eee4;
+}
+
+.guest-payment-button.guest-bank-payment-button:hover {
+  background: #c5e1d3;
+}
+
+.guest-payment-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 24px 0;
+  color: #b9c9c3;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.guest-payment-divider::before,
+.guest-payment-divider::after {
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.18);
+  content: "";
+}
+
 .hero-details {
   display: flex;
   flex-wrap: wrap;
@@ -2237,6 +2267,33 @@ select option {
   font-weight: 800;
 }
 
+.booking-intro-price-panel {
+  display: grid;
+  gap: 12px;
+  max-width: 440px;
+  margin: 28px 0;
+}
+
+.booking-intro-price-panel .booking-price-comparison {
+  margin: 0;
+}
+
+.booking-intro-price-panel .booking-price-title {
+  color: #d7e2de;
+}
+
+.booking-intro-price-panel .booking-price-options {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.booking-intro-price-panel .booking-price-option {
+  background: #fffaf2;
+}
+
+.booking-intro-price-panel .card-price-option {
+  background: #e9dfcf;
+}
+
 .public-booking-card {
   min-width: 0;
   padding: clamp(28px, 5vw, 62px);
@@ -2367,6 +2424,21 @@ select option {
   grid-column: 1 / -1;
 }
 
+.public-rig-fields .public-motorhome-options.public-rv-type-picker {
+  width: min(100%, 420px);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 12px;
+  padding: 8px 10px;
+}
+
+.public-rv-type-picker .ghost-button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .public-river-checkbox {
   display: flex;
   align-items: center;
@@ -2437,6 +2509,10 @@ select option {
   background: #fffaf2;
 }
 
+.public-site-result-card {
+  outline: none;
+}
+
 .public-site-results article > div {
   display: flex;
   justify-content: space-between;
@@ -2496,6 +2572,19 @@ select option {
   font-weight: 900;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.public-site-result-card:hover .public-reserve-site-button,
+.public-site-result-card:focus-within .public-reserve-site-button,
+.public-site-result-card:focus .public-reserve-site-button {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.public-site-result-card:focus,
+.public-site-result-card:focus-within {
+  box-shadow: 0 0 0 2px rgba(36, 74, 49, 0.18);
 }
 
 .public-flexible-search-fields input,
@@ -2659,6 +2748,93 @@ select option {
   font-style: italic;
 }
 
+.booking-price-comparison {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 22px;
+}
+
+.booking-price-title {
+  margin: 0;
+  color: #52675e;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.booking-price-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  background: rgba(23, 55, 47, 0.12);
+}
+
+.booking-price-option {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 16px;
+  background: #fffaf2;
+}
+
+.booking-price-option span {
+  color: #536a60;
+  font-size: 0.67rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.booking-price-option strong {
+  color: var(--pine);
+  font-family: "Iowan Old Style", Georgia, serif;
+  font-size: 1.55rem;
+  font-weight: 600;
+}
+
+.booking-price-option small {
+  color: #657970;
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.card-price-option {
+  background: #e9dfcf;
+}
+
+.public-site-results article > .booking-price-comparison {
+  display: grid;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 16px;
+  margin-bottom: 0;
+}
+
+.public-site-results .booking-price-title {
+  margin: 0;
+  color: #52675e;
+}
+
+.public-site-results .booking-price-option span {
+  order: initial;
+  color: #536a60;
+}
+
+.public-site-results .booking-price-option {
+  padding: 12px;
+}
+
+.public-site-results .booking-price-option strong {
+  font-size: 1.2rem;
+}
+
+.public-created-summary .booking-price-comparison {
+  margin-top: 18px;
+  margin-bottom: 0;
+}
+
 .public-discount-panel {
   display: grid;
   gap: 10px;
@@ -2677,8 +2853,195 @@ select option {
   gap: 10px 18px;
 }
 
+.public-checkout-methods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.public-checkout-methods .public-search-button {
+  margin: 0;
+}
+
+.card-checkout-button {
+  background: var(--clay);
+}
+
+.public-checkout-back-button {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.public-checkout-return {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 30px;
+  padding: 24px;
+  color: #20563d;
+  background: #dcece2;
+}
+
+.public-checkout-return.error {
+  color: #7b2f27;
+  background: #f4ded8;
+}
+
+.public-checkout-return h3,
+.public-checkout-return p {
+  margin: 0;
+}
+
+.public-checkout-return .public-search-button {
+  width: fit-content;
+  margin: 4px 0 0;
+}
+
+.public-booking-confirmation-page {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgb(184 121 62 / 14%), transparent 34rem),
+    var(--cream);
+}
+
+.public-confirmation-header {
+  width: min(1180px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 24px 0;
+}
+
+.public-confirmation-main {
+  display: grid;
+  min-height: calc(100vh - 104px);
+  padding: 44px 20px 80px;
+  place-items: start center;
+}
+
+.public-confirmation-card {
+  width: min(680px, 100%);
+  padding: clamp(32px, 6vw, 64px);
+  text-align: center;
+  background: #fffaf2;
+  border: 1px solid rgb(39 64 50 / 12%);
+  border-radius: 24px;
+  box-shadow: 0 24px 70px rgb(39 64 50 / 14%);
+}
+
+.public-confirmation-check {
+  display: grid;
+  width: 66px;
+  height: 66px;
+  margin: 0 auto 22px;
+  color: #fff;
+  font-size: 34px;
+  font-weight: 700;
+  background: var(--forest);
+  border-radius: 50%;
+  place-items: center;
+}
+
+.public-confirmation-card h1 {
+  margin: 8px 0 16px;
+  color: var(--forest);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(38px, 7vw, 58px);
+  font-weight: 400;
+  line-height: 1.05;
+}
+
+.public-confirmation-lead {
+  max-width: 520px;
+  margin: 0 auto;
+  color: #4b5b54;
+  font-size: 18px;
+  line-height: 1.7;
+}
+
+.public-confirmation-lead strong {
+  color: var(--forest);
+  overflow-wrap: anywhere;
+}
+
+.public-confirmation-stay {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 32px 0 24px;
+  overflow: hidden;
+  background: #dfd5c5;
+  border: 1px solid #dfd5c5;
+  border-radius: 14px;
+}
+
+.public-confirmation-stay div {
+  display: grid;
+  gap: 7px;
+  padding: 19px 12px;
+  background: #f5efe4;
+}
+
+.public-confirmation-stay span {
+  color: #6d756f;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.public-confirmation-stay strong {
+  color: var(--forest);
+  font-size: 15px;
+}
+
+.public-confirmation-note,
+.public-confirmation-contact {
+  margin: 0;
+  color: #657169;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.public-confirmation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  margin: 30px 0 24px;
+}
+
+.public-confirmation-actions .public-primary-button {
+  border: 0;
+  cursor: pointer;
+}
+
+.public-confirmation-contact a {
+  color: var(--forest);
+  font-weight: 700;
+}
+
+@media (max-width: 620px) {
+  .public-confirmation-main {
+    padding-top: 20px;
+  }
+
+  .public-confirmation-stay {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .public-confirmation-actions {
+    flex-direction: column;
+  }
+}
+
 @media (max-width: 720px) {
   .public-discount-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .booking-price-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .public-checkout-methods {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -3259,7 +3622,7 @@ select option {
 
 .guest-balance-panel {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   margin-top: 24px;
 }
@@ -3269,6 +3632,30 @@ select option {
   gap: 7px;
   padding: 18px;
   background: #eee5d5;
+}
+
+.guest-balance-panel .booking-price-comparison {
+  margin: 0;
+}
+
+.guest-balance-panel .booking-price-options {
+  background: rgba(23, 55, 47, 0.16);
+}
+
+.guest-balance-panel .booking-price-option {
+  padding: 14px;
+}
+
+.guest-balance-panel .guest-paid-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #fff;
+  background: var(--pine);
+}
+
+.guest-balance-panel .guest-paid-summary span {
+  color: #b9c9c3;
 }
 
 .guest-balance-panel strong {
@@ -3290,6 +3677,26 @@ select option {
   text-transform: capitalize;
 }
 
+.guest-cancel-reservation-button {
+  margin-top: 28px;
+  border: 1px solid #a75549;
+  padding: 12px 16px;
+  color: #8f392f;
+  background: transparent;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.guest-cancel-reservation-button:hover {
+  color: #fff;
+  background: #8f392f;
+}
+
+.guest-cancel-reservation-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .guest-payment-card {
   color: #f7f0e5;
   background: var(--pine-deep);
@@ -3299,6 +3706,16 @@ select option {
   margin: 0 0 30px;
   font-size: clamp(2.2rem, 4vw, 3.8rem);
   font-weight: 500;
+}
+
+.guest-payment-options {
+  margin-bottom: 24px;
+  color: var(--ink);
+}
+
+.guest-canceled-card > p:not(.eyebrow) {
+  color: #d5dfdb;
+  line-height: 1.7;
 }
 
 .guest-payment-card label {
@@ -3831,6 +4248,10 @@ select option {
     position: static;
   }
 
+  .booking-intro-price-panel {
+    max-width: none;
+  }
+
   .booking-intro > p:not(.eyebrow),
   .booking-intro > a {
     max-width: none;
@@ -3963,7 +4384,7 @@ select option {
   }
 
   .guest-balance-panel {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .guest-date-row {

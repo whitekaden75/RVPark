@@ -26,6 +26,7 @@ const apiBaseUrl = (
 ).replace(/\/+$/, "");
 const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
 const lastBookedSiteStorageKey = "rvpark-last-booked-site";
+const guestAccessTokenStorageKey = "rvpark-guest-access-token";
 const openEndedStayDate = "9999-12-31";
 const cardElementOptions = {
   style: {
@@ -87,10 +88,14 @@ const emptySearch = {
   stayLengthRange: "3-5",
   minSizeFeet: "",
   rigLengthFeet: "",
-  rvKind: "camper",
+  rvKind: "",
   motorhomeClassA: false,
   motorhomeClassC: false,
   motorhomeWithTow: false,
+  towVehicleLengthFeet: "",
+  towVehicleType: "",
+  slideDriverSide: false,
+  slidePassengerSide: false,
   riverfrontOnly: false,
 };
 
@@ -125,6 +130,8 @@ function createEmptyReservation(defaultSite = null) {
     motorhomeClassA: false,
     motorhomeClassC: false,
     motorhomeWithTow: false,
+    slideDriverSide: false,
+    slidePassengerSide: false,
     rigLengthFeet: "",
     amountPaid: "",
     notes: "",
@@ -180,6 +187,8 @@ function createReservationEditorState(reservation) {
       motorhomeClassA: Boolean(reservation.motorhome_class_a),
       motorhomeClassC: Boolean(reservation.motorhome_class_c),
       motorhomeWithTow: Boolean(reservation.motorhome_with_tow),
+      slideDriverSide: Boolean(reservation.slide_driver_side),
+      slidePassengerSide: Boolean(reservation.slide_passenger_side),
       rigLengthFeet: String(reservation.rig_length_feet ?? ""),
       notes: reservation.notes || "",
       siteStays: reservation.siteStays.map((segment) => ({
@@ -503,12 +512,94 @@ function getCardPrice(value) {
   return Math.round((Math.ceil(cardAmount - 0.99) + 0.99) * 100) / 100;
 }
 
+function roundUpToDollar99(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const amountInCents = Math.round(Number(value) * 100);
+
+  if (!Number.isFinite(amountInCents)) {
+    return null;
+  }
+
+  const wholeDollars = Math.floor(amountInCents / 100);
+  const candidateInCents = wholeDollars * 100 + 99;
+
+  return (candidateInCents >= amountInCents
+    ? candidateInCents
+    : candidateInCents + 100) / 100;
+}
+
+function BookingPriceComparison({
+  title,
+  bankPrice,
+  cardPrice = getCardPrice(bankPrice),
+  discountBankPrice = null,
+  discountCardPrice = getCardPrice(discountBankPrice),
+  perNight = false,
+  numberOfNights = null,
+  className = "",
+}) {
+  const displayPrice = (price) =>
+    perNight ? getNightlyPrice(price, numberOfNights) : price;
+  const displayedBankPrice = displayPrice(bankPrice);
+  const displayedDiscountBankPrice = displayPrice(discountBankPrice);
+  const displayedCardPrice = perNight
+    ? getCardPrice(displayedBankPrice)
+    : roundUpToDollar99(cardPrice);
+  const displayedDiscountCardPrice = perNight
+    ? getCardPrice(displayedDiscountBankPrice)
+    : roundUpToDollar99(discountCardPrice);
+
+  return (
+    <div className={`booking-price-comparison ${className}`.trim()}>
+      {title ? <p className="booking-price-title">{title}</p> : null}
+      <div className="booking-price-options">
+        <div className="booking-price-option bank-price-option">
+          <span>Bank / cash / check</span>
+          <strong>{formatCurrency(displayedBankPrice)}</strong>
+          {discountBankPrice !== null && discountBankPrice !== undefined ? (
+            <small>
+              Eligible discount:{" "}
+              {formatCurrency(displayedDiscountBankPrice)}
+            </small>
+          ) : null}
+        </div>
+        <div className="booking-price-option card-price-option">
+          <span>Card</span>
+          <strong>{formatCurrency(displayedCardPrice)}</strong>
+          {discountCardPrice !== null && discountCardPrice !== undefined ? (
+            <small>
+              Eligible discount: {formatCurrency(displayedDiscountCardPrice)}
+            </small>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function calculateChargeableNights(numberOfNights) {
   if (!Number.isFinite(numberOfNights) || numberOfNights <= 0 || numberOfNights > 28) {
     return null;
   }
 
   return numberOfNights - Math.floor(numberOfNights / 7);
+}
+
+function getNightlyPrice(totalPrice, numberOfNights) {
+  const chargeableNights = calculateChargeableNights(Number(numberOfNights));
+
+  if (
+    totalPrice === null ||
+    totalPrice === undefined ||
+    chargeableNights === null
+  ) {
+    return null;
+  }
+
+  return Math.round((Number(totalPrice) / chargeableNights) * 100) / 100;
 }
 
 function formatPricingCategory(value) {
@@ -617,22 +708,28 @@ function formatBillingMode(value) {
 }
 
 function formatMotorhomeDetails(reservation) {
-  if (reservation.rv_kind !== "motor home") {
-    return "";
-  }
-
   const details = [];
 
-  if (reservation.motorhome_class_a) {
-    details.push("Class A");
+  if (reservation.rv_kind === "motor home") {
+    if (reservation.motorhome_class_a) {
+      details.push("Class A");
+    }
+
+    if (reservation.motorhome_class_c) {
+      details.push("Class C");
+    }
+
+    if (reservation.motorhome_with_tow) {
+      details.push("With tow");
+    }
   }
 
-  if (reservation.motorhome_class_c) {
-    details.push("Class C");
+  if (reservation.slide_driver_side) {
+    details.push("Driver-side slide");
   }
 
-  if (reservation.motorhome_with_tow) {
-    details.push("With tow");
+  if (reservation.slide_passenger_side) {
+    details.push("Passenger-side slide");
   }
 
   return details.length ? ` • ${details.join(" • ")}` : "";
@@ -806,6 +903,14 @@ function calculateUtilityPrice(electricMeterReading) {
 }
 
 function getSiteTypeLabel(site) {
+  if (
+    (site.is_on_river || site.isOnRiver) &&
+    (site.river_category === "prime_river" ||
+      site.riverCategory === "prime_river")
+  ) {
+    return "Prime Riverfront";
+  }
+
   return site.is_on_river || site.isOnRiver ? "Riverfront" : "Standard";
 }
 
@@ -1354,7 +1459,62 @@ function StaySearchModeFields({
   );
 }
 
+function SlideSideFields({
+  slideDriverSide,
+  slidePassengerSide,
+  onChange,
+  className = "",
+}) {
+  return (
+    <div className={`motorhome-options ${className}`.trim()}>
+      <span className="small-text">Slide-outs — select both if needed</span>
+      <label className="checkbox-row compact-checkbox">
+        <input
+          type="checkbox"
+          checked={slideDriverSide}
+          onChange={(event) =>
+            onChange("slideDriverSide", event.target.checked)
+          }
+        />
+        Driver’s side
+      </label>
+      <label className="checkbox-row compact-checkbox">
+        <input
+          type="checkbox"
+          checked={slidePassengerSide}
+          onChange={(event) =>
+            onChange("slidePassengerSide", event.target.checked)
+          }
+        />
+        Passenger side
+      </label>
+    </div>
+  );
+}
+
 function RigSearchFields({ searchForm, onChange, publicLayout = false }) {
+  const towVehicleOptions =
+    searchForm.rvKind === "trailer" || searchForm.rvKind === "camper"
+      ? [
+          { value: "suv", label: "SUV" },
+          { value: "truck_short_bed", label: "Truck — short bed" },
+          { value: "truck_long_bed", label: "Truck — long bed" },
+          {
+            value: "dually",
+            label: "Dually",
+          },
+        ]
+      : searchForm.rvKind === "5th wheel"
+      ? [
+          { value: "truck_short_bed", label: "Truck — short bed" },
+          { value: "truck_long_bed", label: "Truck — long bed" },
+          {
+            value: "dually",
+            label: "Dually",
+          },
+        ]
+      : [];
+
   return (
     <div
       className={
@@ -1362,29 +1522,66 @@ function RigSearchFields({ searchForm, onChange, publicLayout = false }) {
           ? "public-rig-fields"
           : "field-grid availability-rig-fields"
       }>
-      <label>
-        RV type
-        <select
-          value={searchForm.rvKind}
-          onChange={(event) => onChange("rvKind", event.target.value)}>
-          {rvKinds.map((kind) => (
-            <option key={kind} value={kind}>
-              {kind}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Rig length (feet)
-        <input
-          type="number"
-          min="1"
-          placeholder="Example: 32"
-          value={searchForm.rigLengthFeet}
-          onChange={(event) => onChange("rigLengthFeet", event.target.value)}
-        />
-      </label>
-      {searchForm.rvKind === "motor home" ? (
+      {publicLayout ? (
+        <div className="motorhome-options public-motorhome-options public-rv-type-picker">
+          <span className="small-text">RV type</span>
+          {searchForm.rvKind ? (
+            <div className="checkbox-row compact-checkbox">
+              <button
+                type="button"
+                className="ghost-button rv-type-clear-button"
+                aria-label={`Clear ${searchForm.rvKind} RV type`}
+                onClick={() => onChange("rvKind", "")}>
+                ×
+              </button>
+              <span>
+                {searchForm.rvKind.charAt(0).toUpperCase() +
+                  searchForm.rvKind.slice(1)}
+              </span>
+            </div>
+          ) : (
+            rvKinds.map((kind) => (
+              <label key={kind} className="checkbox-row compact-checkbox">
+                <input
+                  type="checkbox"
+                  checked={false}
+                  onChange={() => onChange("rvKind", kind)}
+                />
+                {kind.charAt(0).toUpperCase() + kind.slice(1)}
+              </label>
+            ))
+          )}
+        </div>
+      ) : (
+        <label>
+          RV type
+          <select
+            value={searchForm.rvKind}
+            onChange={(event) => onChange("rvKind", event.target.value)}>
+            <option value="">Choose RV type</option>
+            {rvKinds.map((kind) => (
+              <option key={kind} value={kind}>
+                {kind}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {!publicLayout || searchForm.rvKind ? (
+        <>
+          <label>
+            Rig length (feet)
+            <input
+              type="number"
+              min="1"
+              placeholder="Example: 32"
+              value={searchForm.rigLengthFeet}
+              onChange={(event) =>
+                onChange("rigLengthFeet", event.target.value)
+              }
+            />
+          </label>
+          {searchForm.rvKind === "motor home" ? (
         <div className="motorhome-options public-motorhome-options">
           <span className="small-text">Motor home details</span>
           <label className="checkbox-row compact-checkbox">
@@ -1417,7 +1614,51 @@ function RigSearchFields({ searchForm, onChange, publicLayout = false }) {
             />
             With tow
           </label>
+          {publicLayout && searchForm.motorhomeWithTow ? (
+            <label>
+              Tow vehicle length (feet)
+              <input
+                type="number"
+                min="1"
+                placeholder="Example: 18"
+                value={searchForm.towVehicleLengthFeet}
+                onChange={(event) =>
+                  onChange("towVehicleLengthFeet", event.target.value)
+                }
+              />
+            </label>
+          ) : null}
         </div>
+          ) : null}
+          {publicLayout && towVehicleOptions.length ? (
+            <div className="motorhome-options public-motorhome-options">
+              <span className="small-text">Tow vehicle — choose one</span>
+              {towVehicleOptions.map((option) => (
+                <label
+                  key={option.value}
+                  className="checkbox-row compact-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={searchForm.towVehicleType === option.value}
+                    onChange={(event) =>
+                      onChange(
+                        "towVehicleType",
+                        event.target.checked ? option.value : ""
+                      )
+                    }
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+          ) : null}
+          <SlideSideFields
+            slideDriverSide={searchForm.slideDriverSide}
+            slidePassengerSide={searchForm.slidePassengerSide}
+            onChange={onChange}
+            className={publicLayout ? "public-motorhome-options" : ""}
+          />
+        </>
       ) : null}
     </div>
   );
@@ -1458,22 +1699,55 @@ function PublicHome({
     email: "",
     phoneNumber: "",
     discounts: [],
+    siteReassignmentAccepted: false,
   });
-  const [createdPublicReservation, setCreatedPublicReservation] =
-    useState(null);
-  const [publicBookingPayment, setPublicBookingPayment] = useState(null);
+  const [isPublicBookingReadyForPayment, setIsPublicBookingReadyForPayment] =
+    useState(false);
+  const [bookingCheckoutStatus, setBookingCheckoutStatus] = useState(null);
   const [isCreatingPublicReservation, setIsCreatingPublicReservation] =
     useState(false);
   const [publicBookingError, setPublicBookingError] = useState("");
-  const [publicBookingSuccess, setPublicBookingSuccess] = useState("");
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [showAllPublicDirectMatches, setShowAllPublicDirectMatches] =
+    useState(false);
+  const selectedBookingBankPrice = selectedBookingSite
+    ? publicBookingForm.discounts.length
+      ? selectedBookingSite.discountPrice ?? selectedBookingSite.normalPrice
+      : selectedBookingSite.normalPrice ?? selectedBookingSite.discountPrice
+    : null;
+  const selectedBookingDepositPrice = getNightlyPrice(
+    selectedBookingBankPrice,
+    numberOfNights
+  );
+  const bookingCheckoutParams =
+    typeof window === "undefined"
+      ? null
+      : new URLSearchParams(window.location.search);
+  const returnedBookingCheckoutToken =
+    bookingCheckoutParams?.get("checkout_token") || "";
+  const returnedBookingCheckoutState =
+    bookingCheckoutParams?.get("booking_checkout") || "";
+  const bookingCheckoutIsError =
+    ["failed", "expired", "conflict"].includes(
+      bookingCheckoutStatus?.status
+    ) ||
+    (returnedBookingCheckoutState === "cancel" &&
+      bookingCheckoutStatus?.status === "open");
+  const bookingCheckoutMessage =
+    returnedBookingCheckoutState === "cancel" &&
+    bookingCheckoutStatus?.status === "open"
+      ? "Stripe Checkout was canceled. No reservation was created and no payment was taken."
+      : bookingCheckoutStatus?.message || "Checking your Stripe payment...";
 
   useEffect(() => {
     setSelectedBookingSite(null);
-    setCreatedPublicReservation(null);
-    setPublicBookingPayment(null);
+    setIsPublicBookingReadyForPayment(false);
     setPublicBookingError("");
-    setPublicBookingSuccess("");
+    setShowAllPublicDirectMatches(false);
+    setPublicBookingForm((current) => ({
+      ...current,
+      siteReassignmentAccepted: false,
+    }));
   }, [
     searchForm.arrivalDate,
     searchForm.leaveDate,
@@ -1481,11 +1755,65 @@ function PublicHome({
     searchForm.flexibleEndDate,
     searchForm.stayLengthRange,
     searchForm.searchMode,
+    searchForm.rvKind,
+    searchForm.rigLengthFeet,
+    searchForm.motorhomeClassA,
+    searchForm.motorhomeClassC,
+    searchForm.motorhomeWithTow,
+    searchForm.towVehicleLengthFeet,
+    searchForm.towVehicleType,
+    searchForm.slideDriverSide,
+    searchForm.slidePassengerSide,
+    searchForm.riverfrontOnly,
   ]);
 
   useEffect(() => {
     setIsMobileNavOpen(false);
   }, [isCalendarOpen]);
+
+  useEffect(() => {
+    if (!returnedBookingCheckoutToken) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+    let timeoutId;
+
+    async function loadCheckoutStatus() {
+      try {
+        const result = await guestApiRequest(
+          `/guest/booking-checkouts/${returnedBookingCheckoutToken}`
+        );
+
+        if (isCancelled) {
+          return;
+        }
+
+        setBookingCheckoutStatus(result);
+
+        if (
+          ["open", "processing", "paid"].includes(result.status) &&
+          !(returnedBookingCheckoutState === "cancel" && result.status === "open")
+        ) {
+          timeoutId = window.setTimeout(loadCheckoutStatus, 4000);
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setBookingCheckoutStatus({
+            status: "failed",
+            message: error.message,
+          });
+        }
+      }
+    }
+
+    loadCheckoutStatus();
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [returnedBookingCheckoutState, returnedBookingCheckoutToken]);
 
   function choosePublicSite(site) {
     if (!isPublicOnlineBookingEnabled) {
@@ -1493,9 +1821,12 @@ function PublicHome({
     }
 
     setSelectedBookingSite(site);
-    setCreatedPublicReservation(null);
-    setPublicBookingPayment(null);
+    setIsPublicBookingReadyForPayment(false);
     setPublicBookingError("");
+    setPublicBookingForm((current) => ({
+      ...current,
+      siteReassignmentAccepted: false,
+    }));
 
     window.requestAnimationFrame(() => {
       document.getElementById("public-reservation-form")?.scrollIntoView({
@@ -1507,10 +1838,9 @@ function PublicHome({
 
   function runPublicAvailabilitySearch(event) {
     setSelectedBookingSite(null);
-    setCreatedPublicReservation(null);
-    setPublicBookingPayment(null);
+    setIsPublicBookingReadyForPayment(false);
     setPublicBookingError("");
-    onSearch(event);
+    onSearch(event, { applySiteFitRestrictions: false });
   }
 
   function handlePublicBookingSubmit(event) {
@@ -1519,35 +1849,71 @@ function PublicHome({
       return;
     }
 
-    if (selectedBookingSite && !createdPublicReservation) {
+    if (selectedBookingSite) {
       event.preventDefault();
-      createPublicReservation();
-      return;
-    }
 
-    if (createdPublicReservation) {
-      event.preventDefault();
+      if (!isPublicBookingReadyForPayment) {
+        createPublicReservation();
+      }
+
       return;
     }
 
     runPublicAvailabilitySearch(event);
   }
 
-  async function createPublicReservation() {
+  function createPublicReservation() {
     if (!selectedBookingSite || isLongStay) {
+      return;
+    }
+
+    const phoneDigits = String(publicBookingForm.phoneNumber || "").replaceAll(
+      /\D/g,
+      ""
+    );
+
+    if (!publicBookingForm.firstName.trim() || !publicBookingForm.lastName.trim()) {
+      setPublicBookingError("Enter your first and last name.");
+      return;
+    }
+
+    if (!publicBookingForm.email.includes("@")) {
+      setPublicBookingError("Enter a valid email address.");
+      return;
+    }
+
+    if (phoneDigits.length !== 10) {
+      setPublicBookingError("Enter a valid 10-digit phone number.");
+      return;
+    }
+
+    if (!publicBookingForm.siteReassignmentAccepted) {
+      setPublicBookingError(
+        "Please accept the site reassignment policy before continuing."
+      );
+      return;
+    }
+
+    setPublicBookingError("");
+    setIsPublicBookingReadyForPayment(true);
+  }
+
+  async function startPublicBookingCheckout(paymentMethod) {
+    if (!selectedBookingSite || !isPublicBookingReadyForPayment) {
       return;
     }
 
     setIsCreatingPublicReservation(true);
     setPublicBookingError("");
-    setPublicBookingSuccess("");
 
     try {
-      const reservation = await guestApiRequest("/guest/reservations", {
+      const checkout = await guestApiRequest("/guest/booking-checkouts", {
         method: "POST",
         body: JSON.stringify({
           ...publicBookingForm,
           discounts: publicBookingForm.discounts,
+          paymentMethod,
+          baseUrl: window.location.origin,
           siteId: selectedBookingSite.id,
           arrivalDate: searchForm.arrivalDate,
           leaveDate: searchForm.leaveDate,
@@ -1556,68 +1922,86 @@ function PublicHome({
           motorhomeClassC: searchForm.motorhomeClassC,
           motorhomeWithTow: searchForm.motorhomeWithTow,
           rigLengthFeet: searchForm.rigLengthFeet,
+          towVehicleLengthFeet: searchForm.towVehicleLengthFeet,
+          towVehicleType: searchForm.towVehicleType,
+          slideDriverSide: searchForm.slideDriverSide,
+          slidePassengerSide: searchForm.slidePassengerSide,
         }),
       });
 
-      setCreatedPublicReservation(reservation);
-      setPublicBookingSuccess(
-        `Reservation #${reservation.id} is being held while you complete the deposit.`
-      );
+      window.location.assign(checkout.checkoutUrl);
     } catch (error) {
       setPublicBookingError(error.message);
-    } finally {
       setIsCreatingPublicReservation(false);
     }
   }
 
-  async function preparePublicDepositPayment() {
-    if (!createdPublicReservation) {
-      return;
-    }
+  if (
+    returnedBookingCheckoutToken &&
+    bookingCheckoutStatus?.status === "completed" &&
+    bookingCheckoutStatus.reservation
+  ) {
+    const confirmedReservation = bookingCheckoutStatus.reservation;
+    const confirmedStay = confirmedReservation.siteStays?.[0] || null;
 
-    setPublicBookingError("");
-
-    try {
-      const payment = await guestApiRequest(
-        `/guest/reservations/${createdPublicReservation.id}/payment-intents`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            credentials: publicBookingForm,
-            amount:
-              createdPublicReservation.cardDepositAmount ??
-              getCardPrice(createdPublicReservation.depositAmount),
-            activateReservationOnPayment: true,
-          }),
-        }
-      );
-      setPublicBookingPayment(payment);
-    } catch (error) {
-      setPublicBookingError(error.message);
-    }
-  }
-
-  async function finishPublicDepositPayment() {
-    setPublicBookingPayment(null);
-    setPublicBookingSuccess(
-      `Deposit received. Reservation #${createdPublicReservation.id} is confirmed.`
+    return (
+      <div className="public-site public-booking-confirmation-page">
+        <header className="public-confirmation-header">
+          <a className="public-brand" href="/" aria-label="Riverpark RV Resort home">
+            <span className="brand-mark">RP</span>
+            <span>
+              <strong>Riverpark</strong>
+              <small>RV Resort</small>
+            </span>
+          </a>
+        </header>
+        <main className="public-confirmation-main">
+          <section className="public-confirmation-card" aria-labelledby="booking-confirmed-title">
+            <div className="public-confirmation-check" aria-hidden="true">
+              &#10003;
+            </div>
+            <p className="eyebrow">Your stay is reserved</p>
+            <h1 id="booking-confirmed-title">Booking confirmed</h1>
+            <p className="public-confirmation-lead">
+              Thank you, {confirmedReservation.first_name || "Guest"}. We sent your
+              confirmation email to
+              <strong> {confirmedReservation.email}</strong>.
+            </p>
+            {confirmedStay ? (
+              <div className="public-confirmation-stay">
+                <div>
+                  <span>Site</span>
+                  <strong>{confirmedStay.site_number || "Confirmed"}</strong>
+                </div>
+                <div>
+                  <span>Arrival</span>
+                  <strong>{formatDisplayDate(confirmedStay.arrival_date)}</strong>
+                </div>
+                <div>
+                  <span>Departure</span>
+                  <strong>{formatDisplayDate(confirmedStay.leave_date)}</strong>
+                </div>
+              </div>
+            ) : null}
+            <p className="public-confirmation-note">
+              If you do not see the email within a few minutes, please check your spam
+              or junk folder.
+            </p>
+            <div className="public-confirmation-actions">
+              <button type="button" className="public-primary-button" onClick={onOpenGuest}>
+                Manage booking
+              </button>
+              <a className="public-text-link" href="/">
+                Return to homepage
+              </a>
+            </div>
+            <p className="public-confirmation-contact">
+              Need help? <a href="tel:+15412951269">Call or text 541-295-1269</a>
+            </p>
+          </section>
+        </main>
+      </div>
     );
-
-    try {
-      const result = await guestApiRequest("/guest/reservations/sign-in", {
-        method: "POST",
-        body: JSON.stringify(publicBookingForm),
-      });
-      const refreshedReservation = result.reservations?.find(
-        (reservation) => reservation.id === createdPublicReservation.id
-      );
-
-      if (refreshedReservation) {
-        setCreatedPublicReservation(refreshedReservation);
-      }
-    } catch {
-      // Stripe has already confirmed the card; webhook reconciliation will finish independently.
-    }
   }
 
   return (
@@ -1752,10 +2136,10 @@ function PublicHome({
           <article className="story-card">
             <span className="story-number">01</span>
             <p className="eyebrow">Stay your way</p>
-            <h2>Find the right fit for your rig.</h2>
+            <h2>See which sites are open for your stay.</h2>
             <p>
-              Search by your rig length and travel dates to see the sites
-              available for your stay.
+              Search by your travel dates, then compare the available sites and
+              their listed lengths.
             </p>
             <a href="#availability">Start a site search</a>
           </article>
@@ -1772,18 +2156,81 @@ function PublicHome({
             <p className="eyebrow light">Plan your stay</p>
             <h2>Find your place by the river.</h2>
             <p>
-              Choose your dates and tell us about your RV. We’ll show sites that
-              can work for the full stay.
+              Choose your dates and tell us about your RV. We’ll show every site
+              that is open for the full stay.
+            </p>
+            <p className="public-pricing-note">
+              Stays longer than 2 weeks must be booked by phone.
+            </p>
+            <p className="public-pricing-note">
+              Stay 6 nights and get the 7th night on us—free.
+            </p>
+            <p className="public-pricing-note">
+              Prime riverfront sites give you more room around your RV, with
+              extra space to relax and enjoy the river scenery.
             </p>
             <p className="public-pricing-note">
               If you hate computers and would rather talk to a person, call us
               and we can book you over the phone.
             </p>
+            {selectedBookingSite ? (
+              <div className="booking-intro-price-panel">
+                <BookingPriceComparison
+                  title={
+                    publicBookingForm.discounts.length
+                      ? "Discounted price per night"
+                      : "Selected price per night"
+                  }
+                  bankPrice={selectedBookingBankPrice}
+                  perNight
+                  numberOfNights={numberOfNights}
+                />
+                {isPublicBookingReadyForPayment ? (
+                  <BookingPriceComparison
+                    title="Deposit due"
+                    bankPrice={selectedBookingDepositPrice}
+                  />
+                ) : null}
+              </div>
+            ) : null}
             <a href="tel:+15412951269">Questions? Call or text 541-295-1269</a>
           </div>
           <form
             className="public-booking-card"
             onSubmit={handlePublicBookingSubmit}>
+            {returnedBookingCheckoutToken ? (
+              <div
+                className={`public-checkout-return ${
+                  bookingCheckoutIsError ? "error" : "success"
+                }`}
+                role="status"
+                aria-live="polite">
+                <p className="eyebrow">
+                  {bookingCheckoutStatus?.status === "completed"
+                    ? "Booking confirmed"
+                    : bookingCheckoutStatus?.status === "processing"
+                      ? "Bank payment processing"
+                      : "Booking payment"}
+                </p>
+                <h3>{bookingCheckoutMessage}</h3>
+                {bookingCheckoutStatus?.reservation ? (
+                  <p>
+                    Site{" "}
+                    {bookingCheckoutStatus.reservation.siteStays?.[0]
+                      ?.site_number || "confirmed"}{" "}
+                    · Reservation #{bookingCheckoutStatus.reservation.id}
+                  </p>
+                ) : null}
+                {bookingCheckoutStatus?.status === "completed" ? (
+                  <button
+                    type="button"
+                    className="public-search-button"
+                    onClick={onOpenGuest}>
+                    Manage booking
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <div className="booking-card-heading">
               <div>
                 <span>Step 1</span>
@@ -1855,7 +2302,7 @@ function PublicHome({
                         : matchingSiteCount
                         ? `${matchingSiteCount} site${
                             matchingSiteCount === 1 ? "" : "s"
-                          } fit your stay`
+                          } available for your stay`
                         : "No single site covers the full stay"}
                     </h3>
                   </div>
@@ -1904,14 +2351,20 @@ function PublicHome({
                     </div>
                   ) : (
                     <p>
-                      Try widening the date range or changing the expected stay
-                      length.
+                      Nothing is showing online for that window. Please call us
+                      and we’ll see whether we can make something work.
                     </p>
                   )
                 ) : matchingSiteCount ? (
                   <div className="public-site-results">
-                    {directMatches.slice(0, 6).map((site) => (
-                      <article key={site.id}>
+                    {(showAllPublicDirectMatches
+                      ? directMatches
+                      : directMatches.slice(0, 6)
+                    ).map((site) => (
+                      <article
+                        key={site.id}
+                        className="public-site-result-card"
+                        tabIndex={0}>
                         <div>
                           <span>Available</span>
                           <h4>Site {site.siteNumber}</h4>
@@ -1920,6 +2373,13 @@ function PublicHome({
                           {site.sizeFeet} ft · {getSiteTypeLabel(site)} ·{" "}
                           {site.numberOfNights} nights
                         </p>
+                        <BookingPriceComparison
+                          title="Price per night"
+                          bankPrice={site.normalPrice}
+                          discountBankPrice={site.discountPrice}
+                          perNight
+                          numberOfNights={site.numberOfNights}
+                        />
                         {!isLongStay ? (
                           isPublicOnlineBookingEnabled ? (
                             <button
@@ -1938,14 +2398,40 @@ function PublicHome({
                         ) : null}
                       </article>
                     ))}
+                    {directMatches.length > 6 ? (
+                      <button
+                        type="button"
+                        className="public-search-button"
+                        onClick={() =>
+                          setShowAllPublicDirectMatches((current) => !current)
+                        }>
+                        {showAllPublicDirectMatches
+                          ? "Show fewer sites"
+                          : `See all ${directMatches.length} available sites`}
+                      </button>
+                    ) : null}
                   </div>
                 ) : (
                   <p>
-                    Try different dates, or call us. We may be able to build a
-                    stay that moves between sites.
+                    Nothing is showing online for the full stay, but that
+                    doesn’t always mean we’re out of options.
                   </p>
                 )}
-                {isFlexibleSearch ? (
+                {availabilityRestriction !== "oversized_fifth_wheel" &&
+                ((isFlexibleSearch && !flexibleSiteCount) ||
+                  (!isFlexibleSearch && !matchingSiteCount)) ? (
+                  <div className="public-result-cta short-stay-callout">
+                    <div>
+                      <strong>Please call us—we may be able to help.</strong>
+                      <span>
+                        We can check for options that may not appear online,
+                        adjust the dates, or arrange a stay that moves between
+                        sites.
+                      </span>
+                    </div>
+                    <a href="tel:+15412951269">Call 541-295-1269</a>
+                  </div>
+                ) : isFlexibleSearch ? (
                   <div className="public-result-cta short-stay-callout">
                     <div>
                       <strong>These are flexible options for your rig size.</strong>
@@ -2004,89 +2490,65 @@ function PublicHome({
                   </div>
                 </div>
 
-                {createdPublicReservation ? (
+                {isPublicBookingReadyForPayment ? (
                   <div className="public-reservation-created">
                     <div className="public-created-summary">
-                      <p className="eyebrow">Site held</p>
-                      <h3>Reservation #{createdPublicReservation.id}</h3>
+                      <p className="eyebrow">Deposit payment</p>
+                      <h3>Choose bank or card.</h3>
                       <p>
                         Site {selectedBookingSite.siteNumber} · {numberOfNights}{" "}
-                        nights · Standard stay price{" "}
-                        <strong>
-                          {formatCurrency(
-                            createdPublicReservation.effectiveTotalPrice
-                          )}
-                        </strong>
+                        nights. No reservation is created until Stripe confirms
+                        the deposit payment.
                       </p>
-                      <p>
-                        Card price{" "}
-                        <strong>
-                          {formatCurrency(
-                            createdPublicReservation.cardTotalPrice ??
-                              getCardPrice(
-                                createdPublicReservation.effectiveTotalPrice
-                              )
-                          )}
-                        </strong>
-                        {" · "}Card deposit due{" "}
-                        <strong>
-                          {formatCurrency(
-                            createdPublicReservation.cardDepositAmount ??
-                              getCardPrice(
-                                createdPublicReservation.depositAmount
-                              )
-                          )}
-                        </strong>
-                      </p>
+                      <BookingPriceComparison
+                        title="Price per night"
+                        bankPrice={selectedBookingBankPrice}
+                        perNight
+                        numberOfNights={numberOfNights}
+                      />
+                      <BookingPriceComparison
+                        title="Deposit due"
+                        bankPrice={selectedBookingDepositPrice}
+                      />
                     </div>
-                    {publicBookingSuccess ? (
-                      <div className="public-search-message success">
-                        {publicBookingSuccess}
-                      </div>
-                    ) : null}
                     {publicBookingError ? (
                       <div className="public-search-message error">
                         {publicBookingError}
                       </div>
                     ) : null}
-                    {Number(createdPublicReservation.amountPaid || 0) >=
-                    Number(createdPublicReservation.depositAmount || 0) ? (
-                      <div className="public-booking-confirmed">
-                        <strong>Your reservation is confirmed.</strong>
-                        <span>
-                          You can use Manage booking anytime to view your stay
-                          or make another payment.
-                        </span>
-                      </div>
-                    ) : !stripePublishableKey ? (
-                      <div className="public-search-message error">
-                        Online card payments are not configured yet. Please call
-                        541-295-1269.
-                      </div>
-                    ) : publicBookingPayment?.clientSecret ? (
-                      <Elements
-                        stripe={getStripePromise()}
-                        options={{
-                          clientSecret: publicBookingPayment.clientSecret,
-                        }}>
-                        <CardPaymentForm
-                          amountLabel={formatCurrency(
-                            publicBookingPayment.amount
-                          )}
-                          clientSecret={publicBookingPayment.clientSecret}
-                          reservation={createdPublicReservation}
-                          onCancel={() => setPublicBookingPayment(null)}
-                          onSuccess={finishPublicDepositPayment}
-                        />
-                      </Elements>
-                    ) : (
+                    <div className="public-checkout-methods">
                       <button
                         type="button"
                         className="public-search-button"
-                        onClick={preparePublicDepositPayment}>
-                        Pay card price and confirm reservation
+                        disabled={isCreatingPublicReservation}
+                        onClick={() => startPublicBookingCheckout("bank")}>
+                        {isCreatingPublicReservation
+                          ? "Opening Stripe..."
+                          : `Pay ${formatCurrency(
+                              selectedBookingDepositPrice
+                            )} by bank`}
                       </button>
-                    )}
+                      <button
+                        type="button"
+                        className="public-search-button card-checkout-button"
+                        disabled={isCreatingPublicReservation}
+                        onClick={() => startPublicBookingCheckout("card")}>
+                        {isCreatingPublicReservation
+                          ? "Opening Stripe..."
+                          : `Pay ${formatCurrency(
+                              getCardPrice(selectedBookingDepositPrice)
+                            )} by card`}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className="public-calendar-toggle public-checkout-back-button"
+                      disabled={isCreatingPublicReservation}
+                      onClick={() => {
+                        setIsPublicBookingReadyForPayment(false);
+                      }}>
+                      Back to booking details
+                    </button>
                   </div>
                 ) : (
                   <div className="public-create-fields">
@@ -2193,6 +2655,40 @@ function PublicHome({
                         ))}
                       </div>
                     </div>
+                    <BookingPriceComparison
+                      title={
+                        publicBookingForm.discounts.length
+                          ? "Discounted price per night"
+                          : "Price per night"
+                      }
+                      bankPrice={selectedBookingBankPrice}
+                      perNight
+                      numberOfNights={numberOfNights}
+                    />
+                    <div className="public-discount-panel">
+                      <label className="checkbox-row compact-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={
+                            publicBookingForm.siteReassignmentAccepted
+                          }
+                          onChange={(event) =>
+                            setPublicBookingForm((current) => ({
+                              ...current,
+                              siteReassignmentAccepted: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>
+                          I understand and agree that Riverpark RV Resort may
+                          move my reservation to another site within the same
+                          price range when necessary to best accommodate guests
+                          throughout the park. I understand that the resort will
+                          make every reasonable effort to keep me in the site I
+                          selected.
+                        </span>
+                      </label>
+                    </div>
                     <div className="public-reservation-review">
                       <span>{formatDisplayDate(searchForm.arrivalDate)}</span>
                       <strong>to</strong>
@@ -2200,6 +2696,31 @@ function PublicHome({
                       <span>
                         {searchForm.rvKind} · {searchForm.rigLengthFeet} ft
                       </span>
+                      {searchForm.rvKind === "motor home" &&
+                      searchForm.motorhomeWithTow ? (
+                        <span>
+                          Tow vehicle · {searchForm.towVehicleLengthFeet} ft
+                        </span>
+                      ) : null}
+                      {searchForm.towVehicleType ? (
+                        <span>
+                          Tow vehicle ·{" "}
+                          {
+                            {
+                              suv: "SUV",
+                              truck_short_bed: "Truck — short bed",
+                              truck_long_bed: "Truck — long bed",
+                              dually: "Dually",
+                            }[searchForm.towVehicleType]
+                          }
+                        </span>
+                      ) : null}
+                      {searchForm.slideDriverSide ? (
+                        <span>Slide · Driver’s side</span>
+                      ) : null}
+                      {searchForm.slidePassengerSide ? (
+                        <span>Slide · Passenger side</span>
+                      ) : null}
                     </div>
                     {publicBookingError ? (
                       <div className="public-search-message error">
@@ -2209,7 +2730,10 @@ function PublicHome({
                     <button
                       type="button"
                       className="public-search-button"
-                      disabled={isCreatingPublicReservation}
+                      disabled={
+                        isCreatingPublicReservation ||
+                        !publicBookingForm.siteReassignmentAccepted
+                      }
                       onClick={createPublicReservation}>
                       {isCreatingPublicReservation
                         ? "Creating reservation..."
@@ -2371,6 +2895,8 @@ function createGuestReservationEditor(reservation) {
     motorhomeClassA: Boolean(reservation.motorhome_class_a),
     motorhomeClassC: Boolean(reservation.motorhome_class_c),
     motorhomeWithTow: Boolean(reservation.motorhome_with_tow),
+    slideDriverSide: Boolean(reservation.slide_driver_side),
+    slidePassengerSide: Boolean(reservation.slide_passenger_side),
     rigLengthFeet: String(reservation.rig_length_feet || ""),
     siteStays: reservation.siteStays.map((segment) => ({
       siteId: String(segment.site_id),
@@ -2387,14 +2913,31 @@ function GuestPortal({ onBackHome }) {
   });
   const [verificationCode, setVerificationCode] = useState("");
   const [emailChallengeToken, setEmailChallengeToken] = useState("");
-  const [guestAccessToken, setGuestAccessToken] = useState("");
+  const [guestAccessToken, setGuestAccessToken] = useState(() => {
+    if (typeof window === "undefined") {
+      return "";
+    }
+
+    return window.sessionStorage.getItem(guestAccessTokenStorageKey) || "";
+  });
   const [reservations, setReservations] = useState([]);
-  const [activeReservationId, setActiveReservationId] = useState(null);
+  const [activeReservationId, setActiveReservationId] = useState(() => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    const reservationId = Number(
+      new URLSearchParams(window.location.search).get("reservationId")
+    );
+    return reservationId || null;
+  });
   const [editor, setEditor] = useState(null);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [cardPayment, setCardPayment] = useState(null);
+  const [isOpeningBankPayment, setIsOpeningBankPayment] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCanceling, setIsCanceling] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [guestAvailabilityByStay, setGuestAvailabilityByStay] = useState({});
@@ -2405,10 +2948,22 @@ function GuestPortal({ onBackHome }) {
     reservations.find(
       (reservation) => reservation.id === activeReservationId
     ) || null;
+  const activeReservationNightCount = activeReservation?.siteStays.reduce(
+    (total, stay) =>
+      total +
+      Number(
+        stay.numberOfNights ??
+          nightsBetween(stay.arrival_date, stay.leave_date) ??
+          0
+      ),
+    0
+  );
   const guestAvailabilitySignature = editor
     ? JSON.stringify({
         rvKind: editor.rvKind,
         rigLengthFeet: editor.rigLengthFeet,
+        slideDriverSide: editor.slideDriverSide,
+        slidePassengerSide: editor.slidePassengerSide,
         siteStays: editor.siteStays.map((stay) => ({
           siteId: stay.siteId,
           arrivalDate: stay.arrivalDate,
@@ -2451,7 +3006,9 @@ function GuestPortal({ onBackHome }) {
       });
       const nextReservations = ensureArray(result.reservations, "Reservations");
 
-      setGuestAccessToken(result.accessToken || guestAccessToken);
+      const nextAccessToken = result.accessToken || guestAccessToken;
+      setGuestAccessToken(nextAccessToken);
+      window.sessionStorage.setItem(guestAccessTokenStorageKey, nextAccessToken);
       setReservations(nextReservations);
 
       if (!nextReservations.length) {
@@ -2490,6 +3047,26 @@ function GuestPortal({ onBackHome }) {
     setSuccessMessage("");
     loadGuestReservations();
   }
+
+  useEffect(() => {
+    if (!guestAccessToken) {
+      return;
+    }
+
+    const returnState = new URLSearchParams(window.location.search).get(
+      "guest_payment"
+    );
+
+    loadGuestReservations({ showLoading: true });
+
+    if (returnState === "return") {
+      setSuccessMessage(
+        "Your bank payment was submitted. Bank payments can take several business days for Stripe to confirm."
+      );
+    } else if (returnState === "cancel") {
+      setErrorMessage("Bank payment was canceled. No new payment was submitted.");
+    }
+  }, []);
 
   async function requestGuestVerificationCode(event) {
     event.preventDefault();
@@ -2591,6 +3168,8 @@ function GuestPortal({ onBackHome }) {
               credentials: { accessToken: guestAccessToken },
               rvKind: editor.rvKind,
               rigLengthFeet: editor.rigLengthFeet,
+              slideDriverSide: editor.slideDriverSide,
+              slidePassengerSide: editor.slidePassengerSide,
               siteStays: editor.siteStays.map((stay) => ({
                 siteId: stay.siteId,
                 arrivalDate: stay.arrivalDate,
@@ -2667,6 +3246,8 @@ function GuestPortal({ onBackHome }) {
             motorhomeClassA: editor.motorhomeClassA,
             motorhomeClassC: editor.motorhomeClassC,
             motorhomeWithTow: editor.motorhomeWithTow,
+            slideDriverSide: editor.slideDriverSide,
+            slidePassengerSide: editor.slidePassengerSide,
             rigLengthFeet: editor.rigLengthFeet,
             siteStays: editor.siteStays.map((stay) => ({
               siteId: stay.siteId,
@@ -2719,6 +3300,37 @@ function GuestPortal({ onBackHome }) {
     }
   }
 
+  async function startGuestBankPayment() {
+    if (!activeReservation) {
+      return;
+    }
+
+    setIsOpeningBankPayment(true);
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      window.sessionStorage.setItem(
+        guestAccessTokenStorageKey,
+        guestAccessToken
+      );
+      const checkout = await guestApiRequest(
+        `/guest/reservations/${activeReservation.id}/bank-checkouts`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            credentials: { accessToken: guestAccessToken },
+            baseUrl: window.location.origin,
+          }),
+        }
+      );
+      window.location.assign(checkout.checkoutUrl);
+    } catch (error) {
+      setErrorMessage(error.message);
+      setIsOpeningBankPayment(false);
+    }
+  }
+
   async function finishGuestPayment() {
     setCardPayment(null);
     setSuccessMessage("Your card payment was received.");
@@ -2726,6 +3338,53 @@ function GuestPortal({ onBackHome }) {
     setSuccessMessage(
       "Your card payment was received and your balance has been updated."
     );
+  }
+
+  async function cancelGuestReservation() {
+    if (!activeReservation || activeReservation.status === "canceled") {
+      return;
+    }
+
+    const shouldCancel = window.confirm(
+      "Cancel this reservation? Your site will be released, and payments are not automatically refunded."
+    );
+
+    if (!shouldCancel) {
+      return;
+    }
+
+    setIsCanceling(true);
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const canceledReservation = await guestApiRequest(
+        `/guest/reservations/${activeReservation.id}/cancel`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            credentials: { accessToken: guestAccessToken },
+          }),
+        }
+      );
+
+      setReservations((current) =>
+        current.map((reservation) =>
+          reservation.id === canceledReservation.id
+            ? canceledReservation
+            : reservation
+        )
+      );
+      setEditor(createGuestReservationEditor(canceledReservation));
+      setCardPayment(null);
+      setSuccessMessage(
+        "Your reservation has been canceled. Please call the office with any payment questions."
+      );
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setIsCanceling(false);
+    }
   }
 
   function signOut() {
@@ -2738,6 +3397,7 @@ function GuestPortal({ onBackHome }) {
     setVerificationCode("");
     setEmailChallengeToken("");
     setGuestAccessToken("");
+    window.sessionStorage.removeItem(guestAccessTokenStorageKey);
     setErrorMessage("");
     setSuccessMessage("");
     setGuestAvailabilityByStay({});
@@ -2986,41 +3646,27 @@ function GuestPortal({ onBackHome }) {
                 </div>
               </div>
               <div className="guest-balance-panel">
-                <div>
-                  <span>Standard total</span>
-                  <strong>
-                    {formatCurrency(activeReservation.effectiveTotalPrice)}
-                  </strong>
-                </div>
-                <div>
-                  <span>Card total</span>
-                  <strong>
-                    {formatCurrency(
-                      activeReservation.cardTotalPrice ??
-                        getCardPrice(activeReservation.effectiveTotalPrice)
-                    )}
-                  </strong>
-                </div>
-                <div>
+                <BookingPriceComparison
+                  title="Price per night"
+                  bankPrice={activeReservation.effectiveTotalPrice}
+                  cardPrice={
+                    activeReservation.cardTotalPrice ??
+                    getCardPrice(activeReservation.effectiveTotalPrice)
+                  }
+                  perNight
+                  numberOfNights={activeReservationNightCount}
+                />
+                <BookingPriceComparison
+                  title="Balance due"
+                  bankPrice={activeReservation.remainingBalance}
+                  cardPrice={
+                    activeReservation.cardRemainingBalance ??
+                    getCardPrice(activeReservation.remainingBalance)
+                  }
+                />
+                <div className="guest-paid-summary">
                   <span>Paid</span>
-                  <strong>
-                    {formatCurrency(activeReservation.amountPaid)}
-                  </strong>
-                </div>
-                <div className="balance-due">
-                  <span>Standard balance</span>
-                  <strong>
-                    {formatCurrency(activeReservation.remainingBalance)}
-                  </strong>
-                </div>
-                <div className="balance-due">
-                  <span>Card balance</span>
-                  <strong>
-                    {formatCurrency(
-                      activeReservation.cardRemainingBalance ??
-                        getCardPrice(activeReservation.remainingBalance)
-                    )}
-                  </strong>
+                  <strong>{formatCurrency(activeReservation.amountPaid)}</strong>
                 </div>
               </div>
               <p className="guest-reservation-meta">
@@ -3028,17 +3674,50 @@ function GuestPortal({ onBackHome }) {
                 {activeReservation.rig_length_feet || "No size"} ft
                 {formatMotorhomeDetails(activeReservation)}
               </p>
+              {activeReservation.status !== "canceled" ? (
+                <button
+                  type="button"
+                  className="guest-cancel-reservation-button"
+                  disabled={isCanceling}
+                  onClick={cancelGuestReservation}>
+                  {isCanceling ? "Canceling..." : "Cancel reservation"}
+                </button>
+              ) : null}
             </section>
 
-            <section className="guest-payment-card">
+            {activeReservation.status !== "canceled" ? (
+              <section className="guest-payment-card">
               <p className="eyebrow light">Secure payment</p>
               <h2>Pay toward your stay</h2>
               {Number(activeReservation.remainingBalance || 0) > 0 ? (
                 <>
+                  <BookingPriceComparison
+                    title="Remaining payment options"
+                    bankPrice={activeReservation.remainingBalance}
+                    cardPrice={
+                      activeReservation.cardRemainingBalance ??
+                      getCardPrice(activeReservation.remainingBalance)
+                    }
+                    className="guest-payment-options"
+                  />
                   <p className="guest-pricing-note">
-                    Cash, check, and bank-transfer payments use the standard
-                    balance. Card payments use the card balance shown here.
+                    Choose a secure bank-account payment with no card surcharge,
+                    or pay online by card.
                   </p>
+                  <button
+                    type="button"
+                    className="guest-payment-button guest-bank-payment-button"
+                    disabled={isOpeningBankPayment}
+                    onClick={startGuestBankPayment}>
+                    {isOpeningBankPayment
+                      ? "Opening Stripe..."
+                      : `Pay ${formatCurrency(
+                          activeReservation.remainingBalance
+                        )} by bank account`}
+                  </button>
+                  <div className="guest-payment-divider">
+                    <span>or pay by card</span>
+                  </div>
                   <label>
                     Card payment amount
                     <input
@@ -3102,9 +3781,33 @@ function GuestPortal({ onBackHome }) {
                   ))}
                 </div>
               ) : null}
-            </section>
+              </section>
+            ) : (
+              <section className="guest-payment-card guest-canceled-card">
+                <p className="eyebrow light">Reservation canceled</p>
+                <h2>This stay is canceled.</h2>
+                <p>
+                  The site has been released. Payments are not automatically
+                  refunded; call or text 541-295-1269 with payment questions.
+                </p>
+                {activeReservation.paymentEvents.length ? (
+                  <div className="guest-payment-history">
+                    <strong>Recent payments</strong>
+                    {activeReservation.paymentEvents.slice(0, 3).map((event) => (
+                      <div key={event.id}>
+                        <span>
+                          {formatDisplayDate(String(event.recordedAt).slice(0, 10))}
+                        </span>
+                        <strong>{formatCurrency(event.amount)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            )}
 
-            <form className="guest-edit-card" onSubmit={saveGuestChanges}>
+            {activeReservation.status !== "canceled" ? (
+              <form className="guest-edit-card" onSubmit={saveGuestChanges}>
               <div className="guest-edit-heading">
                 <div>
                   <p className="eyebrow">Reservation details</p>
@@ -3171,6 +3874,12 @@ function GuestPortal({ onBackHome }) {
                     ))}
                   </div>
                 ) : null}
+                <SlideSideFields
+                  slideDriverSide={editor.slideDriverSide}
+                  slidePassengerSide={editor.slidePassengerSide}
+                  onChange={updateEditorField}
+                  className="guest-motorhome-options"
+                />
               </div>
               <div className="guest-date-edit-list">
                 {editor.siteStays.map((stay, index) => (
@@ -3326,7 +4035,8 @@ function GuestPortal({ onBackHome }) {
                 disabled={isSaving}>
                 {isSaving ? "Saving changes..." : "Save reservation changes"}
               </button>
-            </form>
+              </form>
+            ) : null}
           </div>
         ) : null}
       </main>
@@ -3795,7 +4505,15 @@ export default function App() {
   const [isSearchingAvailability, setIsSearchingAvailability] = useState(false);
   const [createdReservation, setCreatedReservation] = useState(null);
   const [editingReservationId, setEditingReservationId] = useState(null);
-  const [activePage, setActivePage] = useState("home");
+  const [activePage, setActivePage] = useState(() => {
+    if (typeof window === "undefined") {
+      return "home";
+    }
+
+    return new URLSearchParams(window.location.search).has("guest_payment")
+      ? "guest"
+      : "home";
+  });
   const [reservationEditFocusSection, setReservationEditFocusSection] =
     useState("");
   const [reservationEditor, setReservationEditor] = useState(null);
@@ -3950,6 +4668,7 @@ export default function App() {
           await Promise.all([
             ensureSitesLoaded(),
             ensureCustomersLoaded(),
+            ensureReservationsLoaded(),
           ]);
           return;
         }
@@ -4712,6 +5431,13 @@ export default function App() {
   }
 
   function updateSearchField(field, value) {
+    setAvailabilityHasSearched(false);
+    setDirectMatches([]);
+    setFlexibleMatches([]);
+    setSwitchPlan(null);
+    setSwitchPlanTotals(null);
+    setAvailabilityRestriction("");
+
     setSearchForm((current) => {
       if (field === "rvKind") {
         return {
@@ -4723,6 +5449,27 @@ export default function App() {
             value === "motor home" ? current.motorhomeClassC : false,
           motorhomeWithTow:
             value === "motor home" ? current.motorhomeWithTow : false,
+          towVehicleLengthFeet:
+            value === "motor home" ? current.towVehicleLengthFeet : "",
+          towVehicleType:
+            value === "5th wheel" && current.towVehicleType === "suv"
+              ? ""
+              : ["camper", "trailer", "5th wheel"].includes(value)
+              ? current.towVehicleType
+              : "",
+          rigLengthFeet: value ? current.rigLengthFeet : "",
+          slideDriverSide: value ? current.slideDriverSide : false,
+          slidePassengerSide: value ? current.slidePassengerSide : false,
+        };
+      }
+
+      if (field === "motorhomeWithTow") {
+        return {
+          ...current,
+          motorhomeWithTow: value,
+          towVehicleLengthFeet: value
+            ? current.towVehicleLengthFeet
+            : "",
         };
       }
 
@@ -4842,6 +5589,11 @@ export default function App() {
         monthlyRentPrice: reservation.monthlyRentPrice,
         electricMeterReading: reservation.electricMeterReading,
         rvKind: reservation.rv_kind,
+        motorhomeClassA: Boolean(reservation.motorhome_class_a),
+        motorhomeClassC: Boolean(reservation.motorhome_class_c),
+        motorhomeWithTow: Boolean(reservation.motorhome_with_tow),
+        slideDriverSide: Boolean(reservation.slide_driver_side),
+        slidePassengerSide: Boolean(reservation.slide_passenger_side),
         rigLengthFeet: reservation.rig_length_feet,
         amountPaid: reservation.amountPaid,
         notes: reservation.notes || "",
@@ -4929,7 +5681,10 @@ export default function App() {
     }));
   }
 
-  async function handleAvailabilitySearch(event) {
+  async function handleAvailabilitySearch(
+    event,
+    { applySiteFitRestrictions = true } = {}
+  ) {
     event.preventDefault();
     setErrorMessage("");
     setSuccessMessage("");
@@ -4947,15 +5702,61 @@ export default function App() {
     setIsSearchingAvailability(true);
 
     try {
+      if (!searchForm.rvKind) {
+        throw new Error("Choose an RV type.");
+      }
+
       const rigLength = Number(searchForm.rigLengthFeet);
 
       if (!Number.isFinite(rigLength) || rigLength <= 0) {
         throw new Error("Enter your rig length in feet.");
       }
 
+      const isPublicMotorhomeWithTow =
+        !applySiteFitRestrictions &&
+        searchForm.rvKind === "motor home" &&
+        searchForm.motorhomeWithTow;
+      const towVehicleLength = Number(searchForm.towVehicleLengthFeet);
+
+      if (
+        isPublicMotorhomeWithTow &&
+        (!Number.isFinite(towVehicleLength) || towVehicleLength <= 0)
+      ) {
+        throw new Error("Enter the tow vehicle length in feet.");
+      }
+
+      const motorhomeRequiredSiteLength = isPublicMotorhomeWithTow
+        ? rigLength + towVehicleLength + 3
+        : null;
+      const needsTowVehicleType =
+        !applySiteFitRestrictions &&
+        ["camper", "trailer", "5th wheel"].includes(searchForm.rvKind);
+
+      if (needsTowVehicleType && !searchForm.towVehicleType) {
+        throw new Error("Choose the vehicle used with your RV.");
+      }
+
+      const towVehicleAdditionalFeet =
+        {
+          suv: 10,
+          truck_short_bed: 15,
+          truck_long_bed: 18,
+          dually: 18,
+        }[searchForm.towVehicleType] ?? null;
+      const towableRequiredSiteLength =
+        needsTowVehicleType && towVehicleAdditionalFeet !== null
+          ? rigLength + towVehicleAdditionalFeet
+          : null;
+      const publicRequiredSiteLength =
+        motorhomeRequiredSiteLength ?? towableRequiredSiteLength ?? rigLength;
+
       const searchPayload = {
         ...searchForm,
-        minSizeFeet: Math.max(1, rigLength - 5),
+        minSizeFeet: applySiteFitRestrictions
+          ? Math.max(1, rigLength - 5)
+          : publicRequiredSiteLength,
+        rvKind: searchForm.rvKind,
+        isPublicGuestSearch: !applySiteFitRestrictions,
       };
 
       if (searchForm.searchMode === "flexible") {
@@ -5116,10 +5917,22 @@ export default function App() {
         setAdminSaveNotice(`Reservation #${created.id} was saved.`);
       } else {
         setCreatedReservation(created);
-        setSuccessMessage(`Created active reservation #${created.id}.`);
+        const creationMessage = `Created active reservation #${created.id}.`;
+        const emailMessage = created.confirmationEmail?.message || "";
+
+        setSuccessMessage(creationMessage);
         setReservationSuccessMessage(
-          `Created active reservation #${created.id}.`
+          created.confirmationEmail?.sent && emailMessage
+            ? `${creationMessage} ${emailMessage}`
+            : creationMessage
         );
+        setConfirmationCopyMessage(emailMessage);
+
+        if (created.confirmationEmail?.sent) {
+          setAdminSaveNotice(emailMessage);
+        } else if (emailMessage) {
+          setReservationErrorMessage(emailMessage);
+        }
       }
 
       const lastUsedSegment = [...reservationForm.siteStays]
@@ -5205,6 +6018,8 @@ export default function App() {
         motorhomeClassA: Boolean(reservation.motorhome_class_a),
         motorhomeClassC: Boolean(reservation.motorhome_class_c),
         motorhomeWithTow: Boolean(reservation.motorhome_with_tow),
+        slideDriverSide: Boolean(reservation.slide_driver_side),
+        slidePassengerSide: Boolean(reservation.slide_passenger_side),
         rigLengthFeet: String(reservation.rig_length_feet ?? ""),
         amountPaid: String(reservation.amountPaid ?? ""),
         notes: reservation.notes || "",
@@ -5285,6 +6100,14 @@ export default function App() {
 
       if (createdReservation?.id === reservation.id) {
         setConfirmationCopyMessage(message);
+        setCreatedReservation((current) => ({
+          ...current,
+          confirmationEmail: {
+            sent: true,
+            recipient: reservation.email,
+            message,
+          },
+        }));
       }
     } catch (error) {
       setErrorMessage(error.message);
@@ -5809,6 +6632,12 @@ export default function App() {
             motorhomeWithTow: Boolean(
               activeScheduleReservation.motorhome_with_tow
             ),
+            slideDriverSide: Boolean(
+              activeScheduleReservation.slide_driver_side
+            ),
+            slidePassengerSide: Boolean(
+              activeScheduleReservation.slide_passenger_side
+            ),
             rigLengthFeet: activeScheduleReservation.rig_length_feet ?? "",
             amountPaid: schedulePaymentForm.amountPaid,
             notes: activeScheduleReservation.notes || "",
@@ -6168,6 +6997,8 @@ export default function App() {
           reservationEditor.reservation.rvKind === "motor home"
             ? reservationEditor.reservation.motorhomeWithTow
             : false,
+        slideDriverSide: reservationEditor.reservation.slideDriverSide,
+        slidePassengerSide: reservationEditor.reservation.slidePassengerSide,
         rigLengthFeet: reservationEditor.reservation.rigLengthFeet,
         amountPaid: reservationEditor.reservation.amountPaid,
         notes: reservationEditor.reservation.notes,
@@ -6224,6 +7055,8 @@ export default function App() {
       motorhomeClassA: searchForm.motorhomeClassA,
       motorhomeClassC: searchForm.motorhomeClassC,
       motorhomeWithTow: searchForm.motorhomeWithTow,
+      slideDriverSide: searchForm.slideDriverSide,
+      slidePassengerSide: searchForm.slidePassengerSide,
       rigLengthFeet: searchForm.rigLengthFeet,
       siteStays: [
         {
@@ -6248,6 +7081,8 @@ export default function App() {
       motorhomeClassA: searchForm.motorhomeClassA,
       motorhomeClassC: searchForm.motorhomeClassC,
       motorhomeWithTow: searchForm.motorhomeWithTow,
+      slideDriverSide: searchForm.slideDriverSide,
+      slidePassengerSide: searchForm.slidePassengerSide,
       rigLengthFeet: searchForm.rigLengthFeet,
       siteStays: switchPlan.map((segment) => ({
         siteId: String(segment.siteId),
@@ -6330,7 +7165,7 @@ export default function App() {
               onChange={(event) =>
                 setAdminLoginForm((current) => ({
                   ...current,
-                  username: event.target.value,
+                  username: event.target.value.toLowerCase(),
                 }))
               }
               fullWidth
@@ -7034,6 +7869,11 @@ export default function App() {
                       </label>
                     </div>
                   ) : null}
+                  <SlideSideFields
+                    slideDriverSide={reservationForm.slideDriverSide}
+                    slidePassengerSide={reservationForm.slidePassengerSide}
+                    onChange={updateReservationField}
+                  />
                   <label>
                     Rig size (feet)
                     <input
@@ -7297,6 +8137,8 @@ export default function App() {
                           {sendingConfirmationReservationId ===
                           createdReservation.id
                             ? "Sending..."
+                            : createdReservation.confirmationEmail?.sent
+                            ? "Resend confirmation email"
                             : "Send confirmation email"}
                         </button>
                         <button
@@ -7324,7 +8166,8 @@ export default function App() {
                     {confirmationCopyMessage ? (
                       <div
                         className={`message ${
-                          confirmationCopyMessage.startsWith("Copied")
+                          confirmationCopyMessage.startsWith("Copied") ||
+                          confirmationCopyMessage.startsWith("Confirmation sent")
                             ? "success"
                             : "error"
                         }`}>
@@ -7332,7 +8175,8 @@ export default function App() {
                       </div>
                     ) : null}
                     <p className="muted">
-                      Send the confirmation directly or copy it as a backup.
+                      Confirmation emails send automatically when a reservation
+                      is created. You can resend or copy it as a backup.
                     </p>
                   </div>
                 ) : null}
@@ -8774,6 +9618,16 @@ export default function App() {
                       </label>
                     </div>
                   ) : null}
+                  <SlideSideFields
+                    slideDriverSide={
+                      reservationEditor.reservation.slideDriverSide
+                    }
+                    slidePassengerSide={
+                      reservationEditor.reservation.slidePassengerSide
+                    }
+                    onChange={updateReservationEditorField}
+                    className="notes-field"
+                  />
                 </div>
               ) : null}
               {reservationEditor.focusSection === "notes" ? (

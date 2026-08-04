@@ -88,8 +88,9 @@ app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), asyn
   }
 
   try {
-    await handleStripeWebhookEvent(event);
+    const createdReservationId = await handleStripeWebhookEvent(event);
     await updateStripeWebhookEventRecord(eventRecord.id, "processed");
+    await sendPublicBookingConfirmation(createdReservationId);
     return res.json({ received: true });
   } catch (error) {
     console.error("Unable to process Stripe webhook event", event.id, error);
@@ -383,14 +384,6 @@ function formatEmailCurrency(value) {
   }).format(amount);
 }
 
-function buildEmailConfirmationCode(reservation) {
-  const bookedDate = String(reservation.booked_date || "")
-    .replaceAll("-", "")
-    .slice(2);
-
-  return `#${reservation.id}${bookedDate ? `-${bookedDate}` : ""}`;
-}
-
 function escapeEmailHtml(value) {
   return String(value || "")
     .replaceAll("&", "&amp;")
@@ -403,64 +396,143 @@ function escapeEmailHtml(value) {
 function buildReservationConfirmationEmail(reservation) {
   const primaryStay = reservation.siteStays?.[0] || null;
   const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
-  const confirmationCode = buildEmailConfirmationCode(reservation);
+  const arrivalDate = primaryStay?.arrival_date
+    ? formatDisplayDate(primaryStay.arrival_date)
+    : "Not set";
   const departureDate = primaryStay?.isOpenEnded
     ? "Open-ended yearly stay"
     : primaryStay?.leave_date
       ? formatDisplayDate(primaryStay.leave_date)
       : "Not set";
+  const siteNumber = primaryStay?.site_number || "To be assigned";
+  const depositAmount = formatEmailCurrency(reservation.depositAmount);
+  const importantInformation = [
+    "Please stop at the office to register when you arrive. Check-in begins at 1:00 P.M.",
+    "Check-out is at 11:00 A.M.",
+    "Pets must remain on a leash, and owners must clean up after them immediately.",
+    "Wood fires are not permitted. Charcoal barbecues and propane are allowed.",
+    "One car or truck is included per reserved site. An additional vehicle is $5.00.",
+    "Please respect neighboring guests and never walk through another occupied site.",
+    "While we make every effort to honor your selected site, Riverpark RV Resort reserves the right to move your reservation to another site within the same price range when needed to best accommodate guests throughout the park. We will always try to avoid moving your reservation.",
+    "Site assignments and rates are subject to change. Contact us promptly if any reservation details need correction.",
+    "AT&T cellular service can be weak or unavailable near the park."
+  ];
   const text = [
     "Riverpark RV Resort",
-    "RESERVATION CONFIRMATION",
-    `Confirmation: ${confirmationCode}`,
+    "Reservation confirmation",
     "",
     `Hi ${customerName || "Guest"},`,
     "",
+    "Thank you for choosing Riverpark RV Resort. Your reservation details are below.",
+    "",
+    `Site: ${siteNumber}`,
+    `Arrival: ${arrivalDate}`,
+    `Departure: ${departureDate}`,
+    `Deposit amount: ${depositAmount}`,
     `Email: ${reservation.email || "Not set"}`,
     `Phone: ${reservation.phone_number || "Not set"}`,
     "",
-    "Deposit",
-    "Non Refundable",
-    "1 night per reservation, per week. We have a 3% surcharge for credit card. (No Debit cards) you may write a check, or cash with no surcharge on arrival balance.",
-    `Deposit amount: ${formatEmailCurrency(reservation.depositAmount)}`,
-    `Arrival: ${primaryStay?.arrival_date ? formatDisplayDate(primaryStay.arrival_date) : "Not set"}`,
-    "(Check-in 1:00 P.M.)",
-    `Depart: ${departureDate}`,
-    "(Check-out 11:00 A.M.)",
+    "Deposit policy",
+    "The deposit is non-refundable. A one-night deposit is required per reservation, per week. Credit-card payments include a 3% surcharge. Debit cards are not accepted. The remaining balance may be paid by check or cash upon arrival without a surcharge.",
     "",
     "Important information",
-    "***Upon arrival, please stop at office to register",
-    "**We welcome your fur babies, but out of respect for other campers, & office please: keep pets on a leash at all times; immediately pick-up your pets doo, droppings**",
-    "or we will ask you to leave!! No Exceptions!",
-    "***There are no WOOD fires allowed in the park. No exceptions!",
-    "** Charcoal barbecue's, & propane are okay",
-    "(1 car or truck) per site reserved",
-    "$5.00 charge extra car",
-    "***PLEASE BE RESPECTFUL AND NEVER WALK THROUGH ANOTHER GUESTS SITE!!! This includes walking behind other RV's that are parked along the river!! The rose bush area is fine to cut through!!!",
-    "***SITE AND RATES ARE SUBJECT TO CHANGE***",
-    "***Contact us as soon as possible if any corrections are necessary.",
-    "Please note!! No AT&T cell towers close by & signal is weak or may not work",
+    ...importantInformation.map((item) => `- ${item}`),
     "",
-    "Thank you for booking with us!",
-    "Makayla",
+    "We look forward to welcoming you to the Rogue River.",
     "",
+    "Warmly,",
+    "The Riverpark RV Resort team",
     "Riverpark RV Resort",
     "2956 Rogue River Hwy",
     "Grants Pass, OR 97527",
-    "",
     "541-295-1269 (cell)",
     "Text message okay"
   ].join("\n");
-  const escapedText = text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\n", "<br>");
+  const detailRows = [
+    ["Site", siteNumber],
+    ["Arrival", arrivalDate],
+    ["Departure", departureDate],
+    ["Deposit amount", depositAmount]
+  ]
+    .map(
+      ([label, value]) => `
+        <tr>
+          <td style="padding:10px 0;color:#6d756f;font-size:13px;line-height:1.4;vertical-align:top;width:42%;">${escapeEmailHtml(label)}</td>
+          <td style="padding:10px 0;color:#17372f;font-size:15px;font-weight:700;line-height:1.4;text-align:right;vertical-align:top;">${escapeEmailHtml(value)}</td>
+        </tr>`
+    )
+    .join("");
+  const importantInformationHtml = importantInformation
+    .map(
+      (item) => `
+        <tr>
+          <td style="padding:0 10px 12px 0;vertical-align:top;color:#b8793e;font-size:18px;line-height:1;">&#8226;</td>
+          <td style="padding:0 0 12px;color:#3f4d47;font-size:14px;line-height:1.6;">${escapeEmailHtml(item)}</td>
+        </tr>`
+    )
+    .join("");
+  const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Riverpark RV Resort reservation confirmation</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f3eee4;color:#17372f;font-family:Arial,Helvetica,sans-serif;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">Your Riverpark RV Resort reservation is confirmed.</div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#f3eee4;">
+      <tr>
+        <td align="center" style="padding:28px 12px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:640px;background:#fffaf2;border-radius:18px;overflow:hidden;box-shadow:0 12px 36px rgba(23,55,47,0.12);">
+            <tr>
+              <td style="padding:34px 38px;background:#17372f;text-align:center;">
+                <div style="color:#d8ba85;font-size:12px;font-weight:700;letter-spacing:2.2px;text-transform:uppercase;">On the Rogue River</div>
+                <div style="margin-top:9px;color:#ffffff;font-family:Georgia,'Times New Roman',serif;font-size:30px;line-height:1.2;">Riverpark RV Resort</div>
+                <div style="margin-top:8px;color:#c7d5ce;font-size:13px;line-height:1.5;">Grants Pass, Oregon</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:38px;">
+                <div style="color:#b8793e;font-size:12px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;">Reservation confirmed</div>
+                <h1 style="margin:10px 0 14px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:30px;font-weight:400;line-height:1.25;">Your place by the river is reserved.</h1>
+                <p style="margin:0 0 26px;color:#4b5b54;font-size:16px;line-height:1.7;">Hi ${escapeEmailHtml(customerName || "Guest")}, thank you for choosing Riverpark RV Resort. We look forward to welcoming you.</p>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin-bottom:28px;padding:12px 22px;background:#f6f0e5;border:1px solid #e4d8c5;border-radius:12px;">
+                  ${detailRows}
+                </table>
+
+                <h2 style="margin:0 0 10px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Deposit policy</h2>
+                <p style="margin:0 0 28px;color:#4b5b54;font-size:14px;line-height:1.7;">The deposit is non-refundable. A one-night deposit is required per reservation, per week. Credit-card payments include a 3% surcharge. Debit cards are not accepted. The remaining balance may be paid by check or cash upon arrival without a surcharge.</p>
+
+                <div style="height:1px;background:#e4d8c5;margin:0 0 27px;"></div>
+                <h2 style="margin:0 0 18px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Before you arrive</h2>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;">
+                  ${importantInformationHtml}
+                </table>
+
+                <div style="margin-top:18px;padding:20px 22px;background:#e8efe9;border-left:4px solid #b8793e;border-radius:8px;">
+                  <div style="color:#17372f;font-size:15px;font-weight:700;line-height:1.4;">Questions or corrections?</div>
+                  <div style="margin-top:5px;color:#4b5b54;font-size:14px;line-height:1.6;">Call or text us at <a href="tel:+15412951269" style="color:#17372f;font-weight:700;text-decoration:none;">541-295-1269</a>.</div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:25px 38px;background:#e8dfcf;text-align:center;">
+                <div style="color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:18px;">We’ll see you by the river.</div>
+                <div style="margin-top:9px;color:#64716b;font-size:12px;line-height:1.7;">Riverpark RV Resort &bull; 2956 Rogue River Hwy &bull; Grants Pass, OR 97527</div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
 
   return {
-    subject: `Riverpark RV Resort reservation confirmation ${confirmationCode}`,
+    subject: "Your Riverpark RV Resort reservation is confirmed",
     text,
-    html: `<div style="max-width:680px;margin:0 auto;padding:24px;color:#17372f;font-family:Arial,sans-serif;font-size:16px;line-height:1.6">${escapedText}</div>`
+    html
   };
 }
 
@@ -657,22 +729,28 @@ function getCardPrice(value) {
     return null;
   }
 
+  if (amount <= 0) {
+    return 0;
+  }
+
   const cardAmount = amount * cardPriceMultiplier;
   return roundCurrency(Math.ceil(cardAmount - 0.99) + 0.99);
 }
 
-function getBaseAmountFromCardPayment(value) {
+function getCardStayTotal(value, chargeableNights) {
   const amount = toPriceNumber(value);
+  const nights = Number(chargeableNights);
 
-  if (amount === null) {
-    return null;
+  if (amount === null || !Number.isFinite(nights) || nights <= 0) {
+    return getCardPrice(value);
   }
 
-  return roundCurrency(amount / cardPriceMultiplier);
-}
+  const nightlyBasePrice = roundCurrency(amount / nights);
+  const nightlyCardPrice = getCardPrice(nightlyBasePrice);
 
-function isCardPaymentMethodType(value) {
-  return String(value || "").toLowerCase() === "card";
+  return nightlyCardPrice === null
+    ? null
+    : roundCurrency(nightlyCardPrice * nights);
 }
 
 function normalizeReservationStatus(value) {
@@ -875,6 +953,16 @@ function buildBillingSummary(reservationRow, totals) {
     utilityPrice
   );
 
+  const amountPaid = toPriceNumber(reservationRow.amount_paid) ?? 0;
+  const cardTotalPrice = getCardStayTotal(
+    effectiveTotalPrice,
+    totals?.chargeableNights
+  );
+  const remainingBalance =
+    effectiveTotalPrice !== null && effectiveTotalPrice !== undefined
+      ? roundCurrency(Math.max(effectiveTotalPrice - amountPaid, 0))
+      : null;
+
   return {
     depositAmount: toPriceNumber(reservationRow.deposit_amount) ?? 0,
     cardDepositAmount: getCardPrice(reservationRow.deposit_amount) ?? 0,
@@ -883,21 +971,13 @@ function buildBillingSummary(reservationRow, totals) {
     electricMeterReading: toMeterNumber(reservationRow.electric_meter_reading),
     utilityPrice,
     effectiveTotalPrice,
-    cardTotalPrice: getCardPrice(effectiveTotalPrice),
-    remainingBalance:
-      effectiveTotalPrice !== null && effectiveTotalPrice !== undefined
-        ? roundCurrency(
-            effectiveTotalPrice - (toPriceNumber(reservationRow.amount_paid) ?? 0)
-          )
-        : null,
+    cardTotalPrice,
+    remainingBalance,
     cardRemainingBalance:
-      effectiveTotalPrice !== null && effectiveTotalPrice !== undefined
-        ? getCardPrice(
-            Math.max(
-              effectiveTotalPrice - (toPriceNumber(reservationRow.amount_paid) ?? 0),
-              0
-            )
-          )
+      remainingBalance === 0
+        ? 0
+        : cardTotalPrice !== null && cardTotalPrice !== undefined
+        ? roundCurrency(Math.max(cardTotalPrice - amountPaid, 0))
         : null
   };
 }
@@ -1088,9 +1168,6 @@ async function findStripePaymentRecordForUpdate(client, { checkoutSessionId = nu
 async function applyStripePaymentSettlement(client, paymentRecord, details) {
   const wasAlreadyPaid = paymentRecord.payment_status === "paid";
   const collectedAmount = Number(paymentRecord.amount_cents) / 100;
-  const amountPaidToApply = isCardPaymentMethodType(details.paymentMethodType)
-    ? getBaseAmountFromCardPayment(collectedAmount)
-    : collectedAmount;
 
   if (!wasAlreadyPaid) {
     await client.query(
@@ -1106,7 +1183,7 @@ async function applyStripePaymentSettlement(client, paymentRecord, details) {
       `,
       [
         paymentRecord.reservation_id,
-        amountPaidToApply,
+        collectedAmount,
         paymentRecord.activate_reservation_on_payment
       ]
     );
@@ -1224,9 +1301,220 @@ async function applyStripeRefundUpdate(client, paymentRecord, details) {
   );
 }
 
+async function finalizePublicBookingCheckout(client, checkout, session) {
+  if (checkout.reservation_id) {
+    return null;
+  }
+
+  const payload = checkout.booking_payload;
+  const segment = {
+    siteId: Number(checkout.site_id),
+    arrivalDate: payload.arrivalDate,
+    leaveDate: payload.leaveDate
+  };
+  const overlap = await findReservationOverlap(client, [segment], null, checkout.id);
+
+  if (overlap) {
+    await client.query(
+      `
+        UPDATE public_booking_checkouts
+        SET
+          payment_status = 'conflict',
+          last_error_message = $2,
+          paid_at = COALESCE(paid_at, NOW()),
+          updated_at = NOW()
+        WHERE id = $1
+      `,
+      [checkout.id, overlap.message]
+    );
+    return null;
+  }
+
+  const customerResult = await client.query(
+    `
+      SELECT id, first_name, last_name, email, phone_number
+      FROM customers
+      WHERE LOWER(TRIM(first_name)) = LOWER($1)
+        AND LOWER(TRIM(last_name)) = LOWER($2)
+        AND RIGHT(REGEXP_REPLACE(COALESCE(phone_number, ''), '[^0-9]', '', 'g'), 10) = $3
+      LIMIT 1
+      FOR UPDATE
+    `,
+    [payload.firstName, payload.lastName, payload.phoneNumber]
+  );
+  let customerId;
+
+  if (customerResult.rowCount > 0) {
+    customerId = customerResult.rows[0].id;
+    await client.query(
+      `UPDATE customers SET email = $2 WHERE id = $1`,
+      [customerId, payload.email]
+    );
+  } else {
+    const insertedCustomer = await client.query(
+      `
+        INSERT INTO customers (first_name, last_name, email, phone_number)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id
+      `,
+      [payload.firstName, payload.lastName, payload.email, payload.phoneNumber]
+    );
+    customerId = insertedCustomer.rows[0].id;
+  }
+
+  const towVehicleNote = payload.motorhomeWithTow
+    ? ` Tow vehicle length: ${payload.towVehicleLengthFeet} ft.`
+    : "";
+  const towVehicleTypeLabels = {
+    suv: "SUV",
+    truck_short_bed: "Truck — short bed",
+    truck_long_bed: "Truck — long bed",
+    dually: "Dually"
+  };
+  const towVehicleTypeNote = towVehicleTypeLabels[payload.towVehicleType]
+    ? ` Tow vehicle: ${towVehicleTypeLabels[payload.towVehicleType]}.`
+    : "";
+  const discountNote = payload.discounts?.length
+    ? ` Requested discounts: ${payload.discounts.join(", ")}.`
+    : "";
+  const publicReservationNotes =
+    `Created through paid public Stripe Checkout. Site reassignment policy accepted.${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
+  const reservationResult = await client.query(
+    `
+      INSERT INTO reservations (
+        customer_id,
+        booked_date,
+        status,
+        reservation_term,
+        billing_mode,
+        deposit_amount,
+        total_price,
+        rv_kind,
+        motorhome_class_a,
+        motorhome_class_c,
+        motorhome_with_tow,
+        slide_driver_side,
+        slide_passenger_side,
+        rig_length_feet,
+        amount_paid,
+        notes
+      )
+      VALUES ($1, CURRENT_DATE, 'active', 'standard', 'manual_total', $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $11)
+      RETURNING id
+    `,
+    [
+      customerId,
+      Number(checkout.base_deposit_amount),
+      Number(payload.totalPrice),
+      payload.rvKind,
+      Boolean(payload.motorhomeClassA),
+      Boolean(payload.motorhomeClassC),
+      Boolean(payload.motorhomeWithTow),
+      Boolean(payload.slideDriverSide),
+      Boolean(payload.slidePassengerSide),
+      Number(payload.rigLengthFeet),
+      publicReservationNotes,
+      Number(checkout.amount_cents) / 100
+    ]
+  );
+  const reservationId = reservationResult.rows[0].id;
+
+  await client.query(
+    `
+      INSERT INTO reservation_site_stays (reservation_id, site_id, arrival_date, leave_date)
+      VALUES ($1, $2, $3, $4)
+    `,
+    [reservationId, segment.siteId, segment.arrivalDate, segment.leaveDate]
+  );
+
+  const paymentRecordResult = await client.query(
+    `
+      INSERT INTO stripe_payment_records (
+        reservation_id,
+        stripe_checkout_session_id,
+        stripe_payment_intent_id,
+        amount_cents,
+        currency,
+        payment_status,
+        activate_reservation_on_payment,
+        stripe_customer_email,
+        stripe_payment_method_type,
+        amount_received_cents,
+        paid_at,
+        checkout_status
+      )
+      VALUES ($1, $2, $3, $4, 'usd', 'paid', FALSE, $5, $6, $4, NOW(), $7)
+      RETURNING id
+    `,
+    [
+      reservationId,
+      session.id,
+      typeof session.payment_intent === "string" ? session.payment_intent : null,
+      Number(checkout.amount_cents),
+      payload.email,
+      checkout.payment_method_type,
+      session.status || "complete"
+    ]
+  );
+
+  await insertReservationPaymentEvent(client, {
+    reservationId,
+    stripePaymentRecordId: paymentRecordResult.rows[0].id,
+    amount: Number(checkout.amount_cents) / 100,
+    paymentSource: "stripe",
+    note:
+      checkout.payment_method_type === "us_bank_account"
+        ? "Stripe ACH bank deposit"
+        : "Stripe card deposit"
+  });
+
+  await client.query(
+    `
+      UPDATE public_booking_checkouts
+      SET
+        stripe_payment_intent_id = $2,
+        payment_status = 'completed',
+        reservation_id = $3,
+        paid_at = COALESCE(paid_at, NOW()),
+        completed_at = NOW(),
+        updated_at = NOW(),
+        last_error_message = NULL
+      WHERE id = $1
+    `,
+    [
+      checkout.id,
+      typeof session.payment_intent === "string" ? session.payment_intent : null,
+      reservationId
+    ]
+  );
+
+  return Number(reservationId);
+}
+
+async function sendPublicBookingConfirmation(reservationId) {
+  if (!reservationId) {
+    return;
+  }
+
+  try {
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (reservation?.email) {
+      await sendReservationConfirmationEmail(reservation);
+    }
+  } catch (error) {
+    console.error(
+      "Unable to automatically send paid public reservation confirmation",
+      reservationId,
+      error
+    );
+  }
+}
+
 async function handleStripeWebhookEvent(event) {
   const eventCreatedAt = getStripeEventTimestamp(event);
   const client = await pool.connect();
+  let createdReservationId = null;
 
   try {
     await client.query("BEGIN");
@@ -1235,6 +1523,49 @@ async function handleStripeWebhookEvent(event) {
       case "checkout.session.completed":
       case "checkout.session.async_payment_succeeded": {
         const session = event.data.object;
+        const publicCheckoutResult = await client.query(
+          `
+            SELECT *
+            FROM public_booking_checkouts
+            WHERE stripe_checkout_session_id = $1
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [session.id]
+        );
+
+        if (publicCheckoutResult.rowCount > 0) {
+          const publicCheckout = publicCheckoutResult.rows[0];
+
+          if (session.payment_status === "paid") {
+            createdReservationId = await finalizePublicBookingCheckout(
+              client,
+              publicCheckout,
+              session
+            );
+          } else {
+            await client.query(
+              `
+                UPDATE public_booking_checkouts
+                SET
+                  stripe_payment_intent_id = $2,
+                  payment_status = 'processing',
+                  expires_at = GREATEST(expires_at, NOW() + INTERVAL '7 days'),
+                  updated_at = NOW()
+                WHERE id = $1
+              `,
+              [
+                publicCheckout.id,
+                typeof session.payment_intent === "string"
+                  ? session.payment_intent
+                  : null
+              ]
+            );
+          }
+
+          break;
+        }
+
         const paymentRecord = await findStripePaymentRecordForUpdate(client, {
           checkoutSessionId: session.id,
           paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : null
@@ -1285,6 +1616,38 @@ async function handleStripeWebhookEvent(event) {
       case "checkout.session.async_payment_failed":
       case "checkout.session.expired": {
         const session = event.data.object;
+        const publicCheckoutResult = await client.query(
+          `
+            SELECT id
+            FROM public_booking_checkouts
+            WHERE stripe_checkout_session_id = $1
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [session.id]
+        );
+
+        if (publicCheckoutResult.rowCount > 0) {
+          await client.query(
+            `
+              UPDATE public_booking_checkouts
+              SET
+                payment_status = $2,
+                last_error_message = $3,
+                updated_at = NOW()
+              WHERE id = $1
+            `,
+            [
+              publicCheckoutResult.rows[0].id,
+              event.type === "checkout.session.expired" ? "expired" : "failed",
+              event.type === "checkout.session.expired"
+                ? "Stripe Checkout expired before payment."
+                : "The bank payment failed."
+            ]
+          );
+          break;
+        }
+
         const paymentRecord = await findStripePaymentRecordForUpdate(client, {
           checkoutSessionId: session.id,
           paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : null
@@ -1402,6 +1765,8 @@ async function handleStripeWebhookEvent(event) {
   } finally {
     client.release();
   }
+
+  return createdReservationId;
 }
 
 async function syncOpenStripePayments() {
@@ -1618,9 +1983,17 @@ function sumReservationTotals(siteStays) {
       discountPrice:
         summary.discountPrice !== null && segment.discountPrice !== null
           ? summary.discountPrice + segment.discountPrice
+          : null,
+      chargeableNights:
+        summary.chargeableNights !== null &&
+        segment.numberOfNights !== null &&
+        segment.numberOfNights !== undefined &&
+        calculateChargeableNights(Number(segment.numberOfNights)) !== null
+          ? summary.chargeableNights +
+            calculateChargeableNights(Number(segment.numberOfNights))
           : null
     }),
-    { normalPrice: 0, discountPrice: 0 }
+    { normalPrice: 0, discountPrice: 0, chargeableNights: 0 }
   );
 }
 
@@ -1631,6 +2004,10 @@ function parseAvailabilityFilters(body) {
   const riverfrontOnly = Boolean(body.riverfrontOnly);
   const rigLengthFeet = body.rigLengthFeet ? Number(body.rigLengthFeet) : null;
   const isOversizedFifthWheel = body.rvKind === "5th wheel" && rigLengthFeet > 43;
+  const excludeSite23ForDriverSlide =
+    Boolean(body.isPublicGuestSearch) &&
+    Boolean(body.slideDriverSide) &&
+    rigLengthFeet > 25;
 
   if (!arrivalDate || !leaveDate || arrivalDate >= leaveDate) {
     return { error: "Arrival date must be before leave date." };
@@ -1641,7 +2018,8 @@ function parseAvailabilityFilters(body) {
     leaveDate,
     minSizeFeet,
     riverfrontOnly,
-    isOversizedFifthWheel
+    isOversizedFifthWheel,
+    excludeSite23ForDriverSlide
   };
 }
 
@@ -1652,6 +2030,10 @@ function parseFlexibleAvailabilityFilters(body) {
   const riverfrontOnly = Boolean(body.riverfrontOnly);
   const rigLengthFeet = body.rigLengthFeet ? Number(body.rigLengthFeet) : null;
   const isOversizedFifthWheel = body.rvKind === "5th wheel" && rigLengthFeet > 43;
+  const excludeSite23ForDriverSlide =
+    Boolean(body.isPublicGuestSearch) &&
+    Boolean(body.slideDriverSide) &&
+    rigLengthFeet > 25;
   const stayLengthValue = String(body.stayLengthRange || "");
   const stayLengthMatch = /^(\d+)-(\d+)$/.exec(stayLengthValue);
 
@@ -1677,7 +2059,8 @@ function parseFlexibleAvailabilityFilters(body) {
     riverfrontOnly,
     minNights,
     maxNights,
-    isOversizedFifthWheel
+    isOversizedFifthWheel,
+    excludeSite23ForDriverSlide
   };
 }
 
@@ -1752,22 +2135,24 @@ async function buildFlexibleAvailabilitySearchResult({
   const staysBySite = new Map();
 
   for (const site of sites) {
-    staysBySite.set(site.id, []);
+    staysBySite.set(String(site.id), []);
   }
 
   for (const stay of contextStays) {
-    if (!staysBySite.has(stay.site_id)) {
+    const siteId = String(stay.site_id);
+
+    if (!staysBySite.has(siteId)) {
       continue;
     }
 
-    staysBySite.get(stay.site_id).push(stay);
+    staysBySite.get(siteId).push(stay);
   }
 
   const matches = sites
     .map((site) => {
       const openWindows = buildFlexibleOpenWindows(
         site,
-        staysBySite.get(site.id) || [],
+        staysBySite.get(String(site.id)) || [],
         flexibleStartDate,
         flexibleEndDate,
         minNights,
@@ -1879,6 +2264,16 @@ async function loadConflictingStays(siteIds, arrivalDate, leaveDate, excludedRes
         AND arrival_date < $3
         AND leave_date > $2
         ${excludeClause}
+
+      UNION ALL
+
+      SELECT site_id, arrival_date::text, leave_date::text
+      FROM public_booking_checkouts
+      WHERE site_id = ANY($1::bigint[])
+        AND arrival_date < $3
+        AND leave_date > $2
+        AND payment_status IN ('open', 'processing', 'paid')
+        AND expires_at > NOW()
       ORDER BY arrival_date
     `,
     values
@@ -1887,8 +2282,47 @@ async function loadConflictingStays(siteIds, arrivalDate, leaveDate, excludedRes
   return result.rows;
 }
 
-async function findReservationOverlap(queryable, normalizedSegments, excludedReservationId = null) {
+async function findPublicCheckoutOverlap(
+  queryable,
+  { siteId, arrivalDate, leaveDate },
+  excludedCheckoutId = null
+) {
+  const values = [siteId, arrivalDate, leaveDate];
+  let excludeClause = "";
+
+  if (excludedCheckoutId) {
+    values.push(excludedCheckoutId);
+    excludeClause = "AND id <> $4";
+  }
+
+  const result = await queryable.query(
+    `
+      SELECT id
+      FROM public_booking_checkouts
+      WHERE site_id = $1
+        AND arrival_date < $3
+        AND leave_date > $2
+        AND payment_status IN ('open', 'processing', 'paid')
+        AND expires_at > NOW()
+        ${excludeClause}
+      LIMIT 1
+    `,
+    values
+  );
+
+  return result.rowCount > 0;
+}
+
+async function findReservationOverlap(
+  queryable,
+  normalizedSegments,
+  excludedReservationId = null,
+  excludedCheckoutId = null
+) {
   for (const segment of normalizedSegments) {
+    await queryable.query(`SELECT pg_advisory_xact_lock($1)`, [
+      Number(segment.siteId)
+    ]);
     const values = [segment.siteId, segment.arrivalDate, segment.leaveDate];
     let excludeClause = "";
 
@@ -1923,6 +2357,23 @@ async function findReservationOverlap(queryable, normalizedSegments, excludedRes
         message: `Site ${overlap.site_number} is already booked from ${formatDisplayDate(
           overlap.arrival_date
         )} to ${formatDisplayDate(overlap.leave_date)}.`
+      };
+    }
+
+    if (
+      await findPublicCheckoutOverlap(
+        queryable,
+        segment,
+        excludedCheckoutId
+      )
+    ) {
+      const siteResult = await queryable.query(
+        `SELECT site_number FROM rv_sites WHERE id = $1`,
+        [segment.siteId]
+      );
+
+      return {
+        message: `Site ${siteResult.rows[0]?.site_number || segment.siteId} is currently being held while another guest completes payment.`
       };
     }
   }
@@ -2004,6 +2455,8 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.motorhome_class_a,
         r.motorhome_class_c,
         r.motorhome_with_tow,
+        r.slide_driver_side,
+        r.slide_passenger_side,
         r.rig_length_feet,
         r.amount_paid,
         r.notes,
@@ -2226,6 +2679,8 @@ async function fetchReservationList(queryable) {
         r.motorhome_class_a,
         r.motorhome_class_c,
         r.motorhome_with_tow,
+        r.slide_driver_side,
+        r.slide_passenger_side,
         r.rig_length_feet,
         r.amount_paid,
         r.notes,
@@ -2428,38 +2883,24 @@ async function findGuestCustomerByEmail(emailValue) {
 
 async function authenticateGuestReservation(reservationId, credentials) {
   const session = readGuestToken(credentials?.accessToken, "guest_access");
+  const verifiedEmail = String(session?.email || "").trim().toLowerCase();
 
-  if (!session?.customerId) {
+  if (!verifiedEmail || !verifiedEmail.includes("@")) {
     return null;
   }
 
   const customerResult = await pool.query(
     `
-      SELECT id, first_name, last_name, email, phone_number
-      FROM customers
-      WHERE id = $1
+      SELECT c.id, c.first_name, c.last_name, c.email, c.phone_number
+      FROM reservations r
+      JOIN customers c ON c.id = r.customer_id
+      WHERE r.id = $1
+        AND LOWER(TRIM(c.email)) = $2
       LIMIT 1
     `,
-    [session.customerId]
+    [reservationId, verifiedEmail]
   );
   const customer = customerResult.rows[0] || null;
-
-  if (!customer) {
-    return null;
-  }
-
-  const ownershipResult = await pool.query(
-    `
-      SELECT id
-      FROM reservations
-      WHERE id = $1 AND customer_id = $2
-    `,
-    [reservationId, customer.id]
-  );
-
-  if (ownershipResult.rowCount === 0) {
-    return null;
-  }
 
   return customer;
 }
@@ -2478,6 +2919,8 @@ function sanitizeGuestReservation(reservation) {
     motorhome_class_a: Boolean(reservation.motorhome_class_a),
     motorhome_class_c: Boolean(reservation.motorhome_class_c),
     motorhome_with_tow: Boolean(reservation.motorhome_with_tow),
+    slide_driver_side: Boolean(reservation.slide_driver_side),
+    slide_passenger_side: Boolean(reservation.slide_passenger_side),
     rig_length_feet: reservation.rig_length_feet,
     depositAmount: reservation.depositAmount,
     cardDepositAmount: reservation.cardDepositAmount,
@@ -2812,7 +3255,9 @@ app.post("/api/availability/search", async (req, res) => {
 
     res.json({
       numberOfNights: result.numberOfNights,
-      directMatches: result.directMatches
+      directMatches: filters.excludeSite23ForDriverSlide
+        ? result.directMatches.filter((site) => String(site.siteNumber) !== "23")
+        : result.directMatches
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -2844,7 +3289,9 @@ app.post("/api/availability/flexible-search", async (req, res) => {
     });
 
     res.json({
-      matches: result.matches
+      matches: filters.excludeSite23ForDriverSlide
+        ? result.matches.filter((site) => String(site.siteNumber) !== "23")
+        : result.matches
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -2867,7 +3314,13 @@ app.post("/api/availability/plan", async (req, res) => {
   }
 
   try {
-    const sites = await loadCandidateSites(filters.minSizeFeet, filters.riverfrontOnly);
+    const candidateSites = await loadCandidateSites(
+      filters.minSizeFeet,
+      filters.riverfrontOnly
+    );
+    const sites = filters.excludeSite23ForDriverSlide
+      ? candidateSites.filter((site) => String(site.site_number) !== "23")
+      : candidateSites;
     const conflictingStays = await loadConflictingStays(
       sites.map((site) => site.id),
       filters.arrivalDate,
@@ -3011,22 +3464,13 @@ app.post("/api/guest/reservations/sign-in", async (req, res) => {
 
       accessSession = {
         type: "guest_access",
-        customerId: verifiedCustomer.id,
         email: challenge.email,
         expiresAt: Date.now() + 12 * 60 * 60 * 1000
       };
     }
 
-    const customerResult = await pool.query(
-      `
-        SELECT id, first_name, last_name, email, phone_number
-        FROM customers
-        WHERE id = $1
-        LIMIT 1
-      `,
-      [accessSession.customerId]
-    );
-    const customer = customerResult.rows[0] || null;
+    const verifiedEmail = String(accessSession.email || "").trim().toLowerCase();
+    const customer = await findGuestCustomerByEmail(verifiedEmail);
 
     if (!customer) {
       return res.status(401).json({
@@ -3037,12 +3481,13 @@ app.post("/api/guest/reservations/sign-in", async (req, res) => {
     await syncOpenStripePayments();
     const reservationsResult = await pool.query(
       `
-        SELECT id
-        FROM reservations
-        WHERE customer_id = $1
-        ORDER BY booked_date DESC, id DESC
+        SELECT r.id
+        FROM reservations r
+        JOIN customers c ON c.id = r.customer_id
+        WHERE LOWER(TRIM(c.email)) = $1
+        ORDER BY r.booked_date DESC, r.id DESC
       `,
-      [customer.id]
+      [verifiedEmail]
     );
     const reservations = await Promise.all(
       reservationsResult.rows.map((row) => fetchReservationDetails(pool, row.id))
@@ -3054,7 +3499,10 @@ app.post("/api/guest/reservations/sign-in", async (req, res) => {
         lastName: customer.last_name,
         email: customer.email
       },
-      accessToken: signGuestToken(accessSession),
+      accessToken: signGuestToken({
+        ...accessSession,
+        email: verifiedEmail
+      }),
       reservations: reservations.filter(Boolean).map(sanitizeGuestReservation)
     });
   } catch (error) {
@@ -3062,10 +3510,14 @@ app.post("/api/guest/reservations/sign-in", async (req, res) => {
   }
 });
 
-app.post("/api/guest/reservations", async (req, res) => {
+app.post("/api/guest/booking-checkouts", async (req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
   const firstName = String(req.body.firstName || "").trim();
   const lastName = String(req.body.lastName || "").trim();
-  const email = String(req.body.email || "").trim();
+  const email = String(req.body.email || "").trim().toLowerCase();
   const phoneNumber = normalizeGuestPhone(req.body.phoneNumber);
   const arrivalDate = req.body.arrivalDate;
   const leaveDate = req.body.leaveDate;
@@ -3075,7 +3527,21 @@ app.post("/api/guest/reservations", async (req, res) => {
   const allowedRvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
   const rvKind = allowedRvKinds.includes(req.body.rvKind) ? req.body.rvKind : "";
   const numberOfNights = nightsBetween(arrivalDate, leaveDate);
-  const applyDiscountPricing = discounts.length > 0;
+  const motorhomeWithTow = rvKind === "motor home" && Boolean(req.body.motorhomeWithTow);
+  const towVehicleLengthFeet = motorhomeWithTow
+    ? Number(req.body.towVehicleLengthFeet)
+    : null;
+  const towVehicleType = String(req.body.towVehicleType || "");
+  const paymentMethodType = req.body.paymentMethod === "bank"
+    ? "us_bank_account"
+    : req.body.paymentMethod === "card"
+      ? "card"
+      : "";
+  const baseUrl = String(req.body.baseUrl || "").trim().replace(/\/+$/, "");
+  const allowedOrigins = String(process.env.CLIENT_ORIGIN || "")
+    .split(",")
+    .map((value) => value.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
 
   if (!firstName || !lastName || phoneNumber.length !== 10) {
     return res.status(400).json({ message: "Name and a valid phone number are required." });
@@ -3099,6 +3565,510 @@ app.post("/api/guest/reservations", async (req, res) => {
     return res.status(400).json({ message: "Site and rig details are required." });
   }
 
+  if (!Boolean(req.body.siteReassignmentAccepted)) {
+    return res.status(400).json({
+      message: "Accept the site reassignment policy before continuing."
+    });
+  }
+
+  if (!paymentMethodType) {
+    return res.status(400).json({ message: "Choose bank account or card for the deposit." });
+  }
+
+  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
+    return res.status(400).json({ message: "A valid site URL is required for Stripe Checkout." });
+  }
+
+  if (allowedOrigins.length && !allowedOrigins.includes(baseUrl)) {
+    return res.status(400).json({ message: "That Stripe return URL is not allowed." });
+  }
+
+  if (rvKind === "5th wheel" && rigLengthFeet > 43) {
+    return res.status(400).json({
+      message: "We do not have room for a fifth wheel over 43 feet."
+    });
+  }
+
+  const allowedTowVehicleTypes =
+    rvKind === "5th wheel"
+      ? ["truck_short_bed", "truck_long_bed", "dually"]
+      : rvKind === "camper" || rvKind === "trailer"
+        ? ["suv", "truck_short_bed", "truck_long_bed", "dually"]
+        : [];
+
+  if (allowedTowVehicleTypes.length && !allowedTowVehicleTypes.includes(towVehicleType)) {
+    return res.status(400).json({ message: "Choose the vehicle used with your RV." });
+  }
+
+  if (
+    motorhomeWithTow &&
+    (!Number.isFinite(towVehicleLengthFeet) || towVehicleLengthFeet <= 0)
+  ) {
+    return res.status(400).json({
+      message: "Tow vehicle length is required for a motor home with tow."
+    });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `
+        UPDATE public_booking_checkouts
+        SET
+          payment_status = 'expired',
+          last_error_message = 'Stripe Checkout expired before payment.',
+          updated_at = NOW()
+        WHERE payment_status = 'open'
+          AND expires_at <= NOW()
+      `
+    );
+    const siteResult = await client.query(
+      `
+        SELECT id, site_number, size_feet, is_on_river, river_category, is_big_rig
+        FROM rv_sites
+        WHERE id = $1
+        FOR SHARE
+      `,
+      [siteId]
+    );
+
+    if (siteResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "That site is no longer available." });
+    }
+
+    const site = siteResult.rows[0];
+    const towVehicleAdditionalFeet = {
+      suv: 10,
+      truck_short_bed: 15,
+      truck_long_bed: 18,
+      dually: 18
+    }[towVehicleType] ?? null;
+    const requiredSiteLength = motorhomeWithTow
+      ? rigLengthFeet + towVehicleLengthFeet + 3
+      : allowedTowVehicleTypes.length && towVehicleAdditionalFeet !== null
+        ? rigLengthFeet + towVehicleAdditionalFeet
+        : rigLengthFeet;
+
+    if (
+      Boolean(req.body.slideDriverSide) &&
+      rigLengthFeet > 25 &&
+      String(site.site_number) === "23"
+    ) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "Site 23 cannot accommodate a rig over 25 feet with a driver-side slide."
+      });
+    }
+
+    if (site.size_feet < requiredSiteLength) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "That site is too short for the entered RV setup."
+      });
+    }
+
+    const segment = { siteId, arrivalDate, leaveDate };
+    const overlap = await findReservationOverlap(client, [segment]);
+    const checkoutOverlap = await findPublicCheckoutOverlap(client, segment);
+
+    if (overlap || checkoutOverlap) {
+      await client.query("ROLLBACK");
+      return res.status(409).json(
+        overlap || { message: "That site is currently being held by another checkout." }
+      );
+    }
+
+    const pricingLookup = buildPricingRuleLookup(await loadPricingRules());
+    const stayPricing = getPricingForSiteAndNights(site, numberOfNights, pricingLookup);
+    const depositPricing = getPricingForSiteAndNights(site, 1, pricingLookup);
+    const applyDiscountPricing = discounts.length > 0;
+    const totalPrice = applyDiscountPricing
+      ? stayPricing.discountPrice ?? stayPricing.normalPrice
+      : stayPricing.normalPrice ?? stayPricing.discountPrice;
+    const oneNightDeposit = applyDiscountPricing
+      ? depositPricing.discountPrice ?? depositPricing.normalPrice
+      : depositPricing.normalPrice ?? depositPricing.discountPrice;
+
+    if (totalPrice === null || oneNightDeposit === null) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "Online pricing is not configured for this stay. Please call 541-295-1269."
+      });
+    }
+
+    const baseDepositAmount = Math.min(oneNightDeposit, totalPrice);
+    const checkoutAmount = paymentMethodType === "card"
+      ? getCardPrice(baseDepositAmount)
+      : baseDepositAmount;
+    const amountCents = toAmountCents(checkoutAmount);
+    const checkoutToken = randomBytes(24).toString("hex");
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    const bookingPayload = {
+      firstName,
+      lastName,
+      email,
+      phoneNumber,
+      arrivalDate,
+      leaveDate,
+      siteId,
+      rvKind,
+      motorhomeClassA: rvKind === "motor home" && Boolean(req.body.motorhomeClassA),
+      motorhomeClassC: rvKind === "motor home" && Boolean(req.body.motorhomeClassC),
+      motorhomeWithTow,
+      towVehicleLengthFeet,
+      towVehicleType,
+      slideDriverSide: Boolean(req.body.slideDriverSide),
+      slidePassengerSide: Boolean(req.body.slidePassengerSide),
+      rigLengthFeet,
+      discounts,
+      totalPrice,
+      baseDepositAmount,
+      siteNumber: site.site_number
+    };
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      payment_method_types: [paymentMethodType],
+      customer_email: email,
+      client_reference_id: checkoutToken,
+      success_url: `${baseUrl}/?booking_checkout=return&checkout_token=${checkoutToken}&session_id={CHECKOUT_SESSION_ID}#availability`,
+      cancel_url: `${baseUrl}/?booking_checkout=cancel&checkout_token=${checkoutToken}#availability`,
+      expires_at: Math.floor(expiresAt.getTime() / 1000),
+      metadata: {
+        public_booking_checkout_token: checkoutToken,
+        payment_method_type: paymentMethodType
+      },
+      payment_intent_data: {
+        receipt_email: email,
+        metadata: {
+          public_booking_checkout_token: checkoutToken,
+          payment_method_type: paymentMethodType
+        }
+      },
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: "usd",
+            unit_amount: amountCents,
+            product_data: {
+              name: `Riverpark RV Resort deposit — Site ${site.site_number}`,
+              description: `${formatDisplayDate(arrivalDate)} to ${formatDisplayDate(leaveDate)}`
+            }
+          }
+        }
+      ]
+    });
+
+    await client.query(
+      `
+        INSERT INTO public_booking_checkouts (
+          checkout_token,
+          stripe_checkout_session_id,
+          payment_method_type,
+          payment_status,
+          amount_cents,
+          base_deposit_amount,
+          site_id,
+          arrival_date,
+          leave_date,
+          booking_payload,
+          expires_at
+        )
+        VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8, $9::jsonb, $10)
+      `,
+      [
+        checkoutToken,
+        session.id,
+        paymentMethodType,
+        amountCents,
+        baseDepositAmount,
+        siteId,
+        arrivalDate,
+        leaveDate,
+        JSON.stringify(bookingPayload),
+        expiresAt.toISOString()
+      ]
+    );
+    await client.query("COMMIT");
+
+    res.status(201).json({
+      checkoutToken,
+      checkoutUrl: session.url,
+      paymentMethod: paymentMethodType === "card" ? "card" : "bank",
+      depositAmount: baseDepositAmount,
+      cardDepositAmount: getCardPrice(baseDepositAmount),
+      expiresAt: expiresAt.toISOString()
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.code === "23P01") {
+      return res.status(409).json({
+        message: "That site is currently being held by another checkout. Please choose another site."
+      });
+    }
+
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/api/guest/booking-checkouts/:checkoutToken", async (req, res) => {
+  const checkoutToken = String(req.params.checkoutToken || "").trim();
+
+  if (!checkoutToken) {
+    return res.status(400).json({ message: "A checkout token is required." });
+  }
+
+  try {
+    const initialResult = await pool.query(
+      `
+        SELECT stripe_checkout_session_id, payment_status
+        FROM public_booking_checkouts
+        WHERE checkout_token = $1
+        LIMIT 1
+      `,
+      [checkoutToken]
+    );
+    const initialCheckout = initialResult.rows[0] || null;
+
+    if (
+      stripe &&
+      initialCheckout?.stripe_checkout_session_id &&
+      ["open", "processing", "paid"].includes(initialCheckout.payment_status)
+    ) {
+      try {
+        const session = await stripe.checkout.sessions.retrieve(
+          initialCheckout.stripe_checkout_session_id
+        );
+
+        if (session.payment_status === "paid") {
+          const client = await pool.connect();
+          let reservationId = null;
+
+          try {
+            await client.query("BEGIN");
+            const lockedCheckoutResult = await client.query(
+              `
+                SELECT *
+                FROM public_booking_checkouts
+                WHERE checkout_token = $1
+                LIMIT 1
+                FOR UPDATE
+              `,
+              [checkoutToken]
+            );
+
+            if (lockedCheckoutResult.rowCount > 0) {
+              reservationId = await finalizePublicBookingCheckout(
+                client,
+                lockedCheckoutResult.rows[0],
+                session
+              );
+            }
+
+            await client.query("COMMIT");
+          } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+          } finally {
+            client.release();
+          }
+
+          await sendPublicBookingConfirmation(reservationId);
+        } else if (session.status === "complete") {
+          await pool.query(
+            `
+              UPDATE public_booking_checkouts
+              SET
+                payment_status = 'processing',
+                stripe_payment_intent_id = $2,
+                expires_at = GREATEST(expires_at, NOW() + INTERVAL '7 days'),
+                updated_at = NOW()
+              WHERE checkout_token = $1
+                AND payment_status = 'open'
+            `,
+            [
+              checkoutToken,
+              typeof session.payment_intent === "string"
+                ? session.payment_intent
+                : null
+            ]
+          );
+        }
+      } catch (error) {
+        console.error("Unable to refresh public Stripe Checkout", checkoutToken, error);
+      }
+    }
+
+    await pool.query(
+      `
+        UPDATE public_booking_checkouts
+        SET
+          payment_status = 'expired',
+          last_error_message = 'Stripe Checkout expired before payment.',
+          updated_at = NOW()
+        WHERE checkout_token = $1
+          AND payment_status = 'open'
+          AND expires_at <= NOW()
+      `,
+      [checkoutToken]
+    );
+    const result = await pool.query(
+      `
+        SELECT
+          checkout_token,
+          payment_method_type,
+          payment_status,
+          amount_cents,
+          reservation_id,
+          last_error_message,
+          expires_at,
+          completed_at
+        FROM public_booking_checkouts
+        WHERE checkout_token = $1
+        LIMIT 1
+      `,
+      [checkoutToken]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Booking checkout not found." });
+    }
+
+    const checkout = result.rows[0];
+    const reservation = checkout.reservation_id
+      ? await fetchReservationDetails(pool, checkout.reservation_id)
+      : null;
+    const statusMessages = {
+      open: "Stripe Checkout is waiting for payment.",
+      processing: "Your bank payment is processing. Your site remains held.",
+      paid: "Payment was received and your reservation is being created.",
+      completed: reservation
+        ? `Payment received. Reservation #${reservation.id} is confirmed.`
+        : "Payment received. Your reservation is confirmed.",
+      failed: checkout.last_error_message || "The payment failed. Please try again.",
+      expired: "Stripe Checkout expired before payment. No reservation was created.",
+      conflict:
+        checkout.last_error_message ||
+        "Payment was received, but the site became unavailable. Please call 541-295-1269."
+    };
+
+    res.json({
+      checkoutToken: checkout.checkout_token,
+      status: checkout.payment_status,
+      message: statusMessages[checkout.payment_status] || "Checking payment status.",
+      paymentMethod:
+        checkout.payment_method_type === "us_bank_account" ? "bank" : "card",
+      amount: (Number(checkout.amount_cents) / 100).toFixed(2),
+      reservation: reservation ? sanitizeGuestReservation(reservation) : null,
+      expiresAt: checkout.expires_at,
+      completedAt: checkout.completed_at
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/guest/reservations/legacy-pending", async (req, res) => {
+  const firstName = String(req.body.firstName || "").trim();
+  const lastName = String(req.body.lastName || "").trim();
+  const email = String(req.body.email || "").trim();
+  const phoneNumber = normalizeGuestPhone(req.body.phoneNumber);
+  const arrivalDate = req.body.arrivalDate;
+  const leaveDate = req.body.leaveDate;
+  const siteId = Number(req.body.siteId);
+  const rigLengthFeet = Number(req.body.rigLengthFeet);
+  const motorhomeWithTow =
+    req.body.rvKind === "motor home" && Boolean(req.body.motorhomeWithTow);
+  const towVehicleLengthFeet = motorhomeWithTow
+    ? Number(req.body.towVehicleLengthFeet)
+    : null;
+  const towVehicleType = String(req.body.towVehicleType || "");
+  const discounts = Array.isArray(req.body.discounts) ? req.body.discounts : [];
+  const allowedRvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
+  const rvKind = allowedRvKinds.includes(req.body.rvKind) ? req.body.rvKind : "";
+  const numberOfNights = nightsBetween(arrivalDate, leaveDate);
+  const applyDiscountPricing = discounts.length > 0;
+  const siteReassignmentAccepted = Boolean(
+    req.body.siteReassignmentAccepted
+  );
+
+  if (!firstName || !lastName || phoneNumber.length !== 10) {
+    return res.status(400).json({ message: "Name and a valid phone number are required." });
+  }
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ message: "A valid email is required." });
+  }
+
+  if (!arrivalDate || !leaveDate || arrivalDate >= leaveDate || numberOfNights <= 0) {
+    return res.status(400).json({ message: "Choose valid arrival and departure dates." });
+  }
+
+  if (numberOfNights > 14) {
+    return res.status(400).json({
+      message: "Stays longer than two weeks must be reserved by calling 541-295-1269."
+    });
+  }
+
+  if (!siteId || !rvKind || !Number.isFinite(rigLengthFeet) || rigLengthFeet <= 0) {
+    return res.status(400).json({ message: "Site and rig details are required." });
+  }
+
+  if (!siteReassignmentAccepted) {
+    return res.status(400).json({
+      message: "Accept the site reassignment policy before continuing."
+    });
+  }
+
+  if (rvKind === "5th wheel" && rigLengthFeet > 43) {
+    return res.status(400).json({
+      message: "We do not have room for a fifth wheel over 43 feet."
+    });
+  }
+
+  const allowedTowVehicleTypes =
+    rvKind === "5th wheel"
+      ? ["truck_short_bed", "truck_long_bed", "dually"]
+      : rvKind === "camper" || rvKind === "trailer"
+      ? ["suv", "truck_short_bed", "truck_long_bed", "dually"]
+      : [];
+
+  if (allowedTowVehicleTypes.length && !allowedTowVehicleTypes.includes(towVehicleType)) {
+    return res.status(400).json({
+      message: "Choose the vehicle used with your RV."
+    });
+  }
+
+  const towVehicleAdditionalFeet = {
+    suv: 10,
+    truck_short_bed: 15,
+    truck_long_bed: 18,
+    dually: 18
+  }[towVehicleType] ?? null;
+  const towableRequiredSiteLength =
+    allowedTowVehicleTypes.length && towVehicleAdditionalFeet !== null
+      ? rigLengthFeet + towVehicleAdditionalFeet
+      : null;
+
+  if (
+    motorhomeWithTow &&
+    (!Number.isFinite(towVehicleLengthFeet) || towVehicleLengthFeet <= 0)
+  ) {
+    return res.status(400).json({
+      message: "Tow vehicle length is required for a motor home with tow."
+    });
+  }
+
+  const motorhomeRequiredSiteLength = motorhomeWithTow
+    ? rigLengthFeet + towVehicleLengthFeet + 3
+    : null;
+
   const client = await pool.connect();
 
   try {
@@ -3119,9 +4089,32 @@ app.post("/api/guest/reservations", async (req, res) => {
 
     const site = siteResult.rows[0];
 
-    if (site.size_feet < Math.max(1, rigLengthFeet - 5)) {
+    if (
+      Boolean(req.body.slideDriverSide) &&
+      rigLengthFeet > 25 &&
+      String(site.site_number) === "23"
+    ) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ message: "That site does not fit the entered rig length." });
+      return res.status(400).json({
+        message: "Site 23 cannot accommodate a rig over 25 feet with a driver-side slide."
+      });
+    }
+
+    if (motorhomeWithTow && site.size_feet < motorhomeRequiredSiteLength) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "That site is too short for the motor home, tow vehicle, and required extra room."
+      });
+    }
+
+    if (
+      towableRequiredSiteLength !== null &&
+      site.size_feet < towableRequiredSiteLength
+    ) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "That site is too short for the RV and tow vehicle."
+      });
     }
 
     const segment = { siteId, arrivalDate, leaveDate };
@@ -3172,6 +4165,24 @@ app.post("/api/guest/reservations", async (req, res) => {
       customer = customerResult.rows[0];
     }
 
+    const towVehicleNote = motorhomeWithTow
+      ? ` Tow vehicle length: ${towVehicleLengthFeet} ft.`
+      : "";
+    const towVehicleTypeLabels = {
+      suv: "SUV",
+      truck_short_bed: "Truck — short bed",
+      truck_long_bed: "Truck — long bed",
+      dually: "Dually"
+    };
+    const towVehicleTypeNote = towVehicleTypeLabels[towVehicleType]
+      ? ` Tow vehicle: ${towVehicleTypeLabels[towVehicleType]}.`
+      : "";
+    const discountNote = applyDiscountPricing
+      ? ` Requested discounts: ${discounts.join(", ")}.`
+      : "";
+    const publicReservationNotes =
+      `Created through the public website. Site reassignment policy accepted.${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
+
     const reservationResult = await client.query(
       `
         INSERT INTO reservations (
@@ -3186,11 +4197,13 @@ app.post("/api/guest/reservations", async (req, res) => {
           motorhome_class_a,
           motorhome_class_c,
           motorhome_with_tow,
+          slide_driver_side,
+          slide_passenger_side,
           rig_length_feet,
           amount_paid,
           notes
         )
-        VALUES ($1, CURRENT_DATE, 'pending', 'standard', 'standard', $2, $3, $4, $5, $6, $7, $8, 0, $9)
+        VALUES ($1, CURRENT_DATE, 'pending', 'standard', 'standard', $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11)
         RETURNING id
       `,
       [
@@ -3200,11 +4213,11 @@ app.post("/api/guest/reservations", async (req, res) => {
         rvKind,
         rvKind === "motor home" ? Boolean(req.body.motorhomeClassA) : false,
         rvKind === "motor home" ? Boolean(req.body.motorhomeClassC) : false,
-        rvKind === "motor home" ? Boolean(req.body.motorhomeWithTow) : false,
+        motorhomeWithTow,
+        Boolean(req.body.slideDriverSide),
+        Boolean(req.body.slidePassengerSide),
         rigLengthFeet,
-        applyDiscountPricing
-          ? `Created through the public website. Requested discounts: ${discounts.join(", ")}.`
-          : "Created through the public website."
+        publicReservationNotes
       ]
     );
     const reservationId = reservationResult.rows[0].id;
@@ -3232,6 +4245,93 @@ app.post("/api/guest/reservations", async (req, res) => {
     res.status(500).json({ message: error.message });
   } finally {
     client.release();
+  }
+});
+
+app.post("/api/guest/reservations/:id/cancel", async (req, res) => {
+  const reservationId = Number(req.params.id);
+
+  if (!reservationId) {
+    return res.status(400).json({ message: "Reservation is required." });
+  }
+
+  try {
+    const customer = await authenticateGuestReservation(
+      reservationId,
+      req.body.credentials
+    );
+
+    if (!customer) {
+      return res.status(401).json({
+        message: "Your booking sign-in has expired or is invalid."
+      });
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+      const reservationResult = await client.query(
+        `
+          SELECT id, status
+          FROM reservations
+          WHERE id = $1
+          FOR UPDATE
+        `,
+        [reservationId]
+      );
+      const reservation = reservationResult.rows[0] || null;
+
+      if (!reservation) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ message: "Reservation not found." });
+      }
+
+      if (reservation.status !== "canceled") {
+        const staysResult = await client.query(
+          `
+            SELECT site_id, arrival_date::text, leave_date::text
+            FROM reservation_site_stays
+            WHERE reservation_id = $1
+            ORDER BY arrival_date
+          `,
+          [reservationId]
+        );
+        const archivedStays = staysResult.rows.map((stay) => ({
+          siteId: Number(stay.site_id),
+          arrivalDate: stay.arrival_date,
+          leaveDate: stay.leave_date
+        }));
+
+        await client.query(
+          `
+            UPDATE reservations
+            SET
+              status = 'canceled',
+              canceled_at = NOW(),
+              canceled_site_stays = $2::jsonb
+            WHERE id = $1
+          `,
+          [reservationId, JSON.stringify(archivedStays)]
+        );
+        await client.query(
+          `DELETE FROM reservation_site_stays WHERE reservation_id = $1`,
+          [reservationId]
+        );
+      }
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const canceledReservation = await fetchReservationDetails(pool, reservationId);
+    res.json(sanitizeGuestReservation(canceledReservation));
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 
@@ -3265,6 +4365,18 @@ app.post("/api/guest/reservations/:id/availability-preview", async (req, res) =>
     }
 
     if (
+      Boolean(req.body.slideDriverSide) &&
+      rigLengthFeet > 25 &&
+      reservation.siteStays.some(
+        (segment) => String(segment.site_number) === "23"
+      )
+    ) {
+      return res.status(400).json({
+        message: "Site 23 cannot accommodate a rig over 25 feet with a driver-side slide."
+      });
+    }
+
+    if (
       requestedSiteIds.length !== currentSiteIds.length ||
       requestedSiteIds.some((siteId, index) => siteId !== currentSiteIds[index])
     ) {
@@ -3273,7 +4385,6 @@ app.post("/api/guest/reservations/:id/availability-preview", async (req, res) =>
       });
     }
 
-    const minSizeFeet = Math.max(1, rigLengthFeet - 5);
     const stays = [];
 
     for (const [index, stay] of requestedStays.entries()) {
@@ -3300,7 +4411,7 @@ app.post("/api/guest/reservations/:id/availability-preview", async (req, res) =>
       const searchResult = await buildAvailabilitySearchResult({
         arrivalDate,
         leaveDate,
-        minSizeFeet,
+        minSizeFeet: rigLengthFeet,
         excludedReservationId: reservationId
       });
       const currentSiteContext = searchResult.bookingContext.get(siteId) || {
@@ -3364,6 +4475,18 @@ app.put("/api/guest/reservations/:id", async (req, res) => {
     }
 
     if (
+      Boolean(req.body.slideDriverSide) &&
+      rigLengthFeet > 25 &&
+      reservation.siteStays.some(
+        (segment) => String(segment.site_number) === "23"
+      )
+    ) {
+      return res.status(400).json({
+        message: "Site 23 cannot accommodate a rig over 25 feet with a driver-side slide."
+      });
+    }
+
+    if (
       requestedSiteIds.length !== currentSiteIds.length ||
       requestedSiteIds.some((siteId, index) => siteId !== currentSiteIds[index])
     ) {
@@ -3409,7 +4532,9 @@ app.put("/api/guest/reservations/:id", async (req, res) => {
             motorhome_class_a = $3,
             motorhome_class_c = $4,
             motorhome_with_tow = $5,
-            rig_length_feet = $6
+            slide_driver_side = $6,
+            slide_passenger_side = $7,
+            rig_length_feet = $8
           WHERE id = $1
         `,
         [
@@ -3418,6 +4543,8 @@ app.put("/api/guest/reservations/:id", async (req, res) => {
           rvKind === "motor home" ? Boolean(req.body.motorhomeClassA) : false,
           rvKind === "motor home" ? Boolean(req.body.motorhomeClassC) : false,
           rvKind === "motor home" ? Boolean(req.body.motorhomeWithTow) : false,
+          Boolean(req.body.slideDriverSide),
+          Boolean(req.body.slidePassengerSide),
           rigLengthFeet
         ]
       );
@@ -3457,6 +4584,121 @@ app.put("/api/guest/reservations/:id", async (req, res) => {
       });
     }
 
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/guest/reservations/:id/bank-checkouts", async (req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  const reservationId = Number(req.params.id);
+  const baseUrl = String(req.body.baseUrl || "").trim().replace(/\/+$/, "");
+
+  if (!reservationId) {
+    return res.status(400).json({ message: "Reservation is required." });
+  }
+
+  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
+    return res.status(400).json({ message: "A valid site URL is required for Stripe Checkout." });
+  }
+
+  if (allowedOrigins.length && !allowedOrigins.includes(baseUrl)) {
+    return res.status(400).json({ message: "That Stripe return URL is not allowed." });
+  }
+
+  try {
+    const customer = await authenticateGuestReservation(
+      reservationId,
+      req.body.credentials
+    );
+
+    if (!customer) {
+      return res.status(401).json({
+        message: "Your booking sign-in has expired or is invalid."
+      });
+    }
+
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation || reservation.status === "canceled") {
+      return res.status(400).json({ message: "This reservation cannot accept payments." });
+    }
+
+    const amountCents = toAmountCents(reservation.remainingBalance);
+
+    if (!amountCents) {
+      return res.status(400).json({ message: "This reservation does not have a remaining balance." });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      payment_method_types: ["us_bank_account"],
+      customer_email: reservation.email || undefined,
+      client_reference_id: String(reservation.id),
+      success_url: `${baseUrl}/?guest_payment=return&reservationId=${reservation.id}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/?guest_payment=cancel&reservationId=${reservation.id}`,
+      metadata: {
+        reservation_id: String(reservation.id),
+        payment_amount_cents: String(amountCents),
+        payment_method_type: "us_bank_account"
+      },
+      payment_intent_data: {
+        receipt_email: reservation.email || undefined,
+        metadata: {
+          reservation_id: String(reservation.id),
+          payment_amount_cents: String(amountCents),
+          payment_method_type: "us_bank_account"
+        }
+      },
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: "usd",
+            unit_amount: amountCents,
+            product_data: {
+              name: `Riverpark RV Resort reservation payment`,
+              description: `Site ${reservation.siteStays[0]?.site_number || "reservation"}`
+            }
+          }
+        }
+      ]
+    });
+
+    await pool.query(
+      `
+        INSERT INTO stripe_payment_records (
+          reservation_id,
+          stripe_checkout_session_id,
+          amount_cents,
+          currency,
+          payment_status,
+          activate_reservation_on_payment,
+          checkout_url,
+          stripe_customer_email,
+          stripe_payment_method_type
+        )
+        VALUES ($1, $2, $3, $4, $5, FALSE, $6, $7, 'us_bank_account')
+      `,
+      [
+        reservation.id,
+        session.id,
+        amountCents,
+        session.currency || "usd",
+        session.payment_status || "unpaid",
+        session.url,
+        reservation.email || null
+      ]
+    );
+
+    res.json({
+      reservationId: reservation.id,
+      checkoutUrl: session.url,
+      amount: (amountCents / 100).toFixed(2)
+    });
+  } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
@@ -3616,6 +4858,8 @@ app.post("/api/reservations", async (req, res) => {
     motorhomeClassA,
     motorhomeClassC,
     motorhomeWithTow,
+    slideDriverSide,
+    slidePassengerSide,
     rigLengthFeet,
     amountPaid,
     depositAmount,
@@ -3693,11 +4937,13 @@ app.post("/api/reservations", async (req, res) => {
           motorhome_class_a,
           motorhome_class_c,
           motorhome_with_tow,
+          slide_driver_side,
+          slide_passenger_side,
           rig_length_feet,
           amount_paid,
           notes
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16, $17, $18)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         RETURNING id
       `,
       [
@@ -3716,6 +4962,8 @@ app.post("/api/reservations", async (req, res) => {
         isMotorhome ? Boolean(motorhomeClassA) : false,
         isMotorhome ? Boolean(motorhomeClassC) : false,
         isMotorhome ? Boolean(motorhomeWithTow) : false,
+        Boolean(slideDriverSide),
+        Boolean(slidePassengerSide),
         rigLengthFeet ? Number(rigLengthFeet) : null,
         toPriceNumber(amountPaid) ?? 0,
         notes || ""
@@ -3743,7 +4991,37 @@ app.post("/api/reservations", async (req, res) => {
 
     await client.query("COMMIT");
     const reservation = await fetchReservationDetails(pool, reservationId);
-    res.status(201).json(reservation);
+    let confirmationEmail;
+
+    if (!reservation.email || !reservation.email.includes("@")) {
+      confirmationEmail = {
+        sent: false,
+        message:
+          "Reservation created, but no confirmation email was sent because the customer does not have a valid email address."
+      };
+    } else {
+      try {
+        await sendReservationConfirmationEmail(reservation);
+        confirmationEmail = {
+          sent: true,
+          recipient: reservation.email,
+          message: `Confirmation sent to ${reservation.email}.`
+        };
+      } catch (emailError) {
+        console.error(
+          "Unable to automatically send reservation confirmation",
+          reservationId,
+          emailError
+        );
+        confirmationEmail = {
+          sent: false,
+          recipient: reservation.email,
+          message: `Reservation created, but the confirmation email could not be sent: ${emailError.message}`
+        };
+      }
+    }
+
+    res.status(201).json({ ...reservation, confirmationEmail });
   } catch (error) {
     await client.query("ROLLBACK");
 
@@ -3767,6 +5045,8 @@ app.put("/api/reservations/:id", async (req, res) => {
     motorhomeClassA,
     motorhomeClassC,
     motorhomeWithTow,
+    slideDriverSide,
+    slidePassengerSide,
     rigLengthFeet,
     amountPaid,
     depositAmount,
@@ -3845,9 +5125,11 @@ app.put("/api/reservations/:id", async (req, res) => {
           motorhome_class_a = $14,
           motorhome_class_c = $15,
           motorhome_with_tow = $16,
-          rig_length_feet = $17,
-          amount_paid = $18,
-          notes = $19
+          slide_driver_side = $17,
+          slide_passenger_side = $18,
+          rig_length_feet = $19,
+          amount_paid = $20,
+          notes = $21
         WHERE id = $1
         RETURNING id
       `,
@@ -3868,6 +5150,8 @@ app.put("/api/reservations/:id", async (req, res) => {
         isMotorhome ? Boolean(motorhomeClassA) : false,
         isMotorhome ? Boolean(motorhomeClassC) : false,
         isMotorhome ? Boolean(motorhomeWithTow) : false,
+        Boolean(slideDriverSide),
+        Boolean(slidePassengerSide),
         rigLengthFeet ? Number(rigLengthFeet) : null,
         toPriceNumber(amountPaid) ?? 0,
         notes || ""
