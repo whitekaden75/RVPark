@@ -394,18 +394,28 @@ function escapeEmailHtml(value) {
 }
 
 function buildReservationConfirmationEmail(reservation) {
-  const primaryStay = reservation.siteStays?.[0] || null;
+  const siteStays = Array.isArray(reservation.siteStays) ? reservation.siteStays : [];
   const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
-  const arrivalDate = primaryStay?.arrival_date
-    ? formatDisplayDate(primaryStay.arrival_date)
-    : "Not set";
-  const departureDate = primaryStay?.isOpenEnded
-    ? "Open-ended yearly stay"
-    : primaryStay?.leave_date
-      ? formatDisplayDate(primaryStay.leave_date)
-      : "Not set";
-  const siteNumber = primaryStay?.site_number || "To be assigned";
   const depositAmount = formatEmailCurrency(reservation.depositAmount);
+  const stayDetails = siteStays.length
+    ? siteStays.map((stay, index) => ({
+        label: siteStays.length > 1 ? `Stay ${index + 1}` : "Stay details",
+        siteNumber: stay.site_number || "To be assigned",
+        arrivalDate: stay.arrival_date ? formatDisplayDate(stay.arrival_date) : "Not set",
+        departureDate: stay.isOpenEnded
+          ? "Open-ended yearly stay"
+          : stay.leave_date
+            ? formatDisplayDate(stay.leave_date)
+            : "Not set"
+      }))
+    : [
+        {
+          label: "Stay details",
+          siteNumber: "To be assigned",
+          arrivalDate: "Not set",
+          departureDate: "Not set"
+        }
+      ];
   const importantInformation = [
     "Please stop at the office to register when you arrive. Check-in begins at 1:00 P.M.",
     "Check-out is at 11:00 A.M.",
@@ -425,9 +435,13 @@ function buildReservationConfirmationEmail(reservation) {
     "",
     "Thank you for choosing Riverpark RV Resort. Your reservation details are below.",
     "",
-    `Site: ${siteNumber}`,
-    `Arrival: ${arrivalDate}`,
-    `Departure: ${departureDate}`,
+    ...stayDetails.flatMap((stay, index) => [
+      ...(siteStays.length > 1 ? [stay.label] : []),
+      `Site: ${stay.siteNumber}`,
+      `Arrival: ${stay.arrivalDate}`,
+      `Departure: ${stay.departureDate}`,
+      ...(index < stayDetails.length - 1 ? [""] : [])
+    ]),
     `Deposit amount: ${depositAmount}`,
     `Email: ${reservation.email || "Not set"}`,
     `Phone: ${reservation.phone_number || "Not set"}`,
@@ -449,13 +463,21 @@ function buildReservationConfirmationEmail(reservation) {
     "Text message okay"
   ].join("\n");
   const detailRows = [
-    ["Site", siteNumber],
-    ["Arrival", arrivalDate],
-    ["Departure", departureDate],
+    ...stayDetails.flatMap((stay) => [
+      ...(siteStays.length > 1 ? [[stay.label, "", true]] : []),
+      ["Site", stay.siteNumber],
+      ["Arrival", stay.arrivalDate],
+      ["Departure", stay.departureDate]
+    ]),
     ["Deposit amount", depositAmount]
   ]
-    .map(
-      ([label, value]) => `
+    .map(([label, value, isHeading]) =>
+      isHeading
+        ? `
+        <tr>
+          <td colspan="2" style="padding:16px 0 4px;color:#b8793e;font-size:12px;font-weight:700;letter-spacing:1.4px;line-height:1.4;text-transform:uppercase;">${escapeEmailHtml(label)}</td>
+        </tr>`
+        : `
         <tr>
           <td style="padding:10px 0;color:#6d756f;font-size:13px;line-height:1.4;vertical-align:top;width:42%;">${escapeEmailHtml(label)}</td>
           <td style="padding:10px 0;color:#17372f;font-size:15px;font-weight:700;line-height:1.4;text-align:right;vertical-align:top;">${escapeEmailHtml(value)}</td>

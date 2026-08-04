@@ -759,7 +759,9 @@ function buildReservationConfirmationText(reservation, paymentLink) {
     return "";
   }
 
-  const primaryStay = reservation.siteStays?.[0] || null;
+  const siteStays = Array.isArray(reservation.siteStays)
+    ? reservation.siteStays
+    : [];
   const customerName = `${reservation.first_name || ""} ${
     reservation.last_name || ""
   }`.trim();
@@ -783,18 +785,33 @@ function buildReservationConfirmationText(reservation, paymentLink) {
     "Non Refundable",
     "1 night per reservation, per week. We have a 3% surcharge for credit card. (No Debit cards) you may write a check, or cash with no surcharge on arrival balance.",
     `Deposit amount: ${depositAmount}`,
-    `Arrival: ${
-      primaryStay?.arrival_date
-        ? formatShortDate(primaryStay.arrival_date)
-        : "Not set"
-    }`,
-    "(Check-in 1:00 P.M.)",
-    `Depart: ${
-      primaryStay?.leave_date
-        ? formatShortDate(primaryStay.leave_date)
-        : "Not set"
-    }`,
-    "(Check-out 11:00 A.M.)",
+    "",
+    ...(siteStays.length
+      ? siteStays.flatMap((stay, index) => [
+          siteStays.length > 1 ? `Stay ${index + 1}` : "Stay details",
+          `Site: ${stay.site_number || "To be assigned"}`,
+          `Arrival: ${
+            stay.arrival_date ? formatShortDate(stay.arrival_date) : "Not set"
+          }`,
+          "(Check-in 1:00 P.M.)",
+          `Depart: ${
+            stay.isOpenEnded
+              ? "Open-ended yearly stay"
+              : stay.leave_date
+                ? formatShortDate(stay.leave_date)
+                : "Not set"
+          }`,
+          "(Check-out 11:00 A.M.)",
+          ...(index < siteStays.length - 1 ? [""] : [])
+        ])
+      : [
+          "Stay details",
+          "Site: To be assigned",
+          "Arrival: Not set",
+          "(Check-in 1:00 P.M.)",
+          "Depart: Not set",
+          "(Check-out 11:00 A.M.)"
+        ]),
     "",
     "Important information",
     "***Upon arrival, please stop at office to register",
