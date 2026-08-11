@@ -1997,6 +1997,41 @@ select option {
   content: "";
 }
 
+.availability-site-checkbox {
+  width: auto;
+  margin: 0;
+}
+
+.availability-batch-button {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.batch-reservation-summary {
+  display: grid;
+  gap: 22px;
+  padding: 24px;
+  background: #f6f0e5;
+  border: 1px solid rgba(23, 55, 47, 0.14);
+}
+
+.batch-reservation-summary h3 {
+  margin: 6px 0;
+}
+
+.batch-reservation-site-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.batch-reservation-site-list span {
+  padding: 9px 12px;
+  color: #fff;
+  background: var(--pine);
+  font-weight: 800;
+}
+
 .hero-details {
   display: flex;
   flex-wrap: wrap;

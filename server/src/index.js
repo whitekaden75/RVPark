@@ -558,6 +558,136 @@ function buildReservationConfirmationEmail(reservation) {
   };
 }
 
+function buildReservationCancellationEmail(reservation) {
+  const siteStays = Array.isArray(reservation.siteStays) ? reservation.siteStays : [];
+  const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+  const stayDetails = siteStays.length
+    ? siteStays.map((stay, index) => ({
+        label: siteStays.length > 1 ? `Stay ${index + 1}` : "Canceled stay",
+        siteNumber: stay.site_number || "Not assigned",
+        arrivalDate: stay.arrival_date ? formatDisplayDate(stay.arrival_date) : "Not set",
+        departureDate: stay.isOpenEnded
+          ? "Open-ended yearly stay"
+          : stay.leave_date
+            ? formatDisplayDate(stay.leave_date)
+            : "Not set"
+      }))
+    : [
+        {
+          label: "Canceled stay",
+          siteNumber: "Not assigned",
+          arrivalDate: "Not set",
+          departureDate: "Not set"
+        }
+      ];
+  const text = [
+    "Riverpark RV Resort",
+    "Reservation cancellation",
+    "",
+    `Hi ${customerName || "Guest"},`,
+    "",
+    "Your Riverpark RV Resort reservation has been canceled, and the site has been released.",
+    "",
+    ...stayDetails.flatMap((stay, index) => [
+      ...(siteStays.length > 1 ? [stay.label] : []),
+      `Site: ${stay.siteNumber}`,
+      `Arrival: ${stay.arrivalDate}`,
+      `Departure: ${stay.departureDate}`,
+      ...(index < stayDetails.length - 1 ? [""] : [])
+    ]),
+    "",
+    "Deposit policy",
+    "As outlined when the reservation was made, deposits are non-refundable. Because this reservation was canceled, the deposit has been forfeited and will not be refunded.",
+    "",
+    "We appreciate your understanding and hope we have the opportunity to welcome you to Riverpark RV Resort another time.",
+    "",
+    "Warmly,",
+    "The Riverpark RV Resort team",
+    "Riverpark RV Resort",
+    "2956 Rogue River Hwy",
+    "Grants Pass, OR 97527",
+    "541-295-1269 (cell)",
+    "Text message okay"
+  ].join("\n");
+  const detailRows = stayDetails
+    .flatMap((stay) => [
+      ...(siteStays.length > 1 ? [[stay.label, "", true]] : []),
+      ["Site", stay.siteNumber],
+      ["Arrival", stay.arrivalDate],
+      ["Departure", stay.departureDate]
+    ])
+    .map(([label, value, isHeading]) =>
+      isHeading
+        ? `
+        <tr>
+          <td colspan="2" style="padding:16px 0 4px;color:#b8793e;font-size:12px;font-weight:700;letter-spacing:1.4px;line-height:1.4;text-transform:uppercase;">${escapeEmailHtml(label)}</td>
+        </tr>`
+        : `
+        <tr>
+          <td style="padding:10px 0;color:#6d756f;font-size:13px;line-height:1.4;vertical-align:top;width:42%;">${escapeEmailHtml(label)}</td>
+          <td style="padding:10px 0;color:#17372f;font-size:15px;font-weight:700;line-height:1.4;text-align:right;vertical-align:top;">${escapeEmailHtml(value)}</td>
+        </tr>`
+    )
+    .join("");
+  const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Riverpark RV Resort reservation cancellation</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f3eee4;color:#17372f;font-family:Arial,Helvetica,sans-serif;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">Your Riverpark RV Resort reservation has been canceled.</div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#f3eee4;">
+      <tr>
+        <td align="center" style="padding:28px 12px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:640px;background:#fffaf2;border-radius:18px;overflow:hidden;box-shadow:0 12px 36px rgba(23,55,47,0.12);">
+            <tr>
+              <td style="padding:34px 38px;background:#17372f;text-align:center;">
+                <div style="color:#d8ba85;font-size:12px;font-weight:700;letter-spacing:2.2px;text-transform:uppercase;">On the Rogue River</div>
+                <div style="margin-top:9px;color:#ffffff;font-family:Georgia,'Times New Roman',serif;font-size:30px;line-height:1.2;">Riverpark RV Resort</div>
+                <div style="margin-top:8px;color:#c7d5ce;font-size:13px;line-height:1.5;">Grants Pass, Oregon</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:38px;">
+                <div style="color:#b8793e;font-size:12px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;">Reservation canceled</div>
+                <h1 style="margin:10px 0 14px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:30px;font-weight:400;line-height:1.25;">Your cancellation is complete.</h1>
+                <p style="margin:0 0 26px;color:#4b5b54;font-size:16px;line-height:1.7;">Hi ${escapeEmailHtml(customerName || "Guest")}, your Riverpark RV Resort reservation has been canceled and the site has been released.</p>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin-bottom:28px;padding:12px 22px;background:#f6f0e5;border:1px solid #e4d8c5;border-radius:12px;">
+                  ${detailRows}
+                </table>
+
+                <div style="padding:20px 22px;background:#f5e9dc;border-left:4px solid #b8793e;border-radius:8px;">
+                  <div style="color:#17372f;font-size:15px;font-weight:700;line-height:1.4;">About your deposit</div>
+                  <div style="margin-top:7px;color:#4b5b54;font-size:14px;line-height:1.7;">As outlined when the reservation was made, deposits are non-refundable. Because this reservation was canceled, the deposit has been forfeited and will not be refunded.</div>
+                </div>
+
+                <p style="margin:28px 0 0;color:#4b5b54;font-size:15px;line-height:1.7;">We appreciate your understanding and hope we have the opportunity to welcome you to Riverpark RV Resort another time.</p>
+                <div style="margin-top:22px;color:#4b5b54;font-size:14px;line-height:1.6;">Questions? Call or text us at <a href="tel:+15412951269" style="color:#17372f;font-weight:700;text-decoration:none;">541-295-1269</a>.</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:25px 38px;background:#e8dfcf;text-align:center;">
+                <div style="color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:18px;">We hope to see you by the river another time.</div>
+                <div style="margin-top:9px;color:#64716b;font-size:12px;line-height:1.7;">Riverpark RV Resort &bull; 2956 Rogue River Hwy &bull; Grants Pass, OR 97527</div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  return {
+    subject: "Your Riverpark RV Resort reservation has been canceled",
+    text,
+    html
+  };
+}
+
 async function sendEmailWithSendGrid({ to, toName = "", subject, text, html }) {
   if (!sendGridApiKey || !sendGridFromEmail) {
     throw new Error(
@@ -605,6 +735,17 @@ async function sendEmailWithSendGrid({ to, toName = "", subject, text, html }) {
 
 async function sendReservationConfirmationEmail(reservation) {
   const message = buildReservationConfirmationEmail(reservation);
+  const recipientName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+
+  await sendEmailWithSendGrid({
+    to: reservation.email,
+    toName: recipientName,
+    ...message
+  });
+}
+
+async function sendReservationCancellationEmail(reservation) {
+  const message = buildReservationCancellationEmail(reservation);
   const recipientName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
 
   await sendEmailWithSendGrid({
@@ -4272,6 +4413,7 @@ app.post("/api/guest/reservations/legacy-pending", async (req, res) => {
 
 app.post("/api/guest/reservations/:id/cancel", async (req, res) => {
   const reservationId = Number(req.params.id);
+  let didCancelReservation = false;
 
   if (!reservationId) {
     return res.status(400).json({ message: "Reservation is required." });
@@ -4310,6 +4452,7 @@ app.post("/api/guest/reservations/:id/cancel", async (req, res) => {
       }
 
       if (reservation.status !== "canceled") {
+        didCancelReservation = true;
         const staysResult = await client.query(
           `
             SELECT site_id, arrival_date::text, leave_date::text
@@ -4351,7 +4494,37 @@ app.post("/api/guest/reservations/:id/cancel", async (req, res) => {
     }
 
     const canceledReservation = await fetchReservationDetails(pool, reservationId);
-    res.json(sanitizeGuestReservation(canceledReservation));
+    let cancellationEmail = null;
+
+    if (
+      didCancelReservation &&
+      canceledReservation?.email?.includes("@")
+    ) {
+      try {
+        await sendReservationCancellationEmail(canceledReservation);
+        cancellationEmail = {
+          sent: true,
+          recipient: canceledReservation.email,
+          message: `Cancellation confirmation sent to ${canceledReservation.email}.`
+        };
+      } catch (emailError) {
+        console.error(
+          "Unable to automatically send reservation cancellation",
+          reservationId,
+          emailError
+        );
+        cancellationEmail = {
+          sent: false,
+          recipient: canceledReservation.email,
+          message: `The reservation was canceled, but the cancellation email could not be sent: ${emailError.message}`
+        };
+      }
+    }
+
+    res.json({
+      ...sanitizeGuestReservation(canceledReservation),
+      cancellationEmail
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -4931,7 +5104,6 @@ app.post("/api/reservations", async (req, res) => {
 
   try {
     await client.query("BEGIN");
-
     if (reservationStatus !== "canceled") {
       const overlap = await findReservationOverlap(client, normalizedSegments);
 
@@ -5119,6 +5291,25 @@ app.put("/api/reservations/:id", async (req, res) => {
   try {
     await client.query("BEGIN");
 
+    const currentReservationResult = await client.query(
+      `
+        SELECT status
+        FROM reservations
+        WHERE id = $1
+        FOR UPDATE
+      `,
+      [req.params.id]
+    );
+
+    if (currentReservationResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    const shouldSendCancellationEmail =
+      currentReservationResult.rows[0].status !== "canceled" &&
+      reservationStatus === "canceled";
+
     if (reservationStatus !== "canceled") {
       const overlap = await findReservationOverlap(client, normalizedSegments, req.params.id);
 
@@ -5209,7 +5400,34 @@ app.put("/api/reservations/:id", async (req, res) => {
     await client.query("COMMIT");
 
     const reservation = await fetchReservationDetails(pool, req.params.id);
-    res.json(reservation);
+    let cancellationEmail = null;
+
+    if (
+      shouldSendCancellationEmail &&
+      reservation?.email?.includes("@")
+    ) {
+      try {
+        await sendReservationCancellationEmail(reservation);
+        cancellationEmail = {
+          sent: true,
+          recipient: reservation.email,
+          message: `Cancellation confirmation sent to ${reservation.email}.`
+        };
+      } catch (emailError) {
+        console.error(
+          "Unable to automatically send reservation cancellation",
+          req.params.id,
+          emailError
+        );
+        cancellationEmail = {
+          sent: false,
+          recipient: reservation.email,
+          message: `The reservation was canceled, but the cancellation email could not be sent: ${emailError.message}`
+        };
+      }
+    }
+
+    res.json({ ...reservation, cancellationEmail });
   } catch (error) {
     await client.query("ROLLBACK");
 
