@@ -111,6 +111,16 @@ Create one SendGrid Restricted Access API key with only `Mail Send` set to Full 
 - `SENDGRID_REPLY_TO`: a real inbox where guest replies should be delivered
 - `GUEST_AUTH_SECRET`: a long random server-only secret used to sign guest email sessions; generate one with `openssl rand -hex 32`
 
+### Mobile online-booking notifications
+
+Run [sql/2026-08-13_add_admin_push_subscriptions.sql](/Users/kadenwhite/Desktop/RVPark/sql/2026-08-13_add_admin_push_subscriptions.sql) in Railway Postgres. Generate one VAPID key pair from the `server` directory with `npx web-push generate-vapid-keys`, then add these backend variables:
+
+- `VAPID_PUBLIC_KEY`: the generated public key
+- `VAPID_PRIVATE_KEY`: the generated private key; keep it server-only
+- `VAPID_SUBJECT`: a contact URI such as `mailto:reservations@yourdomain.com`
+
+Redeploy both services, sign in to Admin on each phone, and press **Enable booking alerts** once. On iPhone, first open the site in Safari and use **Share → Add to Home Screen**; web push requires iOS/iPadOS 16.4 or newer and the installed Home Screen app. These alerts are sent only after a paid public Stripe checkout creates a reservation. Reservations entered manually in Admin do not send an alert.
+
 The From address must use a SendGrid-verified Single Sender or an authenticated domain. After changing these backend variables, redeploy the server.
 
 ### 2. Frontend
@@ -151,6 +161,9 @@ Your Postgres already lives on Railway, so the main task is connecting a backend
    - `SENDGRID_FROM_NAME`
    - `SENDGRID_REPLY_TO`
    - `GUEST_AUTH_SECRET`
+   - `VAPID_PUBLIC_KEY`
+   - `VAPID_PRIVATE_KEY`
+   - `VAPID_SUBJECT`
 6. For `DATABASE_URL`, use the connection string from your existing Railway Postgres instance.
 7. Deploy the backend.
 8. After deploy, copy the generated public backend URL.
@@ -178,7 +191,7 @@ Use the Railway Postgres query window or your own SQL client and run [sql/001_rv
 1. Add another Railway service from the same GitHub repo.
 2. Set its root directory to `client`.
 3. Add `VITE_API_BASE_URL` and set it to your deployed backend URL, for example:
-   - `https://your-api.up.railway.app/api`
+   - `https://api.riverparkrvresort.com/api`
 4. Deploy the frontend.
 5. Copy the frontend public URL.
 

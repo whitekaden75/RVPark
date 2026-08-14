@@ -22,11 +22,15 @@ import { loadStripe } from "@stripe/stripe-js";
 
 const apiBaseUrl = (
   import.meta.env.VITE_API_BASE_URL ||
-  "https://rvpark-production.up.railway.app/api"
+  "https://api.riverparkrvresort.com/api"
 ).replace(/\/+$/, "");
 const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
 const lastBookedSiteStorageKey = "rvpark-last-booked-site";
 const guestAccessTokenStorageKey = "rvpark-guest-access-token";
+const adminClientId =
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `admin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const openEndedStayDate = "9999-12-31";
 const cardElementOptions = {
   style: {
@@ -88,6 +92,7 @@ const emptySearch = {
   stayLengthRange: "3-5",
   minSizeFeet: "",
   rigLengthFeet: "",
+  rigOverTenYears: false,
   rvKind: "",
   motorhomeClassA: false,
   motorhomeClassC: false,
@@ -602,6 +607,18 @@ function getNightlyPrice(totalPrice, numberOfNights) {
   return Math.round((Number(totalPrice) / chargeableNights) * 100) / 100;
 }
 
+function getPublicBookingDeposit(totalPrice, numberOfNights) {
+  const nightlyPrice = getNightlyPrice(totalPrice, numberOfNights);
+
+  if (nightlyPrice === null) {
+    return null;
+  }
+
+  const depositNights = Number(numberOfNights) > 7 ? 2 : 1;
+  const depositAmount = Math.round(nightlyPrice * depositNights * 100) / 100;
+  return Math.min(depositAmount, Number(totalPrice));
+}
+
 function formatPricingCategory(value) {
   if (!value) {
     return "unknown";
@@ -783,7 +800,7 @@ function buildReservationConfirmationText(reservation, paymentLink) {
     "",
     "Deposit",
     "Non Refundable",
-    "1 night per reservation, per week. We have a 3% surcharge for credit card. (No Debit cards) you may write a check, or cash with no surcharge on arrival balance.",
+    "A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. We have a 3% surcharge for credit card. (No Debit cards) you may write a check, or cash with no surcharge on arrival balance.",
     `Deposit amount: ${depositAmount}`,
     "",
     ...(siteStays.length
@@ -1007,6 +1024,7 @@ async function apiRequest(path, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
   const headers = {
     "Content-Type": "application/json",
+    "X-RVPark-Client-Id": adminClientId,
     ...(options.headers || {}),
   };
 
@@ -1029,7 +1047,10 @@ async function apiRequest(path, options = {}) {
       window.dispatchEvent(new CustomEvent("rvpark-admin-unauthorized"));
     }
 
-    throw new Error(data?.message || "Request failed.");
+    const error = new Error(data?.message || "Request failed.");
+    error.status = response.status;
+    error.data = data;
+    throw error;
   }
 
   if (response.status === 204 || response.status === 205) {
@@ -1049,6 +1070,29 @@ async function apiRequest(path, options = {}) {
   }
 
   return data;
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = (value + padding).replaceAll("-", "+").replaceAll("_", "/");
+  const bytes = window.atob(base64);
+  return Uint8Array.from(bytes, (character) => character.charCodeAt(0));
+}
+
+function supportsBookingPushNotifications() {
+  return (
+    typeof window !== "undefined" &&
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    "Notification" in window
+  );
+}
+
+async function getBookingNotificationRegistration() {
+  await navigator.serviceWorker.register("/booking-notifications-sw.js", {
+    scope: "/",
+  });
+  return navigator.serviceWorker.ready;
 }
 
 async function guestApiRequest(path, options = {}) {
@@ -1669,15 +1713,148 @@ function RigSearchFields({ searchForm, onChange, publicLayout = false }) {
               ))}
             </div>
           ) : null}
-          <SlideSideFields
-            slideDriverSide={searchForm.slideDriverSide}
-            slidePassengerSide={searchForm.slidePassengerSide}
-            onChange={onChange}
-            className={publicLayout ? "public-motorhome-options" : ""}
-          />
+          {publicLayout ? (
+            <SlideSideFields
+              slideDriverSide={searchForm.slideDriverSide}
+              slidePassengerSide={searchForm.slidePassengerSide}
+              onChange={onChange}
+              className="public-motorhome-options"
+            />
+          ) : null}
         </>
       ) : null}
+      {publicLayout ? (
+        <div className="public-rig-age-section">
+          <label className="public-rig-age-checkbox">
+            <input
+              type="checkbox"
+              checked={searchForm.rigOverTenYears}
+              onChange={(event) =>
+                onChange("rigOverTenYears", event.target.checked)
+              }
+            />
+            <span>
+              <strong>My RV is a classic—more than 10 years old.</strong>
+              <small>
+                We’d love to learn a little more about it before booking your
+                stay.
+              </small>
+            </span>
+          </label>
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function PublicTermsAndConditions() {
+  return (
+    <main className="public-terms-page">
+      <article className="public-terms-card">
+        <a className="public-terms-brand" href="/">
+          Riverpark RV Resort
+        </a>
+        <p className="eyebrow">Booking policies</p>
+        <h1>Terms &amp; Conditions</h1>
+        <p className="public-terms-updated">Effective August 13, 2026</p>
+
+        <section>
+          <h2>Reservations and deposits</h2>
+          <p>
+            A one-night deposit is required for stays of 7 nights or fewer.
+            Stays longer than 7 nights require a two-night deposit. Deposits are
+            non-refundable unless Riverpark RV Resort declines or cancels the
+            stay. No reservation is confirmed until the required payment is
+            successfully received.
+          </p>
+          <p>
+            Credit-card payments include a 3% surcharge. Debit cards are not
+            accepted. The remaining balance may be paid by check or cash upon
+            arrival without a surcharge.
+          </p>
+        </section>
+
+        <section>
+          <h2>Site assignments</h2>
+          <p>
+            Riverpark RV Resort may move a reservation to another site within
+            the same price range when necessary to best accommodate guests. We
+            will make every reasonable effort to keep guests in their selected
+            site. Site assignments and rates are subject to change.
+          </p>
+        </section>
+
+        <section>
+          <h2>RV eligibility</h2>
+          <p>
+            RVs more than 10 years old must be reviewed by park management
+            before a reservation can be accepted. Please call 541-295-1269 so
+            we can learn more about the RV and help select an appropriate site.
+          </p>
+        </section>
+
+        <section>
+          <h2>Admission and cancellation by the resort</h2>
+          <p>
+            Management reserves the right to decline or cancel a stay when
+            reasonably necessary, in accordance with applicable law and park
+            policies. If the resort declines or cancels a stay, any payment
+            collected for that stay will be refunded to the original payment
+            method.
+          </p>
+        </section>
+
+        <section>
+          <h2>Saved payment methods</h2>
+          <p className="public-terms-authorization">
+            <strong>
+              I authorize Stripe to securely save my payment method for future
+              reservation-related payments. Saving it does not authorize a new
+              charge without my separate approval.
+            </strong>
+          </p>
+          <p>
+            With the guest’s separate consent during booking, Stripe securely
+            saves the payment method and provides Riverpark RV Resort with a
+            reusable Stripe payment-method reference and limited details such
+            as the payment type, brand, expiration date, and last four digits.
+            Riverpark RV Resort does not receive or store the full card or bank
+            account number or the card security code.
+          </p>
+          <p>
+            Saving a payment method does not by itself authorize a new charge.
+            It may be used for a future reservation-related payment only after
+            the guest separately authorizes that payment. Guests may request
+            removal of a saved payment method by calling or texting
+            541-295-1269.
+          </p>
+        </section>
+
+        <section>
+          <h2>Park rules</h2>
+          <ul>
+            <li>Check-in is at 1:00 p.m. and check-out is at 11:00 a.m.</li>
+            <li>Pets must remain leashed and waste must be picked up immediately.</li>
+            <li>Wood fires are prohibited; charcoal barbecues and propane are allowed.</li>
+            <li>One car or truck is included per site; an additional vehicle is $5.</li>
+            <li>Guests may not walk through another occupied site.</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2>Contact</h2>
+          <p>
+            Questions about these terms may be directed to Riverpark RV Resort
+            at <a href="tel:+15412951269">541-295-1269</a> or 2956 Rogue River
+            Hwy, Grants Pass, OR 97527.
+          </p>
+        </section>
+
+        <a className="public-terms-return" href="/#availability">
+          Return to booking
+        </a>
+      </article>
+    </main>
   );
 }
 
@@ -1704,11 +1881,8 @@ function PublicHome({
     ? null
     : nightsBetween(searchForm.arrivalDate, searchForm.leaveDate);
   const isLongStay = Number(numberOfNights) > 14;
-  const isLocalPreviewHost =
-    typeof window !== "undefined" &&
-    ["localhost", "127.0.0.1"].includes(window.location.hostname);
-  const isPublicOnlineBookingEnabled =
-    import.meta.env.VITE_ENABLE_PUBLIC_BOOKING === "true" || isLocalPreviewHost;
+  const requiresPhoneBooking = searchForm.rigOverTenYears;
+  const isPublicOnlineBookingEnabled = true;
   const [selectedBookingSite, setSelectedBookingSite] = useState(null);
   const [publicBookingForm, setPublicBookingForm] = useState({
     firstName: "",
@@ -1716,10 +1890,8 @@ function PublicHome({
     email: "",
     phoneNumber: "",
     discounts: [],
-    siteReassignmentAccepted: false,
+    termsAccepted: false,
   });
-  const [isPublicBookingReadyForPayment, setIsPublicBookingReadyForPayment] =
-    useState(false);
   const [bookingCheckoutStatus, setBookingCheckoutStatus] = useState(null);
   const [isCreatingPublicReservation, setIsCreatingPublicReservation] =
     useState(false);
@@ -1732,9 +1904,19 @@ function PublicHome({
       ? selectedBookingSite.discountPrice ?? selectedBookingSite.normalPrice
       : selectedBookingSite.normalPrice ?? selectedBookingSite.discountPrice
     : null;
-  const selectedBookingDepositPrice = getNightlyPrice(
+  const selectedBookingDepositPrice = getPublicBookingDeposit(
     selectedBookingBankPrice,
     numberOfNights
+  );
+  const publicBookingPhoneDigits = String(
+    publicBookingForm.phoneNumber || ""
+  ).replaceAll(/\D/g, "");
+  const isPublicBookingFormComplete = Boolean(
+    publicBookingForm.firstName.trim() &&
+      publicBookingForm.lastName.trim() &&
+      publicBookingForm.email.includes("@") &&
+      publicBookingPhoneDigits.length === 10 &&
+      publicBookingForm.termsAccepted
   );
   const bookingCheckoutParams =
     typeof window === "undefined"
@@ -1758,12 +1940,11 @@ function PublicHome({
 
   useEffect(() => {
     setSelectedBookingSite(null);
-    setIsPublicBookingReadyForPayment(false);
     setPublicBookingError("");
     setShowAllPublicDirectMatches(false);
     setPublicBookingForm((current) => ({
       ...current,
-      siteReassignmentAccepted: false,
+      termsAccepted: false,
     }));
   }, [
     searchForm.arrivalDate,
@@ -1774,6 +1955,7 @@ function PublicHome({
     searchForm.searchMode,
     searchForm.rvKind,
     searchForm.rigLengthFeet,
+    searchForm.rigOverTenYears,
     searchForm.motorhomeClassA,
     searchForm.motorhomeClassC,
     searchForm.motorhomeWithTow,
@@ -1833,16 +2015,15 @@ function PublicHome({
   }, [returnedBookingCheckoutState, returnedBookingCheckoutToken]);
 
   function choosePublicSite(site) {
-    if (!isPublicOnlineBookingEnabled) {
+    if (!isPublicOnlineBookingEnabled || requiresPhoneBooking) {
       return;
     }
 
     setSelectedBookingSite(site);
-    setIsPublicBookingReadyForPayment(false);
     setPublicBookingError("");
     setPublicBookingForm((current) => ({
       ...current,
-      siteReassignmentAccepted: false,
+      termsAccepted: false,
     }));
 
     window.requestAnimationFrame(() => {
@@ -1855,12 +2036,16 @@ function PublicHome({
 
   function runPublicAvailabilitySearch(event) {
     setSelectedBookingSite(null);
-    setIsPublicBookingReadyForPayment(false);
     setPublicBookingError("");
     onSearch(event, { applySiteFitRestrictions: false });
   }
 
   function handlePublicBookingSubmit(event) {
+    if (requiresPhoneBooking) {
+      event.preventDefault();
+      return;
+    }
+
     if (isFlexibleSearch) {
       runPublicAvailabilitySearch(event);
       return;
@@ -1869,54 +2054,18 @@ function PublicHome({
     if (selectedBookingSite) {
       event.preventDefault();
 
-      if (!isPublicBookingReadyForPayment) {
-        createPublicReservation();
-      }
-
       return;
     }
 
     runPublicAvailabilitySearch(event);
   }
 
-  function createPublicReservation() {
-    if (!selectedBookingSite || isLongStay) {
-      return;
-    }
-
-    const phoneDigits = String(publicBookingForm.phoneNumber || "").replaceAll(
-      /\D/g,
-      ""
-    );
-
-    if (!publicBookingForm.firstName.trim() || !publicBookingForm.lastName.trim()) {
-      setPublicBookingError("Enter your first and last name.");
-      return;
-    }
-
-    if (!publicBookingForm.email.includes("@")) {
-      setPublicBookingError("Enter a valid email address.");
-      return;
-    }
-
-    if (phoneDigits.length !== 10) {
-      setPublicBookingError("Enter a valid 10-digit phone number.");
-      return;
-    }
-
-    if (!publicBookingForm.siteReassignmentAccepted) {
-      setPublicBookingError(
-        "Please accept the site reassignment policy before continuing."
-      );
-      return;
-    }
-
-    setPublicBookingError("");
-    setIsPublicBookingReadyForPayment(true);
-  }
-
   async function startPublicBookingCheckout(paymentMethod) {
-    if (!selectedBookingSite || !isPublicBookingReadyForPayment) {
+    if (
+      !selectedBookingSite ||
+      !isPublicBookingFormComplete ||
+      requiresPhoneBooking
+    ) {
       return;
     }
 
@@ -1928,6 +2077,7 @@ function PublicHome({
         method: "POST",
         body: JSON.stringify({
           ...publicBookingForm,
+          paymentMethodStorageAccepted: publicBookingForm.termsAccepted,
           discounts: publicBookingForm.discounts,
           paymentMethod,
           baseUrl: window.location.origin,
@@ -1943,6 +2093,7 @@ function PublicHome({
           towVehicleType: searchForm.towVehicleType,
           slideDriverSide: searchForm.slideDriverSide,
           slidePassengerSide: searchForm.slidePassengerSide,
+          rigOverTenYears: searchForm.rigOverTenYears,
         }),
       });
 
@@ -2180,7 +2331,7 @@ function PublicHome({
               Stays longer than 2 weeks must be booked by phone.
             </p>
             <p className="public-pricing-note">
-              Stay 6 nights and get the 7th night on us—free.
+              Stay 6 consecutive nights and get the 7th night on us—free.
             </p>
             <p className="public-pricing-note">
               Prime riverfront sites give you more room around your RV, with
@@ -2202,12 +2353,14 @@ function PublicHome({
                   perNight
                   numberOfNights={numberOfNights}
                 />
-                {isPublicBookingReadyForPayment ? (
-                  <BookingPriceComparison
-                    title="Deposit due"
-                    bankPrice={selectedBookingDepositPrice}
-                  />
-                ) : null}
+                <BookingPriceComparison
+                  title={
+                    Number(numberOfNights) > 7
+                      ? "Two-night deposit due"
+                      : "One-night deposit due"
+                  }
+                  bankPrice={selectedBookingDepositPrice}
+                />
               </div>
             ) : null}
             <a href="tel:+15412951269">Questions? Call or text 541-295-1269</a>
@@ -2291,18 +2444,31 @@ function PublicHome({
               />
               Only show riverfront sites
             </label>
-            {errorMessage ? (
+            {!requiresPhoneBooking && errorMessage ? (
               <div className="public-search-message error">{errorMessage}</div>
             ) : null}
-            <button
-              className="public-search-button"
-              type="button"
-              disabled={isSearching}
-              onClick={runPublicAvailabilitySearch}>
-              {isSearching ? "Searching..." : "Search available sites"}
-            </button>
+            {requiresPhoneBooking ? (
+              <div className="public-rig-age-callout" aria-live="polite">
+                <div>
+                  <strong>Let’s plan your stay together.</strong>
+                  <span>
+                    For RVs more than 10 years old, please give us a call so we
+                    can find the right site for you.
+                  </span>
+                </div>
+                <a href="tel:+15412951269">Call 541-295-1269</a>
+              </div>
+            ) : (
+              <button
+                className="public-search-button"
+                type="button"
+                disabled={isSearching}
+                onClick={runPublicAvailabilitySearch}>
+                {isSearching ? "Searching..." : "Search available sites"}
+              </button>
+            )}
 
-            {hasSearched ? (
+            {hasSearched && !requiresPhoneBooking ? (
               <div className="public-search-results" aria-live="polite">
                 <div className="result-header">
                   <div>
@@ -2495,6 +2661,7 @@ function PublicHome({
             {selectedBookingSite &&
             isPublicOnlineBookingEnabled &&
             !isLongStay &&
+            !requiresPhoneBooking &&
             !isFlexibleSearch ? (
               <section
                 className="public-create-reservation"
@@ -2507,68 +2674,7 @@ function PublicHome({
                   </div>
                 </div>
 
-                {isPublicBookingReadyForPayment ? (
-                  <div className="public-reservation-created">
-                    <div className="public-created-summary">
-                      <p className="eyebrow">Deposit payment</p>
-                      <h3>Choose bank or card.</h3>
-                      <p>
-                        Site {selectedBookingSite.siteNumber} · {numberOfNights}{" "}
-                        nights. No reservation is created until Stripe confirms
-                        the deposit payment.
-                      </p>
-                      <BookingPriceComparison
-                        title="Price per night"
-                        bankPrice={selectedBookingBankPrice}
-                        perNight
-                        numberOfNights={numberOfNights}
-                      />
-                      <BookingPriceComparison
-                        title="Deposit due"
-                        bankPrice={selectedBookingDepositPrice}
-                      />
-                    </div>
-                    {publicBookingError ? (
-                      <div className="public-search-message error">
-                        {publicBookingError}
-                      </div>
-                    ) : null}
-                    <div className="public-checkout-methods">
-                      <button
-                        type="button"
-                        className="public-search-button"
-                        disabled={isCreatingPublicReservation}
-                        onClick={() => startPublicBookingCheckout("bank")}>
-                        {isCreatingPublicReservation
-                          ? "Opening Stripe..."
-                          : `Pay ${formatCurrency(
-                              selectedBookingDepositPrice
-                            )} by bank`}
-                      </button>
-                      <button
-                        type="button"
-                        className="public-search-button card-checkout-button"
-                        disabled={isCreatingPublicReservation}
-                        onClick={() => startPublicBookingCheckout("card")}>
-                        {isCreatingPublicReservation
-                          ? "Opening Stripe..."
-                          : `Pay ${formatCurrency(
-                              getCardPrice(selectedBookingDepositPrice)
-                            )} by card`}
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      className="public-calendar-toggle public-checkout-back-button"
-                      disabled={isCreatingPublicReservation}
-                      onClick={() => {
-                        setIsPublicBookingReadyForPayment(false);
-                      }}>
-                      Back to booking details
-                    </button>
-                  </div>
-                ) : (
-                  <div className="public-create-fields">
+                <div className="public-create-fields">
                     <div className="selected-public-site">
                       <div>
                         <span>Your site</span>
@@ -2686,23 +2792,23 @@ function PublicHome({
                       <label className="checkbox-row compact-checkbox">
                         <input
                           type="checkbox"
-                          checked={
-                            publicBookingForm.siteReassignmentAccepted
-                          }
+                          checked={publicBookingForm.termsAccepted}
                           onChange={(event) =>
                             setPublicBookingForm((current) => ({
                               ...current,
-                              siteReassignmentAccepted: event.target.checked,
+                              termsAccepted: event.target.checked,
                             }))
                           }
                         />
                         <span>
-                          I understand and agree that Riverpark RV Resort may
-                          move my reservation to another site within the same
-                          price range when necessary to best accommodate guests
-                          throughout the park. I understand that the resort will
-                          make every reasonable effort to keep me in the site I
-                          selected.
+                          I have read and agree to Riverpark RV Resort’s{" "}
+                          <a
+                            href="/?page=terms"
+                            target="_blank"
+                            rel="noreferrer">
+                            Terms &amp; Conditions
+                          </a>
+                          , including the saved-payment authorization.
                         </span>
                       </label>
                     </div>
@@ -2744,20 +2850,59 @@ function PublicHome({
                         {publicBookingError}
                       </div>
                     ) : null}
-                    <button
-                      type="button"
-                      className="public-search-button"
-                      disabled={
-                        isCreatingPublicReservation ||
-                        !publicBookingForm.siteReassignmentAccepted
-                      }
-                      onClick={createPublicReservation}>
-                      {isCreatingPublicReservation
-                        ? "Creating reservation..."
-                        : "Continue to deposit"}
-                    </button>
+                    <div className="public-created-summary public-inline-deposit-summary">
+                      <p className="eyebrow">Deposit payment</p>
+                      <h3>Pay securely with Stripe.</h3>
+                      <p>
+                        No reservation is created until Stripe confirms the
+                        deposit payment.
+                      </p>
+                      <BookingPriceComparison
+                        title={
+                          Number(numberOfNights) > 7
+                            ? "Two-night deposit due"
+                            : "One-night deposit due"
+                        }
+                        bankPrice={selectedBookingDepositPrice}
+                      />
+                    </div>
+                    {!isPublicBookingFormComplete ? (
+                      <p className="public-payment-disabled-hint">
+                        Complete your contact information and accept the Terms
+                        &amp; Conditions above to enable payment.
+                      </p>
+                    ) : null}
+                    <div className="public-checkout-methods">
+                      <button
+                        type="button"
+                        className="public-search-button"
+                        disabled={
+                          isCreatingPublicReservation ||
+                          !isPublicBookingFormComplete
+                        }
+                        onClick={() => startPublicBookingCheckout("bank")}>
+                        {isCreatingPublicReservation
+                          ? "Opening Stripe..."
+                          : `Pay ${formatCurrency(
+                              selectedBookingDepositPrice
+                            )} by bank with Stripe`}
+                      </button>
+                      <button
+                        type="button"
+                        className="public-search-button card-checkout-button"
+                        disabled={
+                          isCreatingPublicReservation ||
+                          !isPublicBookingFormComplete
+                        }
+                        onClick={() => startPublicBookingCheckout("card")}>
+                        {isCreatingPublicReservation
+                          ? "Opening Stripe..."
+                          : `Pay ${formatCurrency(
+                              getCardPrice(selectedBookingDepositPrice)
+                            )} by card with Stripe`}
+                      </button>
+                    </div>
                   </div>
-                )}
               </section>
             ) : null}
           </form>
@@ -4460,6 +4605,12 @@ export default function App() {
   });
   const [adminLoginError, setAdminLoginError] = useState("");
   const [isSigningInAdmin, setIsSigningInAdmin] = useState(false);
+  const [bookingNotificationStatus, setBookingNotificationStatus] =
+    useState("checking");
+  const [bookingNotificationMessage, setBookingNotificationMessage] =
+    useState("");
+  const [isUpdatingBookingNotifications, setIsUpdatingBookingNotifications] =
+    useState(false);
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [reservations, setReservations] = useState([]);
@@ -4527,9 +4678,14 @@ export default function App() {
       return "home";
     }
 
-    return new URLSearchParams(window.location.search).has("guest_payment")
-      ? "guest"
-      : "home";
+    const params = new URLSearchParams(window.location.search);
+    const requestedAdminPage = params.get("admin");
+
+    if (appPages.some((page) => page.key === requestedAdminPage)) {
+      return requestedAdminPage;
+    }
+
+    return params.has("guest_payment") ? "guest" : "home";
   });
   const [reservationEditFocusSection, setReservationEditFocusSection] =
     useState("");
@@ -4567,6 +4723,7 @@ export default function App() {
     useState(false);
   const [isSavingAdminEdit, setIsSavingAdminEdit] = useState(false);
   const [adminSaveNotice, setAdminSaveNotice] = useState("");
+  const [adminConflictNotice, setAdminConflictNotice] = useState("");
   const [confirmationCopyMessage, setConfirmationCopyMessage] = useState("");
   const [sendingConfirmationReservationId, setSendingConfirmationReservationId] =
     useState(null);
@@ -4586,6 +4743,7 @@ export default function App() {
   const sitesRequestRef = useRef(null);
   const customersRequestRef = useRef(null);
   const reservationsRequestRef = useRef(null);
+  const liveRefreshTimeoutRef = useRef(null);
 
   useEffect(() => {
     if (!stripeReturnState.paymentStatus) {
@@ -4642,6 +4800,123 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!isUnlocked || typeof EventSource === "undefined") {
+      return undefined;
+    }
+
+    let isClosed = false;
+    const eventUrl = `${apiBaseUrl}/admin/events?clientId=${encodeURIComponent(
+      adminClientId
+    )}`;
+    const eventSource = new EventSource(eventUrl, { withCredentials: true });
+
+    async function refreshLiveAdminData() {
+      try {
+        const [reservationData, siteData, customerData] = await Promise.all([
+          apiRequest("/reservations"),
+          apiRequest("/sites"),
+          apiRequest("/customers"),
+        ]);
+
+        if (isClosed) {
+          return;
+        }
+
+        setReservations(ensureArray(reservationData, "Reservations"));
+        setSites(ensureArray(siteData, "Sites"));
+        setCustomers(ensureArray(customerData, "Customers"));
+        setHasLoadedReservations(true);
+        setHasLoadedSites(true);
+        setHasLoadedCustomers(true);
+        setDirectMatches([]);
+        setFlexibleMatches([]);
+        setSwitchPlan(null);
+        setAvailabilityHasSearched(false);
+        setAdminSaveNotice("Booking calendar updated from another device.");
+      } catch (error) {
+        if (!isClosed) {
+          setErrorMessage(error.message);
+        }
+      }
+    }
+
+    function handleDataChanged() {
+      window.clearTimeout(liveRefreshTimeoutRef.current);
+      liveRefreshTimeoutRef.current = window.setTimeout(
+        refreshLiveAdminData,
+        250
+      );
+    }
+
+    eventSource.addEventListener("data-changed", handleDataChanged);
+
+    return () => {
+      isClosed = true;
+      window.clearTimeout(liveRefreshTimeoutRef.current);
+      eventSource.removeEventListener("data-changed", handleDataChanged);
+      eventSource.close();
+    };
+  }, [isUnlocked]);
+
+  useEffect(() => {
+    if (!isUnlocked) {
+      setBookingNotificationStatus("checking");
+      setBookingNotificationMessage("");
+      return undefined;
+    }
+
+    let isCancelled = false;
+
+    async function checkBookingNotificationStatus() {
+      if (!supportsBookingPushNotifications()) {
+        if (!isCancelled) {
+          setBookingNotificationStatus("unsupported");
+        }
+        return;
+      }
+
+      if (Notification.permission === "denied") {
+        if (!isCancelled) {
+          setBookingNotificationStatus("blocked");
+          setBookingNotificationMessage(
+            "Notifications are blocked in this phone’s browser settings."
+          );
+        }
+        return;
+      }
+
+      try {
+        const config = await apiRequest("/push/config");
+
+        if (!config.configured) {
+          if (!isCancelled) {
+            setBookingNotificationStatus("unconfigured");
+          }
+          return;
+        }
+
+        const registration = await getBookingNotificationRegistration();
+        const subscription = await registration.pushManager.getSubscription();
+
+        if (!isCancelled) {
+          setBookingNotificationStatus(subscription ? "enabled" : "disabled");
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setBookingNotificationStatus("error");
+          setBookingNotificationMessage(error.message);
+        }
+      }
+    }
+
+    checkBookingNotificationStatus();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isUnlocked]);
+
+  useEffect(() => {
     if (!isUnlocked || activePage === "home" || activePage === "guest") {
       setIsAdminHeaderCompact(false);
       return undefined;
@@ -4673,6 +4948,18 @@ export default function App() {
     const timeoutId = window.setTimeout(() => setAdminSaveNotice(""), 4000);
     return () => window.clearTimeout(timeoutId);
   }, [adminSaveNotice]);
+
+  useEffect(() => {
+    if (!adminConflictNotice) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(
+      () => setAdminConflictNotice(""),
+      10000
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [adminConflictNotice]);
 
   useEffect(() => {
     if (!isUnlocked) {
@@ -5370,6 +5657,26 @@ export default function App() {
     };
   }
 
+  async function handleReservationConflict(error, setLocalMessage) {
+    const message =
+      error.data?.message ||
+      "That site was just booked on another device for overlapping dates.";
+    const conflictMessage = `${message} The calendar has been refreshed so you can choose another site.`;
+
+    setLocalMessage(conflictMessage);
+    setAdminConflictNotice(conflictMessage);
+    setDirectMatches([]);
+    setFlexibleMatches([]);
+    setSwitchPlan(null);
+    setAvailabilityHasSearched(false);
+
+    try {
+      await refreshReservationAndSiteData();
+    } catch (refreshError) {
+      setErrorMessage(refreshError.message);
+    }
+  }
+
   function resetReservationForm(defaultSite = lastBookedSite) {
     setReservationForm(createEmptyReservation(defaultSite));
     setIsReservationTotalOverridden(false);
@@ -5519,6 +5826,82 @@ export default function App() {
       setAdminLoginError(error.message);
     } finally {
       setIsSigningInAdmin(false);
+    }
+  }
+
+  async function toggleBookingNotifications() {
+    setBookingNotificationMessage("");
+
+    if (!supportsBookingPushNotifications()) {
+      setBookingNotificationStatus("unsupported");
+      setBookingNotificationMessage(
+        "On iPhone, open this site in Safari, choose Share → Add to Home Screen, then open the new Riverpark icon and enable alerts."
+      );
+      return;
+    }
+
+    setIsUpdatingBookingNotifications(true);
+
+    try {
+      const registration = await getBookingNotificationRegistration();
+      const existingSubscription =
+        await registration.pushManager.getSubscription();
+
+      if (existingSubscription && bookingNotificationStatus === "enabled") {
+        await apiRequest("/push/subscriptions", {
+          method: "DELETE",
+          body: JSON.stringify({ endpoint: existingSubscription.endpoint }),
+        });
+        await existingSubscription.unsubscribe();
+        setBookingNotificationStatus("disabled");
+        setBookingNotificationMessage(
+          "Online-booking alerts are off on this phone."
+        );
+        return;
+      }
+
+      const config = await apiRequest("/push/config");
+
+      if (!config.configured || !config.publicKey) {
+        setBookingNotificationStatus("unconfigured");
+        throw new Error(
+          "Add the VAPID server variables before enabling booking alerts."
+        );
+      }
+
+      const permission = await Notification.requestPermission();
+
+      if (permission !== "granted") {
+        setBookingNotificationStatus(
+          permission === "denied" ? "blocked" : "disabled"
+        );
+        throw new Error(
+          permission === "denied"
+            ? "Notifications were blocked. Allow them in this phone’s browser settings, then try again."
+            : "Notification permission was not granted."
+        );
+      }
+
+      const subscription =
+        existingSubscription ||
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(config.publicKey),
+        }));
+
+      await apiRequest("/push/subscriptions", {
+        method: "POST",
+        body: JSON.stringify(subscription.toJSON()),
+      });
+
+      setBookingNotificationStatus("enabled");
+      setBookingNotificationMessage(
+        "This phone will now alert you when an online booking is paid and confirmed."
+      );
+    } catch (error) {
+      setBookingNotificationMessage(error.message);
+    } finally {
+      setIsUpdatingBookingNotifications(false);
     }
   }
 
@@ -5978,7 +6361,11 @@ export default function App() {
       }
       resetReservationForm(rememberedSite);
     } catch (error) {
-      setReservationErrorMessage(error.message);
+      if (error.status === 409) {
+        await handleReservationConflict(error, setReservationErrorMessage);
+      } else {
+        setReservationErrorMessage(error.message);
+      }
     } finally {
       if (isSavingExistingReservation) {
         setIsSavingAdminEdit(false);
@@ -7048,7 +7435,14 @@ export default function App() {
       setAdminSaveNotice(`Reservation #${updatedReservation.id} was saved.`);
       closeReservationEditor();
     } catch (error) {
-      setReservationEditorErrorMessage(error.message);
+      if (error.status === 409) {
+        await handleReservationConflict(
+          error,
+          setReservationEditorErrorMessage
+        );
+      } else {
+        setReservationEditorErrorMessage(error.message);
+      }
     } finally {
       setIsSavingAdminEdit(false);
     }
@@ -7125,6 +7519,13 @@ export default function App() {
       next.setUTCMonth(next.getUTCMonth() + offset);
       return new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth(), 1));
     });
+  }
+
+  if (
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("page") === "terms"
+  ) {
+    return <PublicTermsAndConditions />;
   }
 
   if (activePage === "home") {
@@ -7250,6 +7651,27 @@ export default function App() {
                 </button>
                 <Button
                   type="button"
+                  className={`admin-home-button booking-alert-button ${
+                    bookingNotificationStatus === "enabled" ? "enabled" : ""
+                  }`}
+                  variant={
+                    bookingNotificationStatus === "enabled"
+                      ? "contained"
+                      : "outlined"
+                  }
+                  onClick={toggleBookingNotifications}
+                  disabled={
+                    isUpdatingBookingNotifications ||
+                    bookingNotificationStatus === "checking"
+                  }>
+                  {isUpdatingBookingNotifications
+                    ? "Updating alerts..."
+                    : bookingNotificationStatus === "enabled"
+                      ? "Booking alerts on"
+                      : "Enable booking alerts"}
+                </Button>
+                <Button
+                  type="button"
                   className="admin-home-button"
                   variant="outlined"
                   onClick={() => setActivePage("home")}>
@@ -7303,10 +7725,45 @@ export default function App() {
                   {page.label}
                 </button>
               ))}
+              <button
+                type="button"
+                className={`admin-mobile-menu-item add-notifications-menu-item ${
+                  bookingNotificationStatus === "enabled" ? "enabled" : ""
+                }`}
+                disabled={
+                  isUpdatingBookingNotifications ||
+                  bookingNotificationStatus === "checking" ||
+                  bookingNotificationStatus === "enabled"
+                }
+                onClick={async () => {
+                  await toggleBookingNotifications();
+                  setIsAdminMobileMenuOpen(false);
+                }}>
+                {isUpdatingBookingNotifications
+                  ? "Adding notifications..."
+                  : bookingNotificationStatus === "enabled"
+                    ? "Notifications added ✓"
+                    : "Add notifications"}
+              </button>
             </div>
           ) : null}
         </Stack>
       </Paper>
+      {bookingNotificationMessage ? (
+        <Alert
+          severity={
+            bookingNotificationStatus === "enabled"
+              ? "success"
+              : bookingNotificationStatus === "blocked" ||
+                  bookingNotificationStatus === "error"
+                ? "error"
+                : "info"
+          }
+          onClose={() => setBookingNotificationMessage("")}
+          sx={{ mb: 2 }}>
+          {bookingNotificationMessage}
+        </Alert>
+      ) : null}
       {errorMessage ? (
         <Alert severity="error" sx={{ mb: 2 }}>
           {errorMessage}
@@ -7344,7 +7801,7 @@ export default function App() {
                   <div className="button-row">
                     <button
                       type="button"
-                      className="ghost-button"
+                      className="ghost-button admin-calendar-toggle"
                       onClick={() =>
                         setIsAvailabilityCalendarOpen((current) => !current)
                       }>
@@ -7886,11 +8343,6 @@ export default function App() {
                       </label>
                     </div>
                   ) : null}
-                  <SlideSideFields
-                    slideDriverSide={reservationForm.slideDriverSide}
-                    slidePassengerSide={reservationForm.slidePassengerSide}
-                    onChange={updateReservationField}
-                  />
                   <label>
                     Rig size (feet)
                     <input
@@ -9463,6 +9915,22 @@ export default function App() {
         {adminSaveNotice ? (
           <div className="admin-save-notice" role="status" aria-live="polite">
             {adminSaveNotice}
+          </div>
+        ) : null}
+
+        {adminConflictNotice ? (
+          <div
+            className="admin-conflict-notice"
+            role="alert"
+            aria-live="assertive">
+            <strong>Site availability changed</strong>
+            <span>{adminConflictNotice}</span>
+            <button
+              type="button"
+              aria-label="Dismiss conflict notice"
+              onClick={() => setAdminConflictNotice("")}>
+              ×
+            </button>
           </div>
         ) : null}
 

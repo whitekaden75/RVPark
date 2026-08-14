@@ -1,0 +1,16 @@
+{
+  "name": "Riverpark RV Resort",
+  "short_name": "Riverpark",
+  "start_url": "/?admin=reservation",
+  "display": "standalone",
+  "background_color": "#faf6ed",
+  "theme_color": "#123f34",
+  "icons": [
+    {
+      "src": "/notification-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

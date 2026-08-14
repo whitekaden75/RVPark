@@ -3,6 +3,7 @@ import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 
 import dotenv from "dotenv";
 import express from "express";
 import Stripe from "stripe";
+import webPush from "web-push";
 import { pool } from "./db.js";
 import {
   buildAvailabilityMap,
@@ -28,14 +29,36 @@ const sendGridFromName = process.env.SENDGRID_FROM_NAME || "Riverpark RV Resort"
 const sendGridReplyTo = process.env.SENDGRID_REPLY_TO || sendGridFromEmail;
 const guestAuthSecret = process.env.GUEST_AUTH_SECRET || "";
 const adminSessionSecret = process.env.ADMIN_SESSION_SECRET || "";
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || "";
+const vapidSubject = process.env.VAPID_SUBJECT || "mailto:reservations@riverparkrvresort.com";
 const guestVerificationRequests = new Map();
 const guestVerificationAttempts = new Map();
 const cardPriceMultiplier = 1.03;
+const publicBookingTermsVersion = "2026-08-13";
 const pricingPreviewDays = Array.from({ length: 28 }, (_, index) => index + 1);
 const adminSessionCookieName = "rvpark_admin_session";
 const stripe = stripeSecretKey
   ? new Stripe(stripeSecretKey, { apiVersion: stripeApiVersion })
   : null;
+const isWebPushConfigured = Boolean(vapidPublicKey && vapidPrivateKey);
+const adminEventClients = new Set();
+
+if (isWebPushConfigured) {
+  webPush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+}
+
+function broadcastAdminDataChange({ sourceClientId = "", reason = "data_changed" } = {}) {
+  const payload = `event: data-changed\ndata: ${JSON.stringify({ reason, changedAt: new Date().toISOString() })}\n\n`;
+
+  for (const client of adminEventClients) {
+    if (sourceClientId && client.clientId === sourceClientId) {
+      continue;
+    }
+
+    client.response.write(payload);
+  }
+}
 
 app.set("trust proxy", 1);
 
@@ -43,7 +66,7 @@ app.use(
   cors({
     origin: process.env.CLIENT_ORIGIN?.split(",").map((value) => value.trim()) || true,
     credentials: true,
-    allowedHeaders: ["Content-Type"]
+    allowedHeaders: ["Content-Type", "X-RVPark-Client-Id"]
   })
 );
 
@@ -90,7 +113,13 @@ app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), asyn
   try {
     const createdReservationId = await handleStripeWebhookEvent(event);
     await updateStripeWebhookEventRecord(eventRecord.id, "processed");
-    await sendPublicBookingConfirmation(createdReservationId);
+    await Promise.all([
+      sendPublicBookingConfirmation(createdReservationId),
+      sendPublicBookingPushNotification(createdReservationId)
+    ]);
+    if (createdReservationId) {
+      broadcastAdminDataChange({ reason: "online_booking_created" });
+    }
     return res.json({ received: true });
   } catch (error) {
     console.error("Unable to process Stripe webhook event", event.id, error);
@@ -350,6 +379,96 @@ app.delete("/api/admin/session", (req, res) => {
   return res.status(204).end();
 });
 
+app.get("/api/admin/events", (req, res) => {
+  const clientId = String(req.query.clientId || "").slice(0, 100);
+  const client = { clientId, response: res };
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  res.write(`event: connected\ndata: {"connected":true}\n\n`);
+
+  adminEventClients.add(client);
+  const heartbeat = setInterval(() => res.write(": keep-alive\n\n"), 25000);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    adminEventClients.delete(client);
+  });
+});
+
+app.get("/api/push/config", (_req, res) => {
+  return res.json({
+    configured: isWebPushConfigured,
+    publicKey: isWebPushConfigured ? vapidPublicKey : ""
+  });
+});
+
+app.post("/api/push/subscriptions", async (req, res) => {
+  if (!isWebPushConfigured) {
+    return res.status(503).json({
+      message: "Booking notifications are not configured on the server yet."
+    });
+  }
+
+  const endpoint = String(req.body?.endpoint || "").trim();
+  const p256dhKey = String(req.body?.keys?.p256dh || "").trim();
+  const authKey = String(req.body?.keys?.auth || "").trim();
+
+  if (!endpoint || !p256dhKey || !authKey) {
+    return res.status(400).json({ message: "The browser push subscription is incomplete." });
+  }
+
+  try {
+    await pool.query(
+      `
+        INSERT INTO admin_push_subscriptions (
+          admin_user_id,
+          endpoint,
+          p256dh_key,
+          auth_key,
+          user_agent
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (endpoint)
+        DO UPDATE SET
+          admin_user_id = EXCLUDED.admin_user_id,
+          p256dh_key = EXCLUDED.p256dh_key,
+          auth_key = EXCLUDED.auth_key,
+          user_agent = EXCLUDED.user_agent,
+          updated_at = NOW()
+      `,
+      [req.adminUser.id, endpoint, p256dhKey, authKey, req.header("user-agent") || null]
+    );
+
+    return res.status(201).json({ subscribed: true });
+  } catch (error) {
+    console.error("Unable to save push subscription", error);
+    return res.status(500).json({ message: "Unable to save this phone for notifications." });
+  }
+});
+
+app.delete("/api/push/subscriptions", async (req, res) => {
+  const endpoint = String(req.body?.endpoint || "").trim();
+
+  if (!endpoint) {
+    return res.status(400).json({ message: "A push subscription endpoint is required." });
+  }
+
+  try {
+    await pool.query(
+      `DELETE FROM admin_push_subscriptions WHERE endpoint = $1 AND admin_user_id = $2`,
+      [endpoint, req.adminUser.id]
+    );
+    return res.status(204).end();
+  } catch (error) {
+    console.error("Unable to remove push subscription", error);
+    return res.status(500).json({ message: "Unable to turn off notifications for this phone." });
+  }
+});
+
 function nightsBetween(arrivalDate, leaveDate) {
   const start = new Date(`${arrivalDate}T00:00:00Z`);
   const end = new Date(`${leaveDate}T00:00:00Z`);
@@ -447,7 +566,7 @@ function buildReservationConfirmationEmail(reservation) {
     `Phone: ${reservation.phone_number || "Not set"}`,
     "",
     "Deposit policy",
-    "The deposit is non-refundable. A one-night deposit is required per reservation, per week. Credit-card payments include a 3% surcharge. Debit cards are not accepted. The remaining balance may be paid by check or cash upon arrival without a surcharge.",
+    "The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Credit-card payments include a 3% surcharge. Debit cards are not accepted. The remaining balance may be paid by check or cash upon arrival without a surcharge.",
     "",
     "Important information",
     ...importantInformation.map((item) => `- ${item}`),
@@ -524,7 +643,7 @@ function buildReservationConfirmationEmail(reservation) {
                 </table>
 
                 <h2 style="margin:0 0 10px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Deposit policy</h2>
-                <p style="margin:0 0 28px;color:#4b5b54;font-size:14px;line-height:1.7;">The deposit is non-refundable. A one-night deposit is required per reservation, per week. Credit-card payments include a 3% surcharge. Debit cards are not accepted. The remaining balance may be paid by check or cash upon arrival without a surcharge.</p>
+                <p style="margin:0 0 28px;color:#4b5b54;font-size:14px;line-height:1.7;">The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Credit-card payments include a 3% surcharge. Debit cards are not accepted. The remaining balance may be paid by check or cash upon arrival without a surcharge.</p>
 
                 <div style="height:1px;background:#e4d8c5;margin:0 0 27px;"></div>
                 <h2 style="margin:0 0 18px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Before you arrive</h2>
@@ -1470,6 +1589,31 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
   }
 
   const payload = checkout.booking_payload;
+  const stripePaymentIntentId =
+    typeof session.payment_intent === "string"
+      ? session.payment_intent
+      : session.payment_intent?.id || null;
+  const stripeCustomerId =
+    typeof session.customer === "string"
+      ? session.customer
+      : session.customer?.id || checkout.stripe_customer_id || null;
+  let stripePaymentMethod = null;
+
+  if (stripePaymentIntentId) {
+    const paymentIntent = await stripe.paymentIntents.retrieve(
+      stripePaymentIntentId,
+      { expand: ["payment_method"] }
+    );
+    stripePaymentMethod =
+      typeof paymentIntent.payment_method === "object"
+        ? paymentIntent.payment_method
+        : null;
+  }
+
+  const cardDetails = stripePaymentMethod?.card || null;
+  const bankDetails = stripePaymentMethod?.us_bank_account || null;
+  const paymentMethodBrand = cardDetails?.brand || bankDetails?.bank_name || null;
+  const paymentMethodLast4 = cardDetails?.last4 || bankDetails?.last4 || null;
   const segment = {
     siteId: Number(checkout.site_id),
     arrivalDate: payload.arrivalDate,
@@ -1495,7 +1639,7 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
 
   const customerResult = await client.query(
     `
-      SELECT id, first_name, last_name, email, phone_number
+      SELECT id, first_name, last_name, email, phone_number, stripe_customer_id
       FROM customers
       WHERE LOWER(TRIM(first_name)) = LOWER($1)
         AND LOWER(TRIM(last_name)) = LOWER($2)
@@ -1510,17 +1654,35 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
   if (customerResult.rowCount > 0) {
     customerId = customerResult.rows[0].id;
     await client.query(
-      `UPDATE customers SET email = $2 WHERE id = $1`,
-      [customerId, payload.email]
+      `
+        UPDATE customers
+        SET
+          email = $2,
+          stripe_customer_id = COALESCE(stripe_customer_id, $3)
+        WHERE id = $1
+      `,
+      [customerId, payload.email, stripeCustomerId]
     );
   } else {
     const insertedCustomer = await client.query(
       `
-        INSERT INTO customers (first_name, last_name, email, phone_number)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO customers (
+          first_name,
+          last_name,
+          email,
+          phone_number,
+          stripe_customer_id
+        )
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id
       `,
-      [payload.firstName, payload.lastName, payload.email, payload.phoneNumber]
+      [
+        payload.firstName,
+        payload.lastName,
+        payload.email,
+        payload.phoneNumber,
+        stripeCustomerId
+      ]
     );
     customerId = insertedCustomer.rows[0].id;
   }
@@ -1541,7 +1703,7 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
     ? ` Requested discounts: ${payload.discounts.join(", ")}.`
     : "";
   const publicReservationNotes =
-    `Created through paid public Stripe Checkout. Site reassignment policy accepted.${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
+    `Created through paid public Stripe Checkout. Terms ${payload.termsVersion || publicBookingTermsVersion} accepted and payment-method storage authorized.${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
   const reservationResult = await client.query(
     `
       INSERT INTO reservations (
@@ -1601,21 +1763,39 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
         payment_status,
         activate_reservation_on_payment,
         stripe_customer_email,
+        stripe_customer_id,
         stripe_payment_method_type,
+        stripe_payment_method_id,
+        payment_method_brand,
+        payment_method_last4,
+        payment_method_exp_month,
+        payment_method_exp_year,
+        payment_method_saved_at,
+        payment_method_storage_consent_at,
         amount_received_cents,
         paid_at,
         checkout_status
       )
-      VALUES ($1, $2, $3, $4, 'usd', 'paid', FALSE, $5, $6, $4, NOW(), $7)
+      VALUES (
+        $1, $2, $3, $4, 'usd', 'paid', FALSE, $5, $6, $7, $8, $9, $10,
+        $11, $12, NOW(), $13, $4, NOW(), $14
+      )
       RETURNING id
     `,
     [
       reservationId,
       session.id,
-      typeof session.payment_intent === "string" ? session.payment_intent : null,
+      stripePaymentIntentId,
       Number(checkout.amount_cents),
       payload.email,
+      stripeCustomerId,
       checkout.payment_method_type,
+      stripePaymentMethod?.id || null,
+      paymentMethodBrand,
+      paymentMethodLast4,
+      cardDetails?.exp_month || null,
+      cardDetails?.exp_year || null,
+      checkout.payment_method_storage_consent_at,
       session.status || "complete"
     ]
   );
@@ -1671,6 +1851,72 @@ async function sendPublicBookingConfirmation(reservationId) {
       reservationId,
       error
     );
+  }
+}
+
+function getClientUrl(pathname = "/") {
+  const configuredOrigin = String(process.env.CLIENT_ORIGIN || "")
+    .split(",")[0]
+    .trim()
+    .replace(/\/+$/, "");
+
+  return configuredOrigin ? `${configuredOrigin}${pathname}` : pathname;
+}
+
+async function sendPublicBookingPushNotification(reservationId) {
+  if (!reservationId || !isWebPushConfigured) {
+    return;
+  }
+
+  try {
+    const [reservation, subscriptionsResult] = await Promise.all([
+      fetchReservationDetails(pool, reservationId),
+      pool.query(
+        `SELECT id, endpoint, p256dh_key, auth_key FROM admin_push_subscriptions`
+      )
+    ]);
+
+    if (!reservation || subscriptionsResult.rowCount === 0) {
+      return;
+    }
+
+    const guestName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+    const firstStay = reservation.siteStays?.[0];
+    const staySummary = firstStay
+      ? `Site ${firstStay.site_number}, ${formatDisplayDate(firstStay.arrival_date)}–${formatDisplayDate(firstStay.leave_date)}`
+      : `Reservation #${reservation.id}`;
+    const notification = JSON.stringify({
+      title: "New online booking",
+      body: `${guestName || "A guest"} booked ${staySummary}.`,
+      tag: `public-booking-${reservation.id}`,
+      url: getClientUrl("/?admin=reservation")
+    });
+
+    await Promise.allSettled(
+      subscriptionsResult.rows.map(async (row) => {
+        try {
+          await webPush.sendNotification(
+            {
+              endpoint: row.endpoint,
+              keys: {
+                p256dh: row.p256dh_key,
+                auth: row.auth_key
+              }
+            },
+            notification
+          );
+        } catch (error) {
+          if (error?.statusCode === 404 || error?.statusCode === 410) {
+            await pool.query(`DELETE FROM admin_push_subscriptions WHERE id = $1`, [row.id]);
+            return;
+          }
+
+          console.error("Unable to send online-booking push notification", row.id, error);
+        }
+      })
+    );
+  } catch (error) {
+    console.error("Unable to prepare online-booking push notification", reservationId, error);
   }
 }
 
@@ -3165,6 +3411,38 @@ async function buildAvailabilitySearchResult({
   };
 }
 
+function requestChangesSharedAdminData(req) {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    return false;
+  }
+
+  return [
+    /^\/reservations(?:\/|$)/,
+    /^\/reservation-payment-events(?:\/|$)/,
+    /^\/sites(?:\/|$)/,
+    /^\/customers(?:\/|$)/,
+    /^\/guest\/reservations(?:\/|$)/,
+    /^\/stripe\/sync(?:\/|$)/
+  ].some((pattern) => pattern.test(req.path));
+}
+
+app.use("/api", (req, res, next) => {
+  if (!requestChangesSharedAdminData(req)) {
+    return next();
+  }
+
+  res.once("finish", () => {
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      broadcastAdminDataChange({
+        sourceClientId: String(req.header("x-rvpark-client-id") || "").slice(0, 100),
+        reason: "reservation_data_changed"
+      });
+    }
+  });
+
+  return next();
+});
+
 app.get("/api/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -3695,6 +3973,11 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
     ? Number(req.body.towVehicleLengthFeet)
     : null;
   const towVehicleType = String(req.body.towVehicleType || "");
+  const rigOverTenYears = Boolean(req.body.rigOverTenYears);
+  const termsAccepted = Boolean(req.body.termsAccepted);
+  const paymentMethodStorageAccepted = Boolean(
+    req.body.paymentMethodStorageAccepted
+  );
   const paymentMethodType = req.body.paymentMethod === "bank"
     ? "us_bank_account"
     : req.body.paymentMethod === "card"
@@ -3728,9 +4011,21 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
     return res.status(400).json({ message: "Site and rig details are required." });
   }
 
-  if (!Boolean(req.body.siteReassignmentAccepted)) {
+  if (!termsAccepted) {
     return res.status(400).json({
-      message: "Accept the site reassignment policy before continuing."
+      message: "Accept the Terms & Conditions before continuing."
+    });
+  }
+
+  if (!paymentMethodStorageAccepted) {
+    return res.status(400).json({
+      message: "Authorize Stripe to save the payment method before continuing."
+    });
+  }
+
+  if (rigOverTenYears) {
+    return res.status(400).json({
+      message: "RVs more than 10 years old must be reserved by calling 541-295-1269."
     });
   }
 
@@ -3862,13 +4157,26 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       });
     }
 
-    const baseDepositAmount = Math.min(oneNightDeposit, totalPrice);
+    const requiredDepositNights = numberOfNights > 7 ? 2 : 1;
+    const baseDepositAmount = Math.min(
+      roundCurrency(oneNightDeposit * requiredDepositNights),
+      totalPrice
+    );
     const checkoutAmount = paymentMethodType === "card"
       ? getCardPrice(baseDepositAmount)
       : baseDepositAmount;
     const amountCents = toAmountCents(checkoutAmount);
     const checkoutToken = randomBytes(24).toString("hex");
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    const stripeCustomer = await stripe.customers.create({
+      name: `${firstName} ${lastName}`.trim(),
+      email,
+      phone: phoneNumber,
+      metadata: {
+        source: "riverpark_public_booking",
+        public_booking_checkout_token: checkoutToken
+      }
+    });
     const bookingPayload = {
       firstName,
       lastName,
@@ -3889,12 +4197,15 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       discounts,
       totalPrice,
       baseDepositAmount,
-      siteNumber: site.site_number
+      siteNumber: site.site_number,
+      termsAccepted: true,
+      termsVersion: publicBookingTermsVersion,
+      paymentMethodStorageAccepted: true
     };
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: [paymentMethodType],
-      customer_email: email,
+      customer: stripeCustomer.id,
       client_reference_id: checkoutToken,
       success_url: `${baseUrl}/?booking_checkout=return&checkout_token=${checkoutToken}&session_id={CHECKOUT_SESSION_ID}#availability`,
       cancel_url: `${baseUrl}/?booking_checkout=cancel&checkout_token=${checkoutToken}#availability`,
@@ -3905,6 +4216,7 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       },
       payment_intent_data: {
         receipt_email: email,
+        setup_future_usage: "off_session",
         metadata: {
           public_booking_checkout_token: checkoutToken,
           payment_method_type: paymentMethodType
@@ -3938,9 +4250,13 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
           arrival_date,
           leave_date,
           booking_payload,
+          stripe_customer_id,
+          terms_version,
+          terms_accepted_at,
+          payment_method_storage_consent_at,
           expires_at
         )
-        VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8, $9::jsonb, $10)
+        VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8, $9::jsonb, $10, $11, NOW(), NOW(), $12)
       `,
       [
         checkoutToken,
@@ -3952,6 +4268,8 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
         arrivalDate,
         leaveDate,
         JSON.stringify(bookingPayload),
+        stripeCustomer.id,
+        publicBookingTermsVersion,
         expiresAt.toISOString()
       ]
     );
@@ -4371,7 +4689,10 @@ app.post("/api/guest/reservations/legacy-pending", async (req, res) => {
       `,
       [
         customer.id,
-        Math.min(oneNightDeposit, totalPrice),
+        Math.min(
+          roundCurrency(oneNightDeposit * (numberOfNights > 7 ? 2 : 1)),
+          totalPrice
+        ),
         totalPrice,
         rvKind,
         rvKind === "motor home" ? Boolean(req.body.motorhomeClassA) : false,
