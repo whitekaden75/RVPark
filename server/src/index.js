@@ -35,7 +35,7 @@ const vapidSubject = process.env.VAPID_SUBJECT || "mailto:reservations@riverpark
 const guestVerificationRequests = new Map();
 const guestVerificationAttempts = new Map();
 const cardPriceMultiplier = 1.03;
-const publicBookingTermsVersion = "2026-08-13";
+const publicBookingTermsVersion = "2026-08-15";
 const pricingPreviewDays = Array.from({ length: 28 }, (_, index) => index + 1);
 const adminSessionCookieName = "rvpark_admin_session";
 const stripe = stripeSecretKey
@@ -680,6 +680,7 @@ function buildReservationConfirmationEmail(reservation) {
 function buildReservationCancellationEmail(reservation) {
   const siteStays = Array.isArray(reservation.siteStays) ? reservation.siteStays : [];
   const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+  const depositAmount = formatEmailCurrency(reservation.depositAmount);
   const stayDetails = siteStays.length
     ? siteStays.map((stay, index) => ({
         label: siteStays.length > 1 ? `Stay ${index + 1}` : "Canceled stay",
@@ -714,9 +715,10 @@ function buildReservationCancellationEmail(reservation) {
       `Departure: ${stay.departureDate}`,
       ...(index < stayDetails.length - 1 ? [""] : [])
     ]),
+    `Forfeited deposit: ${depositAmount}`,
     "",
     "Deposit policy",
-    "As outlined when the reservation was made, deposits are non-refundable. Because this reservation was canceled, the deposit has been forfeited and will not be refunded.",
+    `As outlined when the reservation was made, deposits are non-refundable. Because this reservation was canceled, the ${depositAmount} deposit has been forfeited and will not be refunded.`,
     "",
     "We appreciate your understanding and hope we have the opportunity to welcome you to Riverpark RV Resort another time.",
     "",
@@ -728,13 +730,15 @@ function buildReservationCancellationEmail(reservation) {
     "541-295-1269 (cell)",
     "Text message okay"
   ].join("\n");
-  const detailRows = stayDetails
-    .flatMap((stay) => [
+  const detailRows = [
+    ...stayDetails.flatMap((stay) => [
       ...(siteStays.length > 1 ? [[stay.label, "", true]] : []),
       ["Site", stay.siteNumber],
       ["Arrival", stay.arrivalDate],
       ["Departure", stay.departureDate]
-    ])
+    ]),
+    ["Forfeited deposit", depositAmount]
+  ]
     .map(([label, value, isHeading]) =>
       isHeading
         ? `
@@ -780,7 +784,8 @@ function buildReservationCancellationEmail(reservation) {
 
                 <div style="padding:20px 22px;background:#f5e9dc;border-left:4px solid #b8793e;border-radius:8px;">
                   <div style="color:#17372f;font-size:15px;font-weight:700;line-height:1.4;">About your deposit</div>
-                  <div style="margin-top:7px;color:#4b5b54;font-size:14px;line-height:1.7;">As outlined when the reservation was made, deposits are non-refundable. Because this reservation was canceled, the deposit has been forfeited and will not be refunded.</div>
+                  <div style="margin-top:8px;color:#9a4e2f;font-family:Georgia,'Times New Roman',serif;font-size:27px;font-weight:700;line-height:1.2;">${escapeEmailHtml(depositAmount)} forfeited</div>
+                  <div style="margin-top:9px;color:#4b5b54;font-size:14px;line-height:1.7;">As outlined when the reservation was made, deposits are non-refundable. Because this reservation was canceled, the ${escapeEmailHtml(depositAmount)} deposit has been forfeited and will not be refunded.</div>
                 </div>
 
                 <p style="margin:28px 0 0;color:#4b5b54;font-size:15px;line-height:1.7;">We appreciate your understanding and hope we have the opportunity to welcome you to Riverpark RV Resort another time.</p>
@@ -1035,6 +1040,18 @@ function getCardStayTotal(value, chargeableNights) {
     : roundCurrency(nightlyCardPrice * nights);
 }
 
+function normalizeReservationPaymentMethod(value) {
+  return value === "card" ? "card" : "bank";
+}
+
+function normalizeRequestedDiscounts(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(value.map((discount) => String(discount || "").trim()).filter(Boolean))];
+}
+
 function normalizeReservationStatus(value) {
   if (value === "canceled") {
     return "canceled";
@@ -1236,10 +1253,13 @@ function buildBillingSummary(reservationRow, totals) {
   );
 
   const amountPaid = toPriceNumber(reservationRow.amount_paid) ?? 0;
-  const cardTotalPrice = getCardStayTotal(
-    effectiveTotalPrice,
-    totals?.chargeableNights
+  const selectedPaymentMethod = normalizeReservationPaymentMethod(
+    reservationRow.payment_method
   );
+  const cardTotalPrice =
+    selectedPaymentMethod === "card"
+      ? effectiveTotalPrice
+      : getCardStayTotal(effectiveTotalPrice, totals?.chargeableNights);
   const remainingBalance =
     effectiveTotalPrice !== null && effectiveTotalPrice !== undefined
       ? roundCurrency(Math.max(effectiveTotalPrice - amountPaid, 0))
@@ -1247,7 +1267,10 @@ function buildBillingSummary(reservationRow, totals) {
 
   return {
     depositAmount: toPriceNumber(reservationRow.deposit_amount) ?? 0,
-    cardDepositAmount: getCardPrice(reservationRow.deposit_amount) ?? 0,
+    cardDepositAmount:
+      selectedPaymentMethod === "card"
+        ? toPriceNumber(reservationRow.deposit_amount) ?? 0
+        : getCardPrice(reservationRow.deposit_amount) ?? 0,
     totalPrice: toPriceNumber(reservationRow.total_price),
     monthlyRentPrice: toPriceNumber(reservationRow.monthly_rent_price),
     electricMeterReading: toMeterNumber(reservationRow.electric_meter_reading),
@@ -1260,7 +1283,11 @@ function buildBillingSummary(reservationRow, totals) {
         ? 0
         : cardTotalPrice !== null && cardTotalPrice !== undefined
         ? roundCurrency(Math.max(cardTotalPrice - amountPaid, 0))
-        : null
+        : null,
+    selectedPaymentMethod,
+    requestedDiscounts: normalizeRequestedDiscounts(
+      reservationRow.requested_discounts
+    )
   };
 }
 
@@ -1702,8 +1729,11 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
   const discountNote = payload.discounts?.length
     ? ` Requested discounts: ${payload.discounts.join(", ")}.`
     : "";
+  const smsConsentNote = payload.smsConsent
+    ? " Guest opted in to reservation-related text messages and park-wide updates or alerts."
+    : " Guest did not opt in to text messages.";
   const publicReservationNotes =
-    `Created through paid public Stripe Checkout. Terms ${payload.termsVersion || publicBookingTermsVersion} accepted and payment-method storage authorized.${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
+    `Created through paid public Stripe Checkout. Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}. Terms ${payload.termsVersion || publicBookingTermsVersion} accepted and payment-method storage authorized.${smsConsentNote}${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
   const reservationResult = await client.query(
     `
       INSERT INTO reservations (
@@ -1722,14 +1752,16 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
         slide_passenger_side,
         rig_length_feet,
         amount_paid,
-        notes
+        notes,
+        payment_method,
+        requested_discounts
       )
-      VALUES ($1, CURRENT_DATE, 'active', 'standard', 'manual_total', $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $11)
+      VALUES ($1, CURRENT_DATE, 'active', 'standard', 'manual_total', $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $11, $13, $14)
       RETURNING id
     `,
     [
       customerId,
-      Number(checkout.base_deposit_amount),
+      Number(checkout.amount_cents) / 100,
       Number(payload.totalPrice),
       payload.rvKind,
       Boolean(payload.motorhomeClassA),
@@ -1739,7 +1771,9 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
       Boolean(payload.slidePassengerSide),
       Number(payload.rigLengthFeet),
       publicReservationNotes,
-      Number(checkout.amount_cents) / 100
+      Number(checkout.amount_cents) / 100,
+      checkout.payment_method_type === "card" ? "card" : "bank",
+      normalizeRequestedDiscounts(payload.discounts)
     ]
   );
   const reservationId = reservationResult.rows[0].id;
@@ -2869,6 +2903,8 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.rig_length_feet,
         r.amount_paid,
         r.notes,
+        r.payment_method,
+        r.requested_discounts,
         r.created_at,
         c.first_name,
         c.last_name,
@@ -3093,6 +3129,8 @@ async function fetchReservationList(queryable) {
         r.rig_length_feet,
         r.amount_paid,
         r.notes,
+        r.payment_method,
+        r.requested_discounts,
         r.created_at,
         c.first_name,
         c.last_name,
@@ -4165,6 +4203,9 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
     const checkoutAmount = paymentMethodType === "card"
       ? getCardPrice(baseDepositAmount)
       : baseDepositAmount;
+    const selectedTotalPrice = paymentMethodType === "card"
+      ? getCardStayTotal(totalPrice, calculateChargeableNights(numberOfNights))
+      : totalPrice;
     const amountCents = toAmountCents(checkoutAmount);
     const checkoutToken = randomBytes(24).toString("hex");
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
@@ -4195,12 +4236,15 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       slidePassengerSide: Boolean(req.body.slidePassengerSide),
       rigLengthFeet,
       discounts,
-      totalPrice,
+      totalPrice: selectedTotalPrice,
+      baseTotalPrice: totalPrice,
       baseDepositAmount,
+      paymentMethod: paymentMethodType === "card" ? "card" : "bank",
       siteNumber: site.site_number,
       termsAccepted: true,
       termsVersion: publicBookingTermsVersion,
-      paymentMethodStorageAccepted: true
+      paymentMethodStorageAccepted: true,
+      smsConsent: Boolean(req.body.smsConsent)
     };
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
@@ -5385,6 +5429,8 @@ app.post("/api/reservations", async (req, res) => {
     monthlyRentPrice,
     electricMeterReading,
     notes,
+    paymentMethod,
+    discounts,
     siteStays,
     status
   } = req.body;
@@ -5408,6 +5454,8 @@ app.post("/api/reservations", async (req, res) => {
   const parsedDepositAmount = toPriceNumber(depositAmount) ?? 0;
   const parsedMonthlyRentPrice = toPriceNumber(monthlyRentPrice);
   const parsedElectricMeterReading = toMeterNumber(electricMeterReading);
+  const reservationPaymentMethod = normalizeReservationPaymentMethod(paymentMethod);
+  const requestedDiscounts = normalizeRequestedDiscounts(discounts);
   const archivedSegments = normalizedSegments.map((segment) => ({
     siteId: Number(segment.siteId),
     arrivalDate: segment.arrivalDate,
@@ -5456,9 +5504,11 @@ app.post("/api/reservations", async (req, res) => {
           slide_passenger_side,
           rig_length_feet,
           amount_paid,
-          notes
+          notes,
+          payment_method,
+          requested_discounts
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
         RETURNING id
       `,
       [
@@ -5481,7 +5531,9 @@ app.post("/api/reservations", async (req, res) => {
         Boolean(slidePassengerSide),
         rigLengthFeet ? Number(rigLengthFeet) : null,
         toPriceNumber(amountPaid) ?? 0,
-        notes || ""
+        notes || "",
+        reservationPaymentMethod,
+        requestedDiscounts
       ]
     );
 
@@ -5571,6 +5623,8 @@ app.put("/api/reservations/:id", async (req, res) => {
     monthlyRentPrice,
     electricMeterReading,
     notes,
+    paymentMethod,
+    discounts,
     siteStays,
     status
   } = req.body;
@@ -5591,9 +5645,11 @@ app.put("/api/reservations/:id", async (req, res) => {
   const reservationBillingMode = normalizeBillingMode(billingMode);
   const isMotorhome = rvKind === "motor home";
   const parsedTotalPrice = toPriceNumber(totalPrice);
-  const parsedDepositAmount = toPriceNumber(depositAmount) ?? 0;
+  let parsedDepositAmount = toPriceNumber(depositAmount) ?? 0;
   const parsedMonthlyRentPrice = toPriceNumber(monthlyRentPrice);
   const parsedElectricMeterReading = toMeterNumber(electricMeterReading);
+  let reservationPaymentMethod = normalizeReservationPaymentMethod(paymentMethod);
+  let requestedDiscounts = normalizeRequestedDiscounts(discounts);
   const archivedSegments = normalizedSegments.map((segment) => ({
     siteId: Number(segment.siteId),
     arrivalDate: segment.arrivalDate,
@@ -5614,7 +5670,7 @@ app.put("/api/reservations/:id", async (req, res) => {
 
     const currentReservationResult = await client.query(
       `
-        SELECT status
+        SELECT status, canceled_at, deposit_amount, payment_method, requested_discounts
         FROM reservations
         WHERE id = $1
         FOR UPDATE
@@ -5625,6 +5681,24 @@ app.put("/api/reservations/:id", async (req, res) => {
     if (currentReservationResult.rowCount === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (paymentMethod === undefined) {
+      reservationPaymentMethod = normalizeReservationPaymentMethod(
+        currentReservationResult.rows[0].payment_method
+      );
+    }
+
+    if (discounts === undefined) {
+      requestedDiscounts = normalizeRequestedDiscounts(
+        currentReservationResult.rows[0].requested_discounts
+      );
+    }
+
+    if (depositAmount === undefined) {
+      parsedDepositAmount = toPriceNumber(
+        currentReservationResult.rows[0].deposit_amount
+      ) ?? 0;
     }
 
     const shouldSendCancellationEmail =
@@ -5663,7 +5737,9 @@ app.put("/api/reservations/:id", async (req, res) => {
           slide_passenger_side = $18,
           rig_length_feet = $19,
           amount_paid = $20,
-          notes = $21
+          notes = $21,
+          payment_method = $22,
+          requested_discounts = $23
         WHERE id = $1
         RETURNING id
       `,
@@ -5678,7 +5754,9 @@ app.put("/api/reservations/:id", async (req, res) => {
         parsedTotalPrice,
         parsedMonthlyRentPrice,
         parsedElectricMeterReading,
-        reservationStatus === "canceled" ? new Date().toISOString() : null,
+        reservationStatus === "canceled"
+          ? currentReservationResult.rows[0].canceled_at || new Date().toISOString()
+          : null,
         JSON.stringify(reservationStatus === "canceled" ? archivedSegments : []),
         rvKind,
         isMotorhome ? Boolean(motorhomeClassA) : false,
@@ -5688,7 +5766,9 @@ app.put("/api/reservations/:id", async (req, res) => {
         Boolean(slidePassengerSide),
         rigLengthFeet ? Number(rigLengthFeet) : null,
         toPriceNumber(amountPaid) ?? 0,
-        notes || ""
+        notes || "",
+        reservationPaymentMethod,
+        requestedDiscounts
       ]
     );
 
@@ -5759,6 +5839,167 @@ app.put("/api/reservations/:id", async (req, res) => {
     }
 
     res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/reservations/:id/extend-stay", async (req, res) => {
+  const reservationId = Number(req.params.id);
+  const additionalDays = Number(req.body?.days);
+
+  if (!reservationId || !Number.isInteger(additionalDays) || additionalDays < 1) {
+    return res.status(400).json({ message: "Enter at least one whole day to add." });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const reservationResult = await client.query(
+      `
+        SELECT
+          id,
+          status,
+          reservation_term,
+          payment_method,
+          requested_discounts
+        FROM reservations
+        WHERE id = $1
+        FOR UPDATE
+      `,
+      [reservationId]
+    );
+
+    if (reservationResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    const reservation = reservationResult.rows[0];
+
+    if (reservation.status === "canceled") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "A canceled reservation cannot be extended." });
+    }
+
+    if (reservation.reservation_term === "yearly") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Yearly stays are already open-ended." });
+    }
+
+    const staysResult = await client.query(
+      `
+        SELECT
+          rss.id,
+          rss.site_id,
+          rss.arrival_date::text,
+          rss.leave_date::text,
+          s.site_number,
+          s.river_category,
+          s.is_big_rig
+        FROM reservation_site_stays rss
+        JOIN rv_sites s ON s.id = rss.site_id
+        WHERE rss.reservation_id = $1
+        ORDER BY rss.leave_date, rss.arrival_date, rss.id
+        FOR UPDATE OF rss
+      `,
+      [reservationId]
+    );
+
+    if (staysResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "This reservation does not have a site stay to extend." });
+    }
+
+    const stays = staysResult.rows;
+    const finalStay = stays.at(-1);
+    const newLeaveDate = addDays(finalStay.leave_date, additionalDays);
+    const conflictResult = await client.query(
+      `
+        SELECT
+          r.id AS reservation_id,
+          c.first_name,
+          c.last_name,
+          rss.arrival_date::text,
+          rss.leave_date::text
+        FROM reservation_site_stays rss
+        JOIN reservations r ON r.id = rss.reservation_id
+        JOIN customers c ON c.id = r.customer_id
+        WHERE rss.site_id = $1
+          AND rss.reservation_id <> $2
+          AND r.status <> 'canceled'
+          AND rss.arrival_date < $4::date
+          AND rss.leave_date > $3::date
+        ORDER BY rss.arrival_date
+        LIMIT 1
+        FOR SHARE OF rss, r
+      `,
+      [finalStay.site_id, reservationId, finalStay.leave_date, newLeaveDate]
+    );
+
+    if (conflictResult.rowCount > 0) {
+      const conflict = conflictResult.rows[0];
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        message: `Site ${finalStay.site_number} is only open until ${formatDisplayDate(conflict.arrival_date)} because reservation #${conflict.reservation_id} starts then.`
+      });
+    }
+
+    const pricingLookup = buildPricingRuleLookup(await loadPricingRules());
+    const useDiscountPrice = normalizeRequestedDiscounts(
+      reservation.requested_discounts
+    ).length > 0;
+    let selectedTotal = 0;
+
+    for (const stay of stays) {
+      const leaveDate = stay.id === finalStay.id ? newLeaveDate : stay.leave_date;
+      const numberOfNights = nightsBetween(stay.arrival_date, leaveDate);
+      const pricing = getPricingForSiteAndNights(stay, numberOfNights, pricingLookup);
+      const basePrice = useDiscountPrice
+        ? pricing.discountPrice ?? pricing.normalPrice
+        : pricing.normalPrice ?? pricing.discountPrice;
+
+      if (basePrice === null || basePrice === undefined) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          message: "Automatic pricing is not configured for the extended stay. Use Edit dates/site and payment info for a manual long-stay price."
+        });
+      }
+
+      selectedTotal +=
+        reservation.payment_method === "card"
+          ? getCardStayTotal(basePrice, calculateChargeableNights(numberOfNights))
+          : basePrice;
+    }
+
+    await client.query(
+      `UPDATE reservation_site_stays SET leave_date = $2 WHERE id = $1`,
+      [finalStay.id, newLeaveDate]
+    );
+    await client.query(
+      `
+        UPDATE reservations
+        SET billing_mode = 'manual_total', total_price = $2
+        WHERE id = $1
+      `,
+      [reservationId, roundCurrency(selectedTotal)]
+    );
+    const updatedReservation = await fetchReservationDetails(client, reservationId);
+    await client.query("COMMIT");
+
+    broadcastAdminDataChange({ reason: "reservation_extended" });
+    return res.json(updatedReservation);
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.code === "23P01") {
+      return res.status(409).json({
+        message: "That site was booked while the stay was being extended. Refresh and try again."
+      });
+    }
+
+    return res.status(500).json({ message: error.message });
   } finally {
     client.release();
   }

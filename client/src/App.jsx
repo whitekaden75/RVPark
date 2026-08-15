@@ -127,6 +127,8 @@ function createEmptyReservation(defaultSite = null) {
     status: "active",
     reservationTerm: "standard",
     billingMode: "manual_total",
+    discounts: [],
+    paymentMethod: "bank",
     depositAmount: "",
     totalPrice: "",
     monthlyRentPrice: "",
@@ -226,6 +228,8 @@ function getReservationNotesSnippet(notes, maxLength = 120) {
 
 function CardActionMenu({ menuId, openMenuId, onToggle, onClose, actions }) {
   const isOpen = openMenuId === menuId;
+  const inlineActions = actions.filter((action) => action.placement === "card");
+  const menuActions = actions.filter((action) => action.placement !== "card");
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
   const [menuPosition, setMenuPosition] = useState(null);
@@ -283,7 +287,7 @@ function CardActionMenu({ menuId, openMenuId, onToggle, onClose, actions }) {
       window.removeEventListener("resize", updateMenuPosition);
       window.removeEventListener("scroll", updateMenuPosition, true);
     };
-  }, [isOpen, actions.length]);
+  }, [isOpen, menuActions.length]);
 
   return (
     <>
@@ -299,6 +303,19 @@ function CardActionMenu({ menuId, openMenuId, onToggle, onClose, actions }) {
           onClick={() => onToggle(menuId)}>
           ...
         </button>
+        {inlineActions.map((action) => (
+          <button
+            key={action.label}
+            type="button"
+            className="ghost-button card-inline-action"
+            disabled={action.disabled}
+            onClick={() => {
+              onClose();
+              action.onClick();
+            }}>
+            {action.label}
+          </button>
+        ))}
       </div>
       {isOpen && typeof document !== "undefined"
         ? createPortal(
@@ -312,7 +329,7 @@ function CardActionMenu({ menuId, openMenuId, onToggle, onClose, actions }) {
                 visibility: menuPosition ? "visible" : "hidden",
               }}
               onClick={(event) => event.stopPropagation()}>
-              {actions.map((action) => (
+              {menuActions.map((action) => (
                 <button
                   key={action.label}
                   type="button"
@@ -396,6 +413,68 @@ function addDays(dateString, numberOfDays) {
   const date = new Date(`${dateString}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + numberOfDays);
   return formatDateInput(date);
+}
+
+function getParkDateFromTimestamp(value) {
+  if (!value) {
+    return "";
+  }
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "America/Los_Angeles",
+  }).formatToParts(new Date(value));
+  const dateParts = Object.fromEntries(
+    parts.map((part) => [part.type, part.value])
+  );
+
+  return `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
+}
+
+function getStayExtensionAvailability(reservation, reservations) {
+  if (
+    !reservation ||
+    reservation.status === "canceled" ||
+    reservation.reservation_term === "yearly"
+  ) {
+    return null;
+  }
+
+  const finalStay = [...(reservation.siteStays || [])]
+    .filter((stay) => stay.leave_date && !isOpenEndedStay(stay.leave_date))
+    .sort((left, right) =>
+      `${left.leave_date}-${left.arrival_date}`.localeCompare(
+        `${right.leave_date}-${right.arrival_date}`
+      )
+    )
+    .at(-1);
+
+  if (!finalStay) {
+    return null;
+  }
+
+  const nextStay = reservations
+    .filter(
+      (entry) =>
+        entry.id !== reservation.id && entry.status !== "canceled"
+    )
+    .flatMap((entry) => entry.siteStays || [])
+    .filter(
+      (stay) =>
+        String(stay.site_id) === String(finalStay.site_id) &&
+        stay.arrival_date >= finalStay.leave_date
+    )
+    .sort((left, right) => left.arrival_date.localeCompare(right.arrival_date))[0];
+
+  return {
+    finalStay,
+    nextStay: nextStay || null,
+    maximumDays: nextStay
+      ? Math.max(nightsBetween(finalStay.leave_date, nextStay.arrival_date), 0)
+      : null,
+  };
 }
 
 function startOfMonth(dateString) {
@@ -515,6 +594,26 @@ function getCardPrice(value) {
 
   const cardAmount = Number(value) * 1.03;
   return Math.round((Math.ceil(cardAmount - 0.99) + 0.99) * 100) / 100;
+}
+
+function getCardStayTotal(value, chargeableNights) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const nights = Number(chargeableNights);
+
+  if (!Number.isFinite(nights) || nights <= 0) {
+    return getCardPrice(value);
+  }
+
+  const nightlyBasePrice = Math.round((Number(value) / nights) * 100) / 100;
+  const nightlyCardPrice = getCardPrice(nightlyBasePrice);
+  return Math.round(nightlyCardPrice * nights * 100) / 100;
+}
+
+function formatSelectedPaymentMethod(value) {
+  return value === "card" ? "Card" : "Bank / cash / check";
 }
 
 function roundUpToDollar99(value) {
@@ -874,47 +973,51 @@ function buildArrivalReminderText(reservation, arrivalDate) {
     ) ||
     reservation.siteStays?.[0] ||
     null;
+  const balanceAmount = Number(reservation.remainingBalance || 0);
+  const formattedBalance = new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: Number.isInteger(balanceAmount) ? 0 : 2,
+    maximumFractionDigits: 2,
+  }).format(balanceAmount);
 
   return [
-    "RIVERPARK RV RESORT",
+    "Riverpark RV Resort",
     "",
-    `Hi ${customerName || "Guest"},`,
-    `We have you coming in ${formatArrivalReference(arrivalDate)}.`,
+    `Hello ${customerName || "Guest"},`,
     "",
-    "CHECK-IN TIME IS 1:00 PM",
+    `We're looking forward to your arrival ${formatArrivalReference(
+      arrivalDate
+    )}!`,
+    "",
+    "Reservation Details",
     `Arrival: ${
       arrivingSegment?.arrival_date
-        ? formatShortDate(arrivingSegment.arrival_date)
+        ? formatDisplayDate(arrivingSegment.arrival_date)
         : "Not set"
     }`,
-    `Depart: ${
+    `Departure: ${
       arrivingSegment?.leave_date
-        ? formatShortDate(arrivingSegment.leave_date)
+        ? formatDisplayDate(arrivingSegment.leave_date)
         : "Not set"
     }`,
-    `Balance due: ${formatCurrency(reservation.remainingBalance)}`,
+    "Check-in: 1:00 PM",
+    `Balance Due: ${formattedBalance}`,
     "",
-    "The balance due will be charged to your card on file unless otherwise requested.",
+    "Payment Information",
+    "We do not accept debit cards.",
+    "Credit card payments are subject to a 3% processing fee.",
+    "Cash and checks are accepted with no additional fee.",
     "",
-    "PLEASE NOTE:",
-    "- We do NOT accept debit cards.",
-    "- Credit cards have a 3% surcharge.",
-    "- Check or cash: no surcharge.",
+    "Please reply to this message to confirm your arrival and provide your approximate arrival time. Any questions? Call (541) 295-1269",
     "",
-    "Please confirm your arrival in a return text, along with your APPROXIMATE ARRIVAL TIME.",
+    "Thank you!",
     "",
-    'If the office is closed, you will find your receipt and park map in the "Late Arrivals" box to the left of the office door. The park map will direct you to your site.',
-    "",
-    "All sites are back-in only. If you need assistance backing in, or have any questions, please ring the bell to the right of the door, or call 541-295-1269. It will be answered if we are available, within reasonable hours.",
-    "",
-    "Thank you!!",
-    "-Makayla",
-    "",
+    "Makayla",
+    "Riverpark RV Resort",
     "2956 Rogue River Hwy",
     "Grants Pass, OR 97527",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].join("\n");
 }
 
 function buildSmsComposeUrl(phoneNumber, messageBody) {
@@ -1756,7 +1859,7 @@ function PublicTermsAndConditions() {
         </a>
         <p className="eyebrow">Booking policies</p>
         <h1>Terms &amp; Conditions</h1>
-        <p className="public-terms-updated">Effective August 13, 2026</p>
+        <p className="public-terms-updated">Effective August 15, 2026</p>
 
         <section>
           <h2>Reservations and deposits</h2>
@@ -1831,6 +1934,26 @@ function PublicTermsAndConditions() {
         </section>
 
         <section>
+          <h2>Text messaging terms</h2>
+          <p>
+            Guests may separately choose to receive text messages from
+            Riverpark RV Resort. Messages may include reservation
+            confirmations, arrival and check-in reminders, balance reminders,
+            reservation changes, cancellation notices, responses to guest
+            questions, and park-wide operational updates or alerts such as
+            weather, safety, closure, or utility notices.
+          </p>
+          <p>
+            Consent to receive text messages is optional and is not a condition
+            of making a reservation. Message frequency varies according to
+            reservation and park activity. Message and data rates may apply.
+            Reply <strong>STOP</strong> to unsubscribe or <strong>HELP</strong>{" "}
+            for assistance. For additional help, call 541-295-1269. Carriers
+            are not liable for delayed or undelivered messages.
+          </p>
+        </section>
+
+        <section>
           <h2>Park rules</h2>
           <ul>
             <li>Check-in is at 1:00 p.m. and check-out is at 11:00 a.m.</li>
@@ -1846,7 +1969,121 @@ function PublicTermsAndConditions() {
           <p>
             Questions about these terms may be directed to Riverpark RV Resort
             at <a href="tel:+15412951269">541-295-1269</a> or 2956 Rogue River
-            Hwy, Grants Pass, OR 97527.
+            Hwy, Grants Pass, OR 97527. Please also review our{" "}
+            <a href="/?page=privacy">Privacy Policy</a>.
+          </p>
+        </section>
+
+        <a className="public-terms-return" href="/#availability">
+          Return to booking
+        </a>
+      </article>
+    </main>
+  );
+}
+
+function PublicPrivacyPolicy() {
+  return (
+    <main className="public-terms-page">
+      <article className="public-terms-card">
+        <a className="public-terms-brand" href="/">
+          Riverpark RV Resort
+        </a>
+        <p className="eyebrow">Guest information</p>
+        <h1>Privacy Policy</h1>
+        <p className="public-terms-updated">Effective August 15, 2026</p>
+
+        <section>
+          <h2>Information we collect</h2>
+          <p>
+            Riverpark RV Resort may collect information that guests provide
+            when checking availability, making or managing a reservation, or
+            contacting the resort. This may include a guest’s name, email
+            address, mobile phone number, stay dates, RV information, requested
+            discounts, payment choice, and reservation communications.
+          </p>
+          <p>
+            Payment information is processed securely by Stripe. Riverpark RV
+            Resort does not receive or store full card or bank account numbers
+            or card security codes.
+          </p>
+        </section>
+
+        <section>
+          <h2>How we use information</h2>
+          <p>
+            We use guest information to process and manage reservations,
+            collect authorized payments, provide customer service, maintain
+            resort records, protect the safety and operation of the park, and
+            comply with legal obligations.
+          </p>
+          <p>
+            When a guest separately opts in to text messaging, we may use the
+            provided mobile number for reservation-related messages and
+            park-wide operational updates or alerts, including weather, safety,
+            closure, and utility notices.
+          </p>
+        </section>
+
+        <section>
+          <h2>Mobile information and text messaging</h2>
+          <p>
+            Mobile information will not be shared with third parties or
+            affiliates for marketing or promotional purposes. Text-message
+            opt-in data and consent will not be shared with any third parties,
+            except service providers that help us deliver messages and are
+            required to protect that information, or when disclosure is
+            required by law.
+          </p>
+          <p>
+            Message frequency varies. Message and data rates may apply. Reply
+            <strong> STOP</strong> to unsubscribe or <strong>HELP</strong> for
+            assistance. Opting out of texts does not cancel a reservation or
+            prevent a guest from contacting the resort by phone or email.
+          </p>
+        </section>
+
+        <section>
+          <h2>When information may be shared</h2>
+          <p>
+            We may share information with service providers only as reasonably
+            necessary to operate the resort and provide requested services,
+            such as payment processing, website hosting, email delivery, and
+            text-message delivery. We may also disclose information when
+            required by law or to protect guests, the resort, or others. We do
+            not sell personal information.
+          </p>
+        </section>
+
+        <section>
+          <h2>Information security and retention</h2>
+          <p>
+            We use reasonable administrative and technical safeguards to
+            protect guest information. We retain information only as long as
+            reasonably necessary for reservations, business records, legal
+            obligations, dispute resolution, and enforcement of agreements.
+            No method of electronic storage or transmission can be guaranteed
+            to be completely secure.
+          </p>
+        </section>
+
+        <section>
+          <h2>Your choices</h2>
+          <p>
+            Guests may ask to review or correct their contact information and
+            may withdraw text-message consent at any time by replying STOP.
+            Guests may also contact Riverpark RV Resort about their information
+            or communication preferences.
+          </p>
+        </section>
+
+        <section>
+          <h2>Contact</h2>
+          <p>
+            Privacy questions may be directed to Riverpark RV Resort at{" "}
+            <a href="tel:+15412951269">541-295-1269</a> or 2956 Rogue River
+            Hwy, Grants Pass, OR 97527. Please also review our{" "}
+            <a href="/?page=terms">Terms of Service</a>.
           </p>
         </section>
 
@@ -1889,6 +2126,7 @@ function PublicHome({
     lastName: "",
     email: "",
     phoneNumber: "",
+    smsConsent: false,
     discounts: [],
     termsAccepted: false,
   });
@@ -1944,6 +2182,7 @@ function PublicHome({
     setShowAllPublicDirectMatches(false);
     setPublicBookingForm((current) => ({
       ...current,
+      smsConsent: false,
       termsAccepted: false,
     }));
   }, [
@@ -2023,6 +2262,7 @@ function PublicHome({
     setPublicBookingError("");
     setPublicBookingForm((current) => ({
       ...current,
+      smsConsent: false,
       termsAccepted: false,
     }));
 
@@ -2254,8 +2494,8 @@ function PublicHome({
             <p className="eyebrow">Grants Pass, Oregon</p>
             <h1>Slow down by the Rogue.</h1>
             <p className="hero-lead">
-              A welcoming RV stay on the river, minutes from Grants Pass and
-              surrounded by the wild beauty of Southern Oregon.
+              A welcoming full-hookup RV stay on the river, minutes from Grants
+              Pass and surrounded by the wild beauty of Southern Oregon.
             </p>
             <div className="hero-actions">
               <a className="public-primary-button" href="#availability">
@@ -2266,6 +2506,7 @@ function PublicHome({
               </a>
             </div>
             <div className="hero-details" aria-label="Park highlights">
+              <span>Full hookups</span>
               <span>Riverfront setting</span>
               <span>No freeway noise</span>
               <span>Back-in RV sites</span>
@@ -2746,6 +2987,38 @@ function PublicHome({
                         />
                       </label>
                     </div>
+                    <div className="public-sms-opt-in">
+                      <label className="checkbox-row public-sms-consent">
+                        <input
+                          type="checkbox"
+                          checked={publicBookingForm.smsConsent}
+                          onChange={(event) =>
+                            setPublicBookingForm((current) => ({
+                              ...current,
+                              smsConsent: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>
+                          Yes, I agree to receive reservation-related text
+                          messages and park-wide updates or alerts from
+                          Riverpark RV Resort at the mobile number provided.
+                        </span>
+                      </label>
+                      <p>
+                        Message frequency varies. Message and data rates may
+                        apply. Reply HELP for help or STOP to unsubscribe.
+                        Consent is optional and is not a condition of booking.{" "}
+                        <a href="/?page=terms" target="_blank" rel="noreferrer">
+                          Terms of Service
+                        </a>{" "}
+                        and{" "}
+                        <a href="/?page=privacy" target="_blank" rel="noreferrer">
+                          Privacy Policy
+                        </a>
+                        .
+                      </p>
+                    </div>
                     <div className="public-discount-panel">
                       <span className="small-text">Discounts</span>
                       <p className="muted">
@@ -3030,6 +3303,10 @@ function PublicHome({
         <div className="footer-contact">
           <a href="tel:+15412951269">541-295-1269</a>
           <span>2956 Rogue River Hwy, Grants Pass, OR</span>
+          <nav className="footer-policy-links" aria-label="Legal policies">
+            <a href="/?page=privacy">Privacy Policy</a>
+            <a href="/?page=terms">Terms of Service</a>
+          </nav>
         </div>
         <div className="footer-actions">
           <button
@@ -4472,7 +4749,9 @@ function BookingHistoryCalendar({
             <span>{day.dayNumber}</span>
             {day.totalCount ? (
               <div className="calendar-day-names">
-                <small>{day.totalCount} booked</small>
+                <small>
+                  {day.totalCount} {day.totalCount === 1 ? "activity" : "activities"}
+                </small>
                 {day.canceledCount ? (
                   <small>{day.canceledCount} canceled</small>
                 ) : null}
@@ -4486,7 +4765,7 @@ function BookingHistoryCalendar({
           <i className="legend-box selected" /> selected day
         </span>
         <span>
-          <i className="legend-box history-booked" /> has bookings
+          <i className="legend-box history-booked" /> has activity
         </span>
         <span>
           <i className="legend-box history-canceled" /> only canceled
@@ -4695,6 +4974,9 @@ export default function App() {
   const [reservationEditorSuccessMessage, setReservationEditorSuccessMessage] =
     useState("");
   const [activeReservationNote, setActiveReservationNote] = useState(null);
+  const [stayExtensionForm, setStayExtensionForm] = useState(null);
+  const [stayExtensionError, setStayExtensionError] = useState("");
+  const [isSavingStayExtension, setIsSavingStayExtension] = useState(false);
   const [reservationCardPaymentAmount, setReservationCardPaymentAmount] =
     useState("");
   const [activeSchedulePaymentAmount, setActiveSchedulePaymentAmount] =
@@ -5238,24 +5520,77 @@ export default function App() {
     }),
     { normalPrice: 0, discountPrice: 0 }
   );
+  const reservationNightCount = reservationPricingPreview.reduce(
+    (total, segment) => total + segment.numberOfNights,
+    0
+  );
+  const hasRequestedReservationDiscount = reservationForm.discounts.length > 0;
+  const selectedSegmentBasePrices = reservationPricingPreview.map((segment) =>
+    hasRequestedReservationDiscount
+      ? segment.discountPrice ?? segment.normalPrice
+      : segment.normalPrice ?? segment.discountPrice
+  );
+  const selectedBaseReservationTotal =
+    selectedSegmentBasePrices.length &&
+    selectedSegmentBasePrices.every(
+      (price) => price !== null && price !== undefined
+    )
+      ? selectedSegmentBasePrices.reduce((total, price) => total + price, 0)
+      : null;
+  const selectedCardReservationTotal =
+    reservationPricingPreview.length &&
+    selectedSegmentBasePrices.every(
+      (price) => price !== null && price !== undefined
+    )
+      ? reservationPricingPreview.reduce((total, segment, index) => {
+          const segmentBasePrice = selectedSegmentBasePrices[index];
+          const chargeableNights = calculateChargeableNights(
+            segment.numberOfNights
+          );
+
+          return chargeableNights === null
+            ? null
+            : total === null
+              ? null
+              : total + getCardStayTotal(segmentBasePrice, chargeableNights);
+        }, 0)
+      : null;
+  const needsManualReservationPricing =
+    reservationForm.reservationTerm === "yearly" ||
+    (reservationForm.siteStays.some(
+      (segment) => segment.arrivalDate && segment.leaveDate
+    ) && reservationPricingPreview.length !== reservationForm.siteStays.length);
   const utilityPricePreview = calculateUtilityPrice(
     reservationForm.electricMeterReading
   );
   const firstAutoPricedSegment = reservationPricingPreview[0] || null;
   const autoPricedReservationTotal =
-    reservationPricingPreview.length &&
-    reservationPricingPreview.every(
-      (segment) => segment.normalPrice !== null && segment.normalPrice !== undefined
-    )
-      ? reservationPricingTotals.normalPrice
+    reservationForm.paymentMethod === "card"
+      ? selectedCardReservationTotal
+      : selectedBaseReservationTotal;
+  const firstNightPricingRule = firstAutoPricedSegment?.siteNumber
+    ? getPricingRuleForNights(
+        siteLookup.get(String(reservationForm.siteStays[0]?.siteId)),
+        1
+      )
+    : null;
+  const selectedOneNightPrice = hasRequestedReservationDiscount
+    ? firstNightPricingRule?.discountPrice ?? firstNightPricingRule?.normalPrice
+    : firstNightPricingRule?.normalPrice ?? firstNightPricingRule?.discountPrice;
+  const selectedBankDepositAmount =
+    selectedOneNightPrice !== null &&
+    selectedOneNightPrice !== undefined &&
+    selectedBaseReservationTotal !== null
+      ? Math.min(
+          selectedOneNightPrice * (reservationNightCount > 7 ? 2 : 1),
+          selectedBaseReservationTotal
+        )
       : null;
+  const selectedCardDepositAmount = getCardPrice(selectedBankDepositAmount);
   const autoPricedDepositAmount =
-    firstAutoPricedSegment && firstAutoPricedSegment.siteNumber
-      ? getPricingRuleForNights(
-          siteLookup.get(String(reservationForm.siteStays[0]?.siteId)),
-          1
-        )?.normalPrice ?? null
-      : null;
+    reservationForm.paymentMethod === "card"
+      ? selectedCardDepositAmount
+      : selectedBankDepositAmount;
   const effectiveTotalPreview =
     reservationForm.billingMode === "manual_total"
       ? reservationForm.totalPrice === ""
@@ -5285,7 +5620,7 @@ export default function App() {
         ? String(autoPricedDepositAmount)
         : "";
 
-    if (!isReservationTotalOverridden) {
+    if (!editingReservationId || !isReservationTotalOverridden) {
       setReservationForm((current) =>
         current.totalPrice === nextTotalPrice
           ? current
@@ -5293,7 +5628,7 @@ export default function App() {
       );
     }
 
-    if (!isReservationDepositOverridden) {
+    if (!editingReservationId || !isReservationDepositOverridden) {
       setReservationForm((current) =>
         current.depositAmount === nextDepositAmount
           ? current
@@ -5305,10 +5640,12 @@ export default function App() {
     autoPricedReservationTotal,
     isReservationDepositOverridden,
     isReservationTotalOverridden,
+    editingReservationId,
     reservationForm.billingMode,
   ]);
   const visibleCustomers = customers.filter((customer) => {
     const searchValue = customerSearch.trim().toLowerCase();
+    const searchPhoneDigits = customerSearch.replaceAll(/\D/g, "");
 
     if (!searchValue) {
       return true;
@@ -5316,7 +5653,15 @@ export default function App() {
 
     const fullName =
       `${customer.first_name} ${customer.last_name}`.toLowerCase();
-    return fullName.includes(searchValue);
+    const customerPhoneDigits = String(customer.phone_number || "").replaceAll(
+      /\D/g,
+      ""
+    );
+
+    return (
+      fullName.includes(searchValue) ||
+      (searchPhoneDigits && customerPhoneDigits.includes(searchPhoneDigits))
+    );
   });
   const suggestedCustomers = customers.filter((customer) => {
     const firstName = normalizeNamePart(customerForm.firstName);
@@ -5332,6 +5677,10 @@ export default function App() {
     );
   });
   const customerBookingSearchValue = customerBookingSearch.trim().toLowerCase();
+  const customerBookingSearchPhoneDigits = customerBookingSearch.replaceAll(
+    /\D/g,
+    ""
+  );
   const yearlyReservations = reservations
     .filter(
       (reservation) =>
@@ -5414,9 +5763,18 @@ export default function App() {
         return false;
       }
 
-      return `${reservation.first_name} ${reservation.last_name}`
+      const matchesName = `${reservation.first_name} ${reservation.last_name}`
         .toLowerCase()
         .includes(customerBookingSearchValue);
+      const reservationPhoneDigits = String(
+        reservation.phone_number || ""
+      ).replaceAll(/\D/g, "");
+
+      return (
+        matchesName ||
+        (customerBookingSearchPhoneDigits &&
+          reservationPhoneDigits.includes(customerBookingSearchPhoneDigits))
+      );
     })
     .sort((left, right) => {
       const leftDate =
@@ -5491,24 +5849,36 @@ export default function App() {
       setTimelineSiteId(String(timelineSiteOptions[0].id));
     }
   }, [timelineSiteId, timelineSiteOptions]);
-  const reservationsByBookedDate = reservations.reduce(
+  const reservationsByHistoryDate = reservations.reduce(
     (summary, reservation) => {
-      const bookedDate = reservation.booked_date;
+      const historyDate =
+        reservation.status === "canceled" && reservation.canceled_at
+          ? getParkDateFromTimestamp(reservation.canceled_at)
+          : reservation.booked_date;
 
-      if (!bookedDate) {
+      if (!historyDate) {
         return summary;
       }
 
-      const current = summary.get(bookedDate) || [];
+      const current = summary.get(historyDate) || [];
       current.push(reservation);
-      summary.set(bookedDate, current);
+      summary.set(historyDate, current);
       return summary;
     },
     new Map()
   );
   const selectedHistoryReservations = [
-    ...(reservationsByBookedDate.get(selectedHistoryDate) || []),
+    ...(reservationsByHistoryDate.get(selectedHistoryDate) || []),
   ].sort((left, right) => right.id - left.id);
+  const stayExtensionReservation = stayExtensionForm
+    ? reservations.find(
+        (reservation) => reservation.id === stayExtensionForm.reservationId
+      ) || null
+    : null;
+  const stayExtensionAvailability = getStayExtensionAvailability(
+    stayExtensionReservation,
+    reservations
+  );
   const hasReservationCardPayment =
     Boolean(createdReservation?.id) &&
     reservationCardPayment?.reservationId === createdReservation?.id &&
@@ -5985,6 +6355,9 @@ export default function App() {
         status: "canceled",
         reservationTerm: reservation.reservation_term || "standard",
         billingMode: reservation.billing_mode || "standard",
+        discounts: reservation.requestedDiscounts || [],
+        paymentMethod: reservation.selectedPaymentMethod || "bank",
+        depositAmount: reservation.depositAmount,
         totalPrice: reservation.totalPrice,
         monthlyRentPrice: reservation.monthlyRentPrice,
         electricMeterReading: reservation.electricMeterReading,
@@ -6006,7 +6379,7 @@ export default function App() {
         })),
       };
 
-      await apiRequest(`/reservations/${reservationId}`, {
+      const canceledReservation = await apiRequest(`/reservations/${reservationId}`, {
         method: "PUT",
         body: JSON.stringify(payload),
       });
@@ -6016,7 +6389,24 @@ export default function App() {
       }
 
       await refreshReservationAndSiteData();
-      setSuccessMessage(`Canceled reservation #${reservationId}.`);
+      const cancellationEmailMessage =
+        canceledReservation.cancellationEmail?.message || "";
+
+      setSuccessMessage(
+        `Canceled reservation #${reservationId}.${
+          canceledReservation.cancellationEmail?.sent && cancellationEmailMessage
+            ? ` ${cancellationEmailMessage}`
+            : ""
+        }`
+      );
+
+      if (
+        canceledReservation.cancellationEmail &&
+        !canceledReservation.cancellationEmail.sent &&
+        cancellationEmailMessage
+      ) {
+        setErrorMessage(cancellationEmailMessage);
+      }
     } catch (error) {
       setErrorMessage(error.message);
     }
@@ -6039,6 +6429,12 @@ export default function App() {
 
       return { ...current, [field]: value };
     });
+  }
+
+  function updateReservationPriceChoice(field, value) {
+    setIsReservationTotalOverridden(false);
+    setIsReservationDepositOverridden(false);
+    updateReservationField(field, value);
   }
 
   function updateSiteStay(index, field, value) {
@@ -6355,7 +6751,9 @@ export default function App() {
       if (isCreatingReservation) {
         setReservationCardPaymentAmount(
           (
-            created.cardDepositAmount ?? getCardPrice(depositAmountNumber)
+            created.selectedPaymentMethod === "card"
+              ? created.depositAmount
+              : created.cardDepositAmount ?? getCardPrice(depositAmountNumber)
           ).toFixed(2)
         );
       }
@@ -6398,6 +6796,8 @@ export default function App() {
         status: reservation.status || "active",
         reservationTerm: reservation.reservation_term || "standard",
         billingMode: "manual_total",
+        discounts: reservation.requestedDiscounts || [],
+        paymentMethod: reservation.selectedPaymentMethod || "bank",
         depositAmount:
           reservation.depositAmount !== null &&
           reservation.depositAmount !== undefined
@@ -7143,8 +7543,112 @@ export default function App() {
     setOpenCardActionMenuId("");
   }
 
+  function openStayExtension(reservation) {
+    setStayExtensionError("");
+    setStayExtensionForm({
+      reservationId: reservation.id,
+      days: "1",
+    });
+  }
+
+  function closeStayExtension() {
+    if (isSavingStayExtension) {
+      return;
+    }
+
+    setStayExtensionForm(null);
+    setStayExtensionError("");
+  }
+
+  async function saveStayExtension(event) {
+    event.preventDefault();
+
+    if (!stayExtensionReservation || !stayExtensionAvailability) {
+      return;
+    }
+
+    const days = Number(stayExtensionForm.days);
+
+    if (!Number.isInteger(days) || days < 1) {
+      setStayExtensionError("Enter at least one whole day.");
+      return;
+    }
+
+    if (
+      stayExtensionAvailability.maximumDays !== null &&
+      days > stayExtensionAvailability.maximumDays
+    ) {
+      setStayExtensionError(
+        `Only ${stayExtensionAvailability.maximumDays} additional ${
+          stayExtensionAvailability.maximumDays === 1 ? "day is" : "days are"
+        } open on this site.`
+      );
+      return;
+    }
+
+    setStayExtensionError("");
+    setIsSavingStayExtension(true);
+
+    try {
+      const updatedReservation = await apiRequest(
+        `/reservations/${stayExtensionReservation.id}/extend-stay`,
+        {
+          method: "POST",
+          body: JSON.stringify({ days }),
+        }
+      );
+
+      setReservations((current) =>
+        current.map((reservation) =>
+          reservation.id === updatedReservation.id
+            ? updatedReservation
+            : reservation
+        )
+      );
+
+      if (activeScheduleReservation?.id === updatedReservation.id) {
+        setActiveScheduleReservation(updatedReservation);
+      }
+
+      if (createdReservation?.id === updatedReservation.id) {
+        setCreatedReservation(updatedReservation);
+      }
+
+      setStayExtensionForm(null);
+      setSuccessMessage(
+        `Added ${days} ${days === 1 ? "day" : "days"} to reservation #${updatedReservation.id}.`
+      );
+      setAdminSaveNotice(
+        `Reservation #${updatedReservation.id} was extended by ${days} ${
+          days === 1 ? "day" : "days"
+        }.`
+      );
+    } catch (error) {
+      if (error.status === 409) {
+        await refreshReservationAndSiteData();
+      }
+      setStayExtensionError(error.message);
+    } finally {
+      setIsSavingStayExtension(false);
+    }
+  }
+
   function buildReservationEditActions(reservationId) {
+    const reservation = reservations.find((entry) => entry.id === reservationId);
+    const canExtendStay = Boolean(
+      getStayExtensionAvailability(reservation, reservations)
+    );
+
     return [
+      ...(canExtendStay
+        ? [
+            {
+              label: "Add days to stay",
+              placement: "card",
+              onClick: () => openStayExtension(reservation),
+            },
+          ]
+        : []),
       {
         label: "Edit customer information",
         onClick: () => openReservationEditor(reservationId, "customer"),
@@ -7526,6 +8030,13 @@ export default function App() {
     new URLSearchParams(window.location.search).get("page") === "terms"
   ) {
     return <PublicTermsAndConditions />;
+  }
+
+  if (
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("page") === "privacy"
+  ) {
+    return <PublicPrivacyPolicy />;
   }
 
   if (activePage === "home") {
@@ -8139,9 +8650,9 @@ export default function App() {
                     </div>
                   ) : null}
                   <label>
-                    Search customer
+                    Search customer name or phone
                     <input
-                      placeholder="Type a customer name"
+                      placeholder="Type a name or phone number"
                       value={customerSearch}
                       onChange={(event) =>
                         setCustomerSearch(event.target.value)
@@ -8227,59 +8738,76 @@ export default function App() {
                       <option value="yearly">Yearly</option>
                     </select>
                   </label>
-                  <label>
-                    Total price
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      placeholder="0.00"
-                      value={reservationForm.totalPrice}
-                      onChange={(event) => {
-                        setIsReservationTotalOverridden(true);
-                        updateReservationField("totalPrice", event.target.value);
-                      }}
-                    />
-                  </label>
-                  {!editingReservationId ? (
-                    <label>
-                      Deposit amount
+                  <div className="public-discount-panel admin-price-choice-panel">
+                    <span className="small-text">Discount</span>
+                    <label className="checkbox-row compact-checkbox">
                       <input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        placeholder="Required"
-                        value={reservationForm.depositAmount}
-                        onChange={(event) => {
-                          setIsReservationDepositOverridden(true);
-                          updateReservationField(
-                            "depositAmount",
-                            event.target.value
-                          );
-                        }}
-                        onWheel={(event) => event.currentTarget.blur()}
+                        type="checkbox"
+                        checked={reservationForm.discounts.length > 0}
+                        onChange={(event) =>
+                          updateReservationPriceChoice(
+                            "discounts",
+                            event.target.checked ? ["Eligible discount"] : []
+                          )
+                        }
                       />
+                      Guest qualifies for the discounted price
                     </label>
-                  ) : (
-                    <label>
-                      Deposit amount
+                  </div>
+                  <div className="public-discount-panel admin-price-choice-panel">
+                    <span className="small-text">Payment choice</span>
+                    <label className="checkbox-row compact-checkbox">
                       <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        placeholder="0.00"
-                        value={reservationForm.depositAmount}
-                        onChange={(event) => {
-                          setIsReservationDepositOverridden(true);
-                          updateReservationField(
-                            "depositAmount",
-                            event.target.value
-                          );
-                        }}
-                        onWheel={(event) => event.currentTarget.blur()}
+                        type="radio"
+                        name="admin-booking-payment-method"
+                        checked={reservationForm.paymentMethod === "bank"}
+                        onChange={() => updateReservationPriceChoice("paymentMethod", "bank")}
                       />
+                      Bank / cash / check
                     </label>
-                  )}
+                    <label className="checkbox-row compact-checkbox">
+                      <input
+                        type="radio"
+                        name="admin-booking-payment-method"
+                        checked={reservationForm.paymentMethod === "card"}
+                        onChange={() => updateReservationPriceChoice("paymentMethod", "card")}
+                      />
+                      Card
+                    </label>
+                  </div>
+                  {needsManualReservationPricing ? (
+                    <>
+                      <label>
+                        Manual total
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={reservationForm.totalPrice}
+                          onChange={(event) => {
+                            setIsReservationTotalOverridden(true);
+                            updateReservationField("totalPrice", event.target.value);
+                          }}
+                        />
+                      </label>
+                      <label>
+                        Manual deposit
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={reservationForm.depositAmount}
+                          onChange={(event) => {
+                            setIsReservationDepositOverridden(true);
+                            updateReservationField("depositAmount", event.target.value);
+                          }}
+                          onWheel={(event) => event.currentTarget.blur()}
+                        />
+                      </label>
+                    </>
+                  ) : null}
                   <div
                     ref={reservationRigSectionRef}
                     className="reservation-form-anchor">
@@ -8394,20 +8922,42 @@ export default function App() {
                   ))}
                 </div>
 
-                {reservationForm.totalPrice ? (
+                {reservationPricingPreview.length ? (
                   <div className="pricing-preview-card">
-                    <h3>Booking Total</h3>
+                    <h3>Booking price</h3>
                     <p className="muted">
                       Every 7th night is free through 28 nights. Longer stays
-                      need a manual total and deposit.
+                      need a price entered through payment info after booking.
                     </p>
+                    <BookingPriceComparison
+                      title={
+                        hasRequestedReservationDiscount
+                          ? "Discounted price per night"
+                          : "Price per night"
+                      }
+                      bankPrice={selectedBaseReservationTotal}
+                      cardPrice={selectedCardReservationTotal}
+                      perNight
+                      numberOfNights={reservationNightCount}
+                    />
+                    <BookingPriceComparison
+                      title={
+                        reservationNightCount > 7
+                          ? "Two-night deposit due"
+                          : "One-night deposit due"
+                      }
+                      bankPrice={selectedBankDepositAmount}
+                      cardPrice={selectedCardDepositAmount}
+                    />
                     <div className="pricing-summary">
                       <span>
-                        Manual total:{" "}
-                        {formatCurrency(reservationForm.totalPrice || null)}
+                        Selected: {formatSelectedPaymentMethod(reservationForm.paymentMethod)}
                       </span>
                       <span>
-                        Effective total: {formatCurrency(effectiveTotalPreview)}
+                        Booking total: {formatCurrency(reservationForm.totalPrice || null)}
+                      </span>
+                      <span>
+                        Deposit due: {formatCurrency(reservationForm.depositAmount || null)}
                       </span>
                       <span>
                         Remaining balance:{" "}
@@ -8689,9 +9239,9 @@ export default function App() {
               </div>
               <div className="timeline-controls schedule-search-controls">
                 <label>
-                  Search name
+                  Search name or phone
                   <input
-                    placeholder="Type a customer name"
+                    placeholder="Type a name or phone number"
                     value={customerBookingSearch}
                     onChange={(event) =>
                       setCustomerBookingSearch(event.target.value)
@@ -9355,7 +9905,7 @@ export default function App() {
               <BookingHistoryCalendar
                 monthCursor={historyMonthCursor}
                 selectedDate={selectedHistoryDate}
-                reservationsByDate={reservationsByBookedDate}
+                reservationsByDate={reservationsByHistoryDate}
                 onChangeMonth={changeHistoryMonth}
                 onSelectDate={(dateString) => {
                   setSelectedHistoryDate(dateString);
@@ -9364,7 +9914,7 @@ export default function App() {
               />
 
               <div className="timeline-card">
-                <h3>Booked on {formatDisplayDate(selectedHistoryDate)}</h3>
+                <h3>History for {formatDisplayDate(selectedHistoryDate)}</h3>
                 {isHistoryPageLoading && !hasLoadedReservations ? (
                   <p className="muted">Loading reservations for this day...</p>
                 ) : selectedHistoryReservations.length ? (
@@ -9432,11 +9982,21 @@ export default function App() {
                         </p>
                         <div className="pricing-summary">
                           <span>
+                            Payment: {formatSelectedPaymentMethod(
+                              reservation.selectedPaymentMethod
+                            )}
+                          </span>
+                          <span>
+                            Discounts: {reservation.requestedDiscounts?.length
+                              ? reservation.requestedDiscounts.join(", ")
+                              : "None requested"}
+                          </span>
+                          <span>
                             Deposit amount:{" "}
                             {formatCurrency(reservation.depositAmount)}
                           </span>
                           <span>
-                            Manual total:{" "}
+                            Booking total:{" "}
                             {formatCurrency(reservation.totalPrice)}
                           </span>
                           <span>
@@ -9477,7 +10037,7 @@ export default function App() {
                   </div>
                 ) : (
                   <p className="muted">
-                    No reservations were booked on this day.
+                    No reservation activity on this day.
                   </p>
                 )}
               </div>
@@ -9573,7 +10133,7 @@ export default function App() {
                             "Not set"}
                         </span>
                         <span>
-                          Manual total: {formatCurrency(reservation.totalPrice)}
+                          Booking total: {formatCurrency(reservation.totalPrice)}
                         </span>
                       </div>
                     </article>
@@ -10269,6 +10829,105 @@ export default function App() {
           </div>
         ) : null}
 
+        {stayExtensionForm && stayExtensionReservation && stayExtensionAvailability ? (
+          <div
+            className="modal-backdrop"
+            role="presentation"
+            onClick={closeStayExtension}>
+            <form
+              className="modal-card note-modal-card"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="stay-extension-modal-title"
+              onSubmit={saveStayExtension}
+              onClick={(event) => event.stopPropagation()}>
+              <div className="result-header">
+                <div>
+                  <h3 id="stay-extension-modal-title">Add days to stay</h3>
+                  <p className="muted">
+                    {stayExtensionReservation.first_name}{" "}
+                    {stayExtensionReservation.last_name} • Site{" "}
+                    {stayExtensionAvailability.finalStay.site_number}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={isSavingStayExtension}
+                  onClick={closeStayExtension}>
+                  Close
+                </button>
+              </div>
+              <p>
+                Current departure:{" "}
+                <strong>
+                  {formatDisplayDate(
+                    stayExtensionAvailability.finalStay.leave_date
+                  )}
+                </strong>
+              </p>
+              <label>
+                Days to add
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  max={stayExtensionAvailability.maximumDays ?? undefined}
+                  step="1"
+                  value={stayExtensionForm.days}
+                  onChange={(event) => {
+                    setStayExtensionError("");
+                    setStayExtensionForm((current) => ({
+                      ...current,
+                      days: event.target.value,
+                    }));
+                  }}
+                  onWheel={(event) => event.currentTarget.blur()}
+                />
+              </label>
+              {Number(stayExtensionForm.days) > 0 ? (
+                <p className="muted">
+                  New departure:{" "}
+                  {formatDisplayDate(
+                    addDays(
+                      stayExtensionAvailability.finalStay.leave_date,
+                      Number(stayExtensionForm.days)
+                    )
+                  )}
+                </p>
+              ) : null}
+              {stayExtensionError ? (
+                <div className="message error">{stayExtensionError}</div>
+              ) : null}
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={isSavingStayExtension}
+                  onClick={closeStayExtension}>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={
+                    isSavingStayExtension ||
+                    stayExtensionAvailability.maximumDays === 0
+                  }>
+                  {isSavingStayExtension ? "Adding days..." : "Add days to stay"}
+                </button>
+              </div>
+              <p className="muted stay-extension-availability">
+                {stayExtensionAvailability.maximumDays === null
+                  ? `Site ${stayExtensionAvailability.finalStay.site_number} has no later booking scheduled, so it is open beyond this stay.`
+                  : stayExtensionAvailability.maximumDays === 0
+                    ? `Site ${stayExtensionAvailability.finalStay.site_number} has another guest arriving on the current departure date, so no days can be added.`
+                    : `Site ${stayExtensionAvailability.finalStay.site_number} is open for ${stayExtensionAvailability.maximumDays} more ${stayExtensionAvailability.maximumDays === 1 ? "day" : "days"}, until ${formatDisplayDate(stayExtensionAvailability.nextStay.arrival_date)}.`}
+              </p>
+            </form>
+          </div>
+        ) : null}
+
         {activeScheduleReservation ? (
           <div
             className="modal-backdrop"
@@ -10341,11 +11000,21 @@ export default function App() {
               </div>
               <div className="pricing-summary">
                 <span>
+                  Payment choice: {formatSelectedPaymentMethod(
+                    activeScheduleReservation.selectedPaymentMethod
+                  )}
+                </span>
+                <span>
+                  Discounts: {activeScheduleReservation.requestedDiscounts?.length
+                    ? activeScheduleReservation.requestedDiscounts.join(", ")
+                    : "None requested"}
+                </span>
+                <span>
                   Deposit amount:{" "}
                   {formatCurrency(activeScheduleReservation.depositAmount)}
                 </span>
                 <span>
-                  Manual total:{" "}
+                  Booking total:{" "}
                   {formatCurrency(activeScheduleReservation.totalPrice)}
                 </span>
                 <span>
@@ -10376,7 +11045,7 @@ export default function App() {
                   {formatCurrency(activeScheduleReservation.depositAmount)}
                 </span>
                 <span>
-                  Manual total:{" "}
+                  Booking total:{" "}
                   {formatCurrency(activeScheduleReservation.totalPrice)}
                 </span>
                 <span>
@@ -10458,7 +11127,7 @@ export default function App() {
                           />
                         </label>
                         <label>
-                          Manual total
+                          Booking total
                           <input
                             type="number"
                             min="0"

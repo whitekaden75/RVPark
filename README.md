@@ -30,6 +30,7 @@ React + Node.js app for managing RV park registrations with:
 - `sql/013_add_motorhome_type_flags.sql` adds the class A, class C, and with-tow motor home flags to reservations
 - `sql/014_add_stripe_webhook_tracking.sql` adds Stripe webhook event storage and richer payment-status fields
 - `sql/2026-08-01_add_public_booking_checkouts.sql` stores short-lived public booking details until Stripe confirms a card or ACH bank deposit
+- `sql/2026-08-15_add_reservation_price_choices.sql` stores each booking's requested discounts and selected payment method
 
 ## Database Setup
 
@@ -70,6 +71,8 @@ If you want to track motor home class and tow details on reservations, run [sql/
 If you want Stripe webhook receipts and richer payment-status tracking, run [sql/014_add_stripe_webhook_tracking.sql](/Users/kadenwhite/Desktop/RVPark/sql/014_add_stripe_webhook_tracking.sql) too.
 
 Before enabling payment-first public booking, run [sql/2026-08-01_add_public_booking_checkouts.sql](/Users/kadenwhite/Desktop/RVPark/sql/2026-08-01_add_public_booking_checkouts.sql). This table stores a short Stripe Checkout site hold and the guest-entered booking details; the actual reservation is inserted only after Stripe reports the deposit as paid. A submitted ACH payment keeps the site held while the bank payment processes.
+
+Run [sql/2026-08-15_add_reservation_price_choices.sql](/Users/kadenwhite/Desktop/RVPark/sql/2026-08-15_add_reservation_price_choices.sql) so both client and admin bookings retain the requested discounts and selected payment method.
 
 Enable both Cards and ACH Direct Debit (`us_bank_account`) in the Stripe Dashboard. The webhook endpoint must receive `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, and `checkout.session.expired` events. ACH payments can remain processing after the guest returns to the site, so the reservation is created only after `checkout.session.async_payment_succeeded`.
 
