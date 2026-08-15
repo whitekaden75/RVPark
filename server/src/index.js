@@ -32,6 +32,15 @@ const adminSessionSecret = process.env.ADMIN_SESSION_SECRET || "";
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || "";
 const vapidSubject = process.env.VAPID_SUBJECT || "mailto:reservations@riverparkrvresort.com";
+const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID || "";
+const twilioApiKeySid = process.env.TWILIO_API_KEY_SID || "";
+const twilioApiKeySecret = process.env.TWILIO_API_KEY_SECRET || "";
+const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || "";
+const twilioMessagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID || "";
+const allowedClientOrigins = String(process.env.CLIENT_ORIGIN || "")
+  .split(",")
+  .map((value) => value.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
 const guestVerificationRequests = new Map();
 const guestVerificationAttempts = new Map();
 const cardPriceMultiplier = 1.03;
@@ -42,6 +51,12 @@ const stripe = stripeSecretKey
   ? new Stripe(stripeSecretKey, { apiVersion: stripeApiVersion })
   : null;
 const isWebPushConfigured = Boolean(vapidPublicKey && vapidPrivateKey);
+const isTwilioConfigured = Boolean(
+  twilioAccountSid &&
+  twilioApiKeySid &&
+  twilioApiKeySecret &&
+  (twilioPhoneNumber || twilioMessagingServiceSid)
+);
 const adminEventClients = new Set();
 
 if (isWebPushConfigured) {
@@ -58,6 +73,60 @@ function broadcastAdminDataChange({ sourceClientId = "", reason = "data_changed"
 
     client.response.write(payload);
   }
+}
+
+function normalizeSmsPhoneNumber(value) {
+  const originalValue = String(value || "").trim();
+  const digits = originalValue.replaceAll(/\D/g, "");
+
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+
+  if (originalValue.startsWith("+") && digits.length >= 8 && digits.length <= 15) {
+    return `+${digits}`;
+  }
+
+  return "";
+}
+
+function addSmsComplianceFooter(messageBody) {
+  const trimmedBody = String(messageBody || "").trim();
+
+  if (/reply\s+stop\b/i.test(trimmedBody) && /\bhelp\b/i.test(trimmedBody)) {
+    return trimmedBody;
+  }
+
+  return `${trimmedBody}\n\nReply STOP to unsubscribe or HELP for assistance.`;
+}
+
+async function makeTwilioRequest(path, { method = "GET", form = null } = {}) {
+  const response = await fetch(`https://api.twilio.com${path}`, {
+    method,
+    headers: {
+      Authorization: `Basic ${Buffer.from(
+        `${twilioApiKeySid}:${twilioApiKeySecret}`
+      ).toString("base64")}`,
+      ...(form
+        ? { "Content-Type": "application/x-www-form-urlencoded" }
+        : {})
+    },
+    body: form ? new URLSearchParams(form).toString() : undefined
+  });
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const error = new Error(result.message || "Twilio could not complete the request.");
+    error.status = response.status;
+    error.code = result.code || null;
+    throw error;
+  }
+
+  return result;
 }
 
 app.set("trust proxy", 1);
@@ -206,6 +275,22 @@ function createAdminSessionToken(adminUser) {
   const encodedPayload = encodeTokenPayload(payload);
   const signature = signTokenPayload(encodedPayload, adminSessionSecret);
   return `${encodedPayload}.${signature}`;
+}
+
+function createGuestPaymentLinkToken(reservationId) {
+  const payload = {
+    type: "guest_payment_link",
+    reservationId: Number(reservationId),
+    nonce: randomBytes(12).toString("hex"),
+    expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 90
+  };
+  const encodedPayload = encodeTokenPayload(payload);
+  const signature = signTokenPayload(encodedPayload, guestAuthSecret);
+  return `${encodedPayload}.${signature}`;
+}
+
+function readGuestPaymentLinkToken(token) {
+  return readSignedToken(token, guestAuthSecret, "guest_payment_link");
 }
 
 function buildAdminSessionCookie(token, requestHost = "") {
@@ -397,6 +482,117 @@ app.get("/api/admin/events", (req, res) => {
     clearInterval(heartbeat);
     adminEventClients.delete(client);
   });
+});
+
+app.get("/api/messages", async (_req, res) => {
+  if (!isTwilioConfigured) {
+    const missing = [];
+
+    if (!twilioAccountSid) missing.push("TWILIO_ACCOUNT_SID");
+    if (!twilioApiKeySid) missing.push("TWILIO_API_KEY_SID");
+    if (!twilioApiKeySecret) missing.push("TWILIO_API_KEY_SECRET");
+    if (!twilioPhoneNumber && !twilioMessagingServiceSid) {
+      missing.push("TWILIO_PHONE_NUMBER or TWILIO_MESSAGING_SERVICE_SID");
+    }
+
+    return res.json({ configured: false, missing, messages: [] });
+  }
+
+  try {
+    const result = await makeTwilioRequest(
+      `/2010-04-01/Accounts/${encodeURIComponent(
+        twilioAccountSid
+      )}/Messages.json?PageSize=50`
+    );
+    const normalizedParkNumber = normalizeSmsPhoneNumber(twilioPhoneNumber);
+    const messages = (Array.isArray(result.messages) ? result.messages : [])
+      .filter(
+        (message) =>
+          !normalizedParkNumber ||
+          message.from === normalizedParkNumber ||
+          message.to === normalizedParkNumber
+      )
+      .map((message) => ({
+        sid: message.sid,
+        direction: message.direction,
+        from: message.from,
+        to: message.to,
+        body: message.body,
+        status: message.status,
+        dateSent: message.date_sent || message.date_created,
+        errorCode: message.error_code || null,
+        errorMessage: message.error_message || ""
+      }));
+
+    return res.json({ configured: true, messages });
+  } catch (error) {
+    console.error("Unable to load Twilio messages", error.code || error.message);
+    return res.json({
+      configured: true,
+      messages: [],
+      historyError:
+        error.message || "Unable to load text-message history. Sending may still be available."
+    });
+  }
+});
+
+app.post("/api/messages", async (req, res) => {
+  if (!isTwilioConfigured) {
+    return res.status(503).json({
+      message: "Twilio is not fully configured on the server yet."
+    });
+  }
+
+  const to = normalizeSmsPhoneNumber(req.body?.to);
+  const requestedBody = String(req.body?.body || "").trim();
+
+  if (!to) {
+    return res.status(400).json({ message: "Enter a valid mobile phone number." });
+  }
+
+  if (!requestedBody) {
+    return res.status(400).json({ message: "Enter a message before sending." });
+  }
+
+  const body = addSmsComplianceFooter(requestedBody);
+
+  if (body.length > 1600) {
+    return res.status(400).json({
+      message: "Keep the message under 1,600 characters, including the STOP and HELP notice."
+    });
+  }
+
+  const form = {
+    To: to,
+    Body: body,
+    ...(twilioMessagingServiceSid
+      ? { MessagingServiceSid: twilioMessagingServiceSid }
+      : { From: twilioPhoneNumber })
+  };
+
+  try {
+    const message = await makeTwilioRequest(
+      `/2010-04-01/Accounts/${encodeURIComponent(twilioAccountSid)}/Messages.json`,
+      { method: "POST", form }
+    );
+
+    return res.status(201).json({
+      sid: message.sid,
+      direction: message.direction || "outbound-api",
+      from: message.from || twilioPhoneNumber,
+      to: message.to || to,
+      body: message.body || body,
+      status: message.status || "queued",
+      dateSent: message.date_created || new Date().toISOString(),
+      errorCode: message.error_code || null,
+      errorMessage: message.error_message || ""
+    });
+  } catch (error) {
+    console.error("Unable to send Twilio message", error.code || error.message);
+    return res.status(error.status || 502).json({
+      message: error.message || "Unable to send the text message."
+    });
+  }
 });
 
 app.get("/api/push/config", (_req, res) => {
@@ -1122,7 +1318,14 @@ function calculateUtilityPrice(electricMeterReading) {
   return meter * 0.17 - 75;
 }
 
-function getEffectiveReservationTotal(billingMode, totals, totalPrice, monthlyRentPrice, utilityPrice) {
+function getEffectiveReservationTotal(
+  billingMode,
+  totals,
+  totalPrice,
+  monthlyRentPrice,
+  utilityPrice,
+  useDiscountPrice = false
+) {
   if (billingMode === "manual_total") {
     return toPriceNumber(totalPrice);
   }
@@ -1135,6 +1338,14 @@ function getEffectiveReservationTotal(billingMode, totals, totalPrice, monthlyRe
     }
 
     return rent + utilityPrice;
+  }
+
+  if (
+    useDiscountPrice &&
+    totals.discountPrice !== null &&
+    totals.discountPrice !== undefined
+  ) {
+    return totals.discountPrice;
   }
 
   if (totals.normalPrice !== null && totals.normalPrice !== undefined) {
@@ -1244,18 +1455,25 @@ function applyBalanceSummary(amountPaid, totals) {
 
 function buildBillingSummary(reservationRow, totals) {
   const utilityPrice = calculateUtilityPrice(reservationRow.electric_meter_reading);
-  const effectiveTotalPrice = getEffectiveReservationTotal(
+  const selectedPaymentMethod = normalizeReservationPaymentMethod(
+    reservationRow.payment_method
+  );
+  const useDiscountPrice =
+    normalizeRequestedDiscounts(reservationRow.requested_discounts).length > 0;
+  const baseEffectiveTotalPrice = getEffectiveReservationTotal(
     reservationRow.billing_mode,
     totals,
     reservationRow.total_price,
     reservationRow.monthly_rent_price,
-    utilityPrice
+    utilityPrice,
+    useDiscountPrice
   );
-
   const amountPaid = toPriceNumber(reservationRow.amount_paid) ?? 0;
-  const selectedPaymentMethod = normalizeReservationPaymentMethod(
-    reservationRow.payment_method
-  );
+  const effectiveTotalPrice =
+    reservationRow.billing_mode === "standard" &&
+    selectedPaymentMethod === "card"
+      ? getCardStayTotal(baseEffectiveTotalPrice, totals?.chargeableNights)
+      : baseEffectiveTotalPrice;
   const cardTotalPrice =
     selectedPaymentMethod === "card"
       ? effectiveTotalPrice
@@ -1288,6 +1506,20 @@ function buildBillingSummary(reservationRow, totals) {
     requestedDiscounts: normalizeRequestedDiscounts(
       reservationRow.requested_discounts
     )
+  };
+}
+
+function getRemainingBalancePaymentAmounts(reservation) {
+  const bankAmount = roundCurrency(Number(reservation?.remainingBalance || 0));
+  const cardAmount =
+    reservation?.selectedPaymentMethod === "card"
+      ? bankAmount
+      : roundCurrency(getCardPrice(bankAmount) || 0);
+
+  return {
+    bankAmount,
+    cardAmount,
+    cardFee: roundCurrency(Math.max(cardAmount - bankAmount, 0))
   };
 }
 
@@ -4022,10 +4254,6 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       ? "card"
       : "";
   const baseUrl = String(req.body.baseUrl || "").trim().replace(/\/+$/, "");
-  const allowedOrigins = String(process.env.CLIENT_ORIGIN || "")
-    .split(",")
-    .map((value) => value.trim().replace(/\/+$/, ""))
-    .filter(Boolean);
 
   if (!firstName || !lastName || phoneNumber.length !== 10) {
     return res.status(400).json({ message: "Name and a valid phone number are required." });
@@ -4075,7 +4303,7 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
     return res.status(400).json({ message: "A valid site URL is required for Stripe Checkout." });
   }
 
-  if (allowedOrigins.length && !allowedOrigins.includes(baseUrl)) {
+  if (allowedClientOrigins.length && !allowedClientOrigins.includes(baseUrl)) {
     return res.status(400).json({ message: "That Stripe return URL is not allowed." });
   }
 
@@ -5148,6 +5376,188 @@ app.put("/api/guest/reservations/:id", async (req, res) => {
   }
 });
 
+app.get("/api/guest/payment-links/:token", async (req, res) => {
+  const link = readGuestPaymentLinkToken(req.params.token);
+
+  if (!link?.reservationId) {
+    return res.status(401).json({
+      message: "This payment link is invalid or has expired. Please contact Riverpark RV Resort for a new link."
+    });
+  }
+
+  try {
+    if (stripe) {
+      await syncOpenStripePayments();
+    }
+
+    const reservation = await fetchReservationDetails(pool, link.reservationId);
+
+    if (!reservation) {
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status === "canceled") {
+      return res.status(400).json({
+        message: "This reservation has been canceled and cannot accept payments."
+      });
+    }
+
+    const { bankAmount, cardAmount, cardFee } =
+      getRemainingBalancePaymentAmounts(reservation);
+
+    return res.json({
+      reservationId: reservation.id,
+      guestName: `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim(),
+      amountPaid: Number(reservation.amountPaid || 0),
+      bankAmount,
+      cardAmount,
+      cardFee,
+      paymentComplete: bankAmount <= 0,
+      siteStays: reservation.siteStays.map((stay) => ({
+        siteNumber: stay.site_number,
+        arrivalDate: stay.arrival_date,
+        leaveDate: stay.leave_date
+      }))
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  const link = readGuestPaymentLinkToken(req.params.token);
+  const paymentMethod = req.body.paymentMethod === "bank"
+    ? "us_bank_account"
+    : req.body.paymentMethod === "card"
+      ? "card"
+      : "";
+  const baseUrl = String(req.body.baseUrl || "").trim().replace(/\/+$/, "");
+
+  if (!link?.reservationId) {
+    return res.status(401).json({
+      message: "This payment link is invalid or has expired. Please contact Riverpark RV Resort for a new link."
+    });
+  }
+
+  if (!paymentMethod) {
+    return res.status(400).json({ message: "Choose card or bank payment." });
+  }
+
+  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
+    return res.status(400).json({ message: "A valid site URL is required for payment." });
+  }
+
+  if (allowedClientOrigins.length && !allowedClientOrigins.includes(baseUrl)) {
+    return res.status(400).json({ message: "That Stripe return URL is not allowed." });
+  }
+
+  try {
+    await syncOpenStripePayments();
+    const reservation = await fetchReservationDetails(pool, link.reservationId);
+
+    if (!reservation || reservation.status === "canceled") {
+      return res.status(400).json({ message: "This reservation cannot accept payments." });
+    }
+
+    const { bankAmount, cardAmount } =
+      getRemainingBalancePaymentAmounts(reservation);
+    const paymentAmount = paymentMethod === "card" ? cardAmount : bankAmount;
+    const amountCents = toAmountCents(paymentAmount);
+
+    if (!amountCents) {
+      return res.status(400).json({
+        message: "This reservation does not have a remaining balance."
+      });
+    }
+
+    const paymentChoice = paymentMethod === "card" ? "card" : "bank";
+    const returnUrl = `${baseUrl}/?pay=${encodeURIComponent(
+      req.params.token
+    )}&pay_status=success&payment_choice=${paymentChoice}`;
+    const cancelUrl = `${baseUrl}/?pay=${encodeURIComponent(
+      req.params.token
+    )}&pay_status=cancel&payment_choice=${paymentChoice}`;
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      payment_method_types: [paymentMethod],
+      customer_email: reservation.email || undefined,
+      client_reference_id: String(reservation.id),
+      success_url: returnUrl,
+      cancel_url: cancelUrl,
+      metadata: {
+        reservation_id: String(reservation.id),
+        payment_amount_cents: String(amountCents),
+        payment_method_type: paymentMethod,
+        source: "riverpark_guest_payment_link"
+      },
+      payment_intent_data: {
+        receipt_email: reservation.email || undefined,
+        metadata: {
+          reservation_id: String(reservation.id),
+          payment_amount_cents: String(amountCents),
+          payment_method_type: paymentMethod,
+          source: "riverpark_guest_payment_link"
+        }
+      },
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: "usd",
+            unit_amount: amountCents,
+            product_data: {
+              name: "Riverpark RV Resort remaining balance",
+              description: `Reservation #${reservation.id} · Site ${
+                reservation.siteStays[0]?.site_number || "reservation"
+              }`
+            }
+          }
+        }
+      ]
+    });
+
+    await pool.query(
+      `
+        INSERT INTO stripe_payment_records (
+          reservation_id,
+          stripe_checkout_session_id,
+          amount_cents,
+          currency,
+          payment_status,
+          activate_reservation_on_payment,
+          checkout_url,
+          stripe_customer_email,
+          stripe_payment_method_type
+        )
+        VALUES ($1, $2, $3, $4, $5, FALSE, $6, $7, $8)
+      `,
+      [
+        reservation.id,
+        session.id,
+        amountCents,
+        session.currency || "usd",
+        session.payment_status || "unpaid",
+        session.url,
+        reservation.email || null,
+        paymentMethod
+      ]
+    );
+
+    return res.json({
+      reservationId: reservation.id,
+      checkoutUrl: session.url,
+      paymentMethod: paymentChoice,
+      amount: (amountCents / 100).toFixed(2)
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
 app.post("/api/guest/reservations/:id/bank-checkouts", async (req, res) => {
   if (!ensureStripeConfigured(res)) {
     return;
@@ -5164,7 +5574,7 @@ app.post("/api/guest/reservations/:id/bank-checkouts", async (req, res) => {
     return res.status(400).json({ message: "A valid site URL is required for Stripe Checkout." });
   }
 
-  if (allowedOrigins.length && !allowedOrigins.includes(baseUrl)) {
+  if (allowedClientOrigins.length && !allowedClientOrigins.includes(baseUrl)) {
     return res.status(400).json({ message: "That Stripe return URL is not allowed." });
   }
 
@@ -6010,24 +6420,33 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
     return;
   }
 
+  if (!guestAuthSecret) {
+    return res.status(503).json({
+      message: "Guest payment links require GUEST_AUTH_SECRET on the server."
+    });
+  }
+
   const reservationId = Number(req.params.id);
-  const amountCents = toAmountCents(req.body.amount);
   const baseUrl = String(
     req.body.baseUrl || process.env.CLIENT_ORIGIN?.split(",").map((value) => value.trim())[0] || ""
   )
     .trim()
     .replace(/\/+$/, "");
-  const activateReservationOnPayment = Boolean(req.body.activateReservationOnPayment);
 
-  if (!reservationId || !amountCents) {
-    return res.status(400).json({ message: "Reservation and payment amount are required." });
+  if (!reservationId) {
+    return res.status(400).json({ message: "Reservation is required." });
   }
 
   if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
-    return res.status(400).json({ message: "A valid site URL is required to generate a Stripe link." });
+    return res.status(400).json({ message: "A valid site URL is required to generate a payment link." });
+  }
+
+  if (allowedClientOrigins.length && !allowedClientOrigins.includes(baseUrl)) {
+    return res.status(400).json({ message: "That payment-link URL is not allowed." });
   }
 
   try {
+    await syncOpenStripePayments();
     const reservation = await fetchReservationDetails(pool, reservationId);
 
     if (!reservation) {
@@ -6038,79 +6457,26 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
       return res.status(400).json({ message: "Canceled reservations cannot accept payments." });
     }
 
-    const remainingBalanceCents = toAmountCents(reservation.cardRemainingBalance);
+    const { bankAmount, cardAmount } =
+      getRemainingBalancePaymentAmounts(reservation);
 
-    if (!remainingBalanceCents) {
+    if (!toAmountCents(bankAmount)) {
       return res.status(400).json({ message: "This reservation does not have a remaining balance." });
     }
 
-    if (amountCents > remainingBalanceCents) {
-      return res.status(400).json({
-        message: "Payment amount cannot be greater than the current remaining balance."
-      });
-    }
+    const token = createGuestPaymentLinkToken(reservation.id);
+    const paymentUrl = `${baseUrl}/?pay=${encodeURIComponent(token)}`;
 
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      client_reference_id: String(reservation.id),
-      success_url: `${baseUrl}/?payment=success&reservationId=${reservation.id}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/?payment=cancel&reservationId=${reservation.id}`,
-      metadata: {
-        reservation_id: String(reservation.id),
-        payment_amount_cents: String(amountCents),
-        activate_reservation_on_payment: activateReservationOnPayment ? "true" : "false"
-      },
-      payment_intent_data: {
-        metadata: {
-          reservation_id: String(reservation.id),
-          payment_amount_cents: String(amountCents)
-        }
-      },
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: "usd",
-            unit_amount: amountCents,
-            product_data: {
-              name: `Reservation #${reservation.id} payment`,
-              description: `${reservation.first_name} ${reservation.last_name}`
-            }
-          }
-        }
-      ]
-    });
-
-    await pool.query(
-      `
-        INSERT INTO stripe_payment_records (
-          reservation_id,
-          stripe_checkout_session_id,
-          amount_cents,
-          currency,
-          payment_status,
-          activate_reservation_on_payment,
-          checkout_url
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-      `,
-      [
-        reservation.id,
-        session.id,
-        amountCents,
-        session.currency || "usd",
-        session.payment_status || "unpaid",
-        activateReservationOnPayment,
-        session.url
-      ]
-    );
-
-    res.json({
+    return res.json({
       reservationId: reservation.id,
-      checkoutUrl: session.url
+      paymentUrl,
+      checkoutUrl: paymentUrl,
+      bankAmount: bankAmount.toFixed(2),
+      cardAmount: cardAmount.toFixed(2),
+      expiresInDays: 90
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    return res.status(500).json({ message: error.message });
   }
 });
 

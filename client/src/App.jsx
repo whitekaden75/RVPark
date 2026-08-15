@@ -147,6 +147,11 @@ function createEmptyReservation(defaultSite = null) {
 }
 
 function createSchedulePaymentForm(reservation = null) {
+  const displayedTotalPrice =
+    reservation?.billing_mode === "manual_total"
+      ? reservation?.totalPrice
+      : reservation?.effectiveTotalPrice ?? reservation?.totalPrice;
+
   return {
     depositAmount:
       reservation?.depositAmount !== null &&
@@ -154,13 +159,14 @@ function createSchedulePaymentForm(reservation = null) {
         ? String(reservation.depositAmount)
         : "",
     totalPrice:
-      reservation?.totalPrice !== null && reservation?.totalPrice !== undefined
-        ? String(reservation.totalPrice)
+      displayedTotalPrice !== null && displayedTotalPrice !== undefined
+        ? String(displayedTotalPrice)
         : "",
     amountPaid:
       reservation?.amountPaid !== null && reservation?.amountPaid !== undefined
         ? String(reservation.amountPaid)
         : "",
+    discountQualified: Boolean(reservation?.requestedDiscounts?.length),
   };
 }
 
@@ -765,9 +771,12 @@ function formatLeaveDate(dateString) {
 }
 
 function formatPhoneNumber(value) {
-  const digits = String(value || "")
-    .replaceAll(/\D/g, "")
-    .slice(0, 10);
+  const rawDigits = String(value || "").replaceAll(/\D/g, "");
+  const digits = (
+    rawDigits.length === 11 && rawDigits.startsWith("1")
+      ? rawDigits.slice(1)
+      : rawDigits
+  ).slice(0, 10);
 
   if (digits.length <= 3) {
     return digits.length ? `(${digits}` : "";
@@ -781,9 +790,19 @@ function formatPhoneNumber(value) {
 }
 
 function normalizePhoneForSms(value) {
-  return String(value || "")
-    .replaceAll(/\D/g, "")
-    .slice(0, 10);
+  const digits = String(value || "").replaceAll(/\D/g, "");
+  return (
+    digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits
+  ).slice(0, 10);
+}
+
+function formatTextMessageTimestamp(value) {
+  if (!value) {
+    return "Pending";
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Pending" : date.toLocaleString();
 }
 
 function formatArrivalReference(dateString) {
@@ -2091,6 +2110,187 @@ function PublicPrivacyPolicy() {
           Return to booking
         </a>
       </article>
+    </main>
+  );
+}
+
+function PublicPaymentPage({ token }) {
+  const [paymentDetails, setPaymentDetails] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [openingPaymentMethod, setOpeningPaymentMethod] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const params = new URLSearchParams(window.location.search);
+  const returnStatus = params.get("pay_status") || "";
+  const returnPaymentChoice = params.get("payment_choice") || "";
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function loadPaymentDetails() {
+      setIsLoading(true);
+      setErrorMessage("");
+
+      try {
+        const result = await guestApiRequest(
+          `/guest/payment-links/${encodeURIComponent(token)}`
+        );
+
+        if (!isCancelled) {
+          setPaymentDetails(result);
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setErrorMessage(error.message);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    loadPaymentDetails();
+    return () => {
+      isCancelled = true;
+    };
+  }, [token]);
+
+  async function startPayment(paymentMethod) {
+    setOpeningPaymentMethod(paymentMethod);
+    setErrorMessage("");
+
+    try {
+      const checkout = await guestApiRequest(
+        `/guest/payment-links/${encodeURIComponent(token)}/checkouts`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            paymentMethod,
+            baseUrl: window.location.origin,
+          }),
+        }
+      );
+      window.location.assign(checkout.checkoutUrl);
+    } catch (error) {
+      setErrorMessage(error.message);
+      setOpeningPaymentMethod("");
+    }
+  }
+
+  return (
+    <main className="public-payment-page">
+      <section className="public-payment-card">
+        <a className="public-terms-brand" href="/">
+          Riverpark RV Resort
+        </a>
+        <p className="eyebrow">Secure reservation payment</p>
+        <h1>Pay your remaining balance</h1>
+
+        {returnStatus === "success" ? (
+          <div className="message success public-payment-message">
+            {returnPaymentChoice === "bank"
+              ? "Your bank payment was submitted. It may take several business days to be confirmed."
+              : "Your card payment was submitted. Your balance will update when Stripe confirms it."}
+          </div>
+        ) : null}
+        {returnStatus === "cancel" ? (
+          <div className="message error public-payment-message">
+            Payment was canceled. No new payment was submitted.
+          </div>
+        ) : null}
+        {errorMessage ? (
+          <div className="message error public-payment-message">
+            {errorMessage}
+          </div>
+        ) : null}
+
+        {isLoading ? (
+          <p className="muted">Loading your reservation balance...</p>
+        ) : paymentDetails ? (
+          <>
+            <div className="public-payment-reservation">
+              <div>
+                <span>Guest</span>
+                <strong>{paymentDetails.guestName}</strong>
+              </div>
+              <div>
+                <span>Reservation</span>
+                <strong>#{paymentDetails.reservationId}</strong>
+              </div>
+              {paymentDetails.siteStays.map((stay, index) => (
+                <div key={`${stay.siteNumber}-${stay.arrivalDate}-${index}`}>
+                  <span>Site {stay.siteNumber}</span>
+                  <strong>
+                    {formatDisplayDate(stay.arrivalDate)} to{" "}
+                    {isOpenEndedStay(stay.leaveDate)
+                      ? "Ongoing"
+                      : formatDisplayDate(stay.leaveDate)}
+                  </strong>
+                </div>
+              ))}
+              <div>
+                <span>Already paid</span>
+                <strong>{formatCurrency(paymentDetails.amountPaid)}</strong>
+              </div>
+            </div>
+
+            {paymentDetails.paymentComplete ? (
+              <div className="public-payment-complete">
+                <strong>Your reservation balance is paid.</strong>
+                <span>No additional payment is due.</span>
+              </div>
+            ) : (
+              <div className="public-payment-options">
+                <article>
+                  <span className="eyebrow">No processing fee</span>
+                  <h2>Bank payment</h2>
+                  <strong className="public-payment-amount">
+                    {formatCurrency(paymentDetails.bankAmount)}
+                  </strong>
+                  <p>
+                    Pay the remaining balance from a bank account. Bank
+                    payments may take several business days to confirm.
+                  </p>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={Boolean(openingPaymentMethod)}
+                    onClick={() => startPayment("bank")}>
+                    {openingPaymentMethod === "bank"
+                      ? "Opening secure payment..."
+                      : "Pay by bank account"}
+                  </button>
+                </article>
+                <article>
+                  <span className="eyebrow">3% processing fee included</span>
+                  <h2>Credit card</h2>
+                  <strong className="public-payment-amount">
+                    {formatCurrency(paymentDetails.cardAmount)}
+                  </strong>
+                  <p>
+                    Pay by credit card through Stripe. Debit cards are not
+                    accepted. Processing fee: {formatCurrency(paymentDetails.cardFee)}.
+                  </p>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={Boolean(openingPaymentMethod)}
+                    onClick={() => startPayment("card")}>
+                    {openingPaymentMethod === "card"
+                      ? "Opening secure payment..."
+                      : "Pay by credit card"}
+                  </button>
+                </article>
+              </div>
+            )}
+          </>
+        ) : null}
+
+        <p className="public-payment-help">
+          Questions about your balance? Call Riverpark RV Resort at{" "}
+          <a href="tel:+15412951269">(541) 295-1269</a>.
+        </p>
+      </section>
     </main>
   );
 }
@@ -4873,6 +5073,7 @@ export default function App() {
     { key: "schedule", label: "Schedule" },
     { key: "history", label: "History" },
     { key: "yearly", label: "Yearly" },
+    { key: "messages", label: "Text Messages" },
     { key: "sites", label: "Sites" },
   ];
   const stripeReturnState = getStripeReturnState();
@@ -4890,6 +5091,18 @@ export default function App() {
     useState("");
   const [isUpdatingBookingNotifications, setIsUpdatingBookingNotifications] =
     useState(false);
+  const [textMessageForm, setTextMessageForm] = useState({
+    to: "",
+    body: "",
+  });
+  const [textMessages, setTextMessages] = useState([]);
+  const [isTextMessagingConfigured, setIsTextMessagingConfigured] =
+    useState(null);
+  const [missingTextMessageConfig, setMissingTextMessageConfig] = useState([]);
+  const [isLoadingTextMessages, setIsLoadingTextMessages] = useState(false);
+  const [isSendingTextMessage, setIsSendingTextMessage] = useState(false);
+  const [textMessageError, setTextMessageError] = useState("");
+  const [textMessageSuccess, setTextMessageSuccess] = useState("");
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [reservations, setReservations] = useState([]);
@@ -5263,6 +5476,14 @@ export default function App() {
           await Promise.all([
             ensureSitesLoaded(),
             ensureReservationsLoaded(),
+          ]);
+          return;
+        }
+
+        if (activePage === "messages") {
+          await Promise.all([
+            ensureCustomersLoaded(),
+            loadTextMessageHistory(),
           ]);
           return;
         }
@@ -6113,6 +6334,13 @@ export default function App() {
       return;
     }
 
+    if (sectionKey === "messages") {
+      setTextMessageForm({ to: "", body: "" });
+      setTextMessageError("");
+      setTextMessageSuccess("");
+      return;
+    }
+
     if (sectionKey === "sites") {
       setSiteFilters(emptySiteFilters);
       setIsTypeMenuOpen(false);
@@ -6272,6 +6500,55 @@ export default function App() {
       setBookingNotificationMessage(error.message);
     } finally {
       setIsUpdatingBookingNotifications(false);
+    }
+  }
+
+  async function loadTextMessageHistory() {
+    setIsLoadingTextMessages(true);
+    setTextMessageError("");
+
+    try {
+      const result = await apiRequest("/messages");
+      setIsTextMessagingConfigured(Boolean(result.configured));
+      setMissingTextMessageConfig(
+        Array.isArray(result.missing) ? result.missing : []
+      );
+      setTextMessages(Array.isArray(result.messages) ? result.messages : []);
+
+      if (result.historyError) {
+        setTextMessageError(result.historyError);
+      }
+    } catch (error) {
+      setTextMessageError(error.message);
+    } finally {
+      setIsLoadingTextMessages(false);
+    }
+  }
+
+  async function sendTextMessage(event) {
+    event.preventDefault();
+    setIsSendingTextMessage(true);
+    setTextMessageError("");
+    setTextMessageSuccess("");
+
+    try {
+      const sentMessage = await apiRequest("/messages", {
+        method: "POST",
+        body: JSON.stringify(textMessageForm),
+      });
+
+      setTextMessages((current) => [
+        sentMessage,
+        ...current.filter((message) => message.sid !== sentMessage.sid),
+      ]);
+      setTextMessageForm((current) => ({ ...current, body: "" }));
+      setTextMessageSuccess(
+        `Message queued for ${formatPhoneNumber(sentMessage.to)}.`
+      );
+    } catch (error) {
+      setTextMessageError(error.message);
+    } finally {
+      setIsSendingTextMessage(false);
     }
   }
 
@@ -6858,8 +7135,6 @@ export default function App() {
     const paymentContext =
       reservationCardPayment?.reservationId === createdReservation.id
         ? reservationCardPayment
-        : generatedPaymentLink?.reservationId === createdReservation.id
-        ? generatedPaymentLink
         : null;
 
     try {
@@ -7125,49 +7400,76 @@ export default function App() {
     }
   }
 
-  async function generatePaymentLink(
-    reservationId,
-    amount,
-    activateReservationOnPayment,
-    label
-  ) {
+  async function generatePaymentLink(reservation, label = "Payment link") {
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
 
     try {
-      const amountNumber = Number(amount);
-
-      if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-        throw new Error("Enter a payment amount greater than zero.");
+      if (!reservation?.id || Number(reservation.remainingBalance || 0) <= 0) {
+        throw new Error("This reservation does not have a remaining balance.");
       }
 
       const result = await apiRequest(
-        `/reservations/${reservationId}/payment-links`,
+        `/reservations/${reservation.id}/payment-links`,
         {
           method: "POST",
           body: JSON.stringify({
-            amount: amountNumber.toFixed(2),
             baseUrl: window.location.origin,
-            activateReservationOnPayment,
           }),
         }
       );
 
       setGeneratedPaymentLink({
-        reservationId,
-        amount: amountNumber.toFixed(2),
-        checkoutUrl: result.checkoutUrl,
+        reservationId: reservation.id,
+        amount: result.bankAmount,
+        bankAmount: result.bankAmount,
+        cardAmount: result.cardAmount,
+        checkoutUrl: result.paymentUrl || result.checkoutUrl,
         label,
       });
       setPaymentLinkSuccessMessage(
-        `${label} generated for reservation #${reservationId}.`
+        `${label} generated for reservation #${reservation.id}.`
       );
-      await refreshReservationAndSiteData();
       return result;
     } catch (error) {
       setPaymentLinkErrorMessage(error.message);
       return null;
     }
+  }
+
+  function openPaymentLinkTextMessage(reservation) {
+    if (
+      generatedPaymentLink?.reservationId !== reservation?.id ||
+      !generatedPaymentLink?.checkoutUrl
+    ) {
+      setPaymentLinkErrorMessage("Generate the payment link before texting it.");
+      return;
+    }
+
+    const phoneNumber = normalizePhoneForSms(reservation.phone_number);
+
+    if (!phoneNumber) {
+      setPaymentLinkErrorMessage(
+        "Add a customer phone number before opening the text message."
+      );
+      return;
+    }
+
+    const message = [
+      "Riverpark RV Resort",
+      "",
+      `Hello ${reservation.first_name || "Guest"},`,
+      "",
+      "You can securely pay the remaining balance for your stay using the link below. Choose either bank account or credit card payment:",
+      generatedPaymentLink.checkoutUrl,
+      "",
+      "Questions? Call (541) 295-1269.",
+      "Reply STOP to unsubscribe or HELP for assistance.",
+    ].join("\n");
+
+    window.location.href = buildSmsComposeUrl(phoneNumber, message);
+    setPaymentLinkSuccessMessage("Opened a text draft with the payment link.");
+    setPaymentLinkErrorMessage("");
   }
 
   async function handleSchedulePaymentLink(reservation) {
@@ -7397,6 +7699,43 @@ export default function App() {
     }));
   }
 
+  function updateScheduleDiscountQualification(discountQualified) {
+    if (!activeScheduleReservation) {
+      return;
+    }
+
+    const basePrice = discountQualified
+      ? activeScheduleReservation.totals?.discountPrice
+      : activeScheduleReservation.totals?.normalPrice;
+
+    if (basePrice === null || basePrice === undefined) {
+      setSchedulePaymentErrorMessage(
+        discountQualified
+          ? "Discount pricing is not configured for this stay."
+          : "Standard pricing is not configured for this stay."
+      );
+      return;
+    }
+
+    const selectedPrice =
+      activeScheduleReservation.selectedPaymentMethod === "card"
+        ? getCardStayTotal(
+            basePrice,
+            activeScheduleReservation.totals?.chargeableNights
+          )
+        : basePrice;
+
+    setSchedulePaymentForm((current) => ({
+      ...current,
+      discountQualified,
+      totalPrice: String(selectedPrice),
+    }));
+    setSchedulePaymentErrorMessage("");
+    setScheduleCardPayment(null);
+    setGeneratedPaymentLink(null);
+    setPaymentLinkSuccessMessage("");
+  }
+
   async function saveSchedulePaymentInfo() {
     if (!activeScheduleReservation) {
       return;
@@ -7445,6 +7784,13 @@ export default function App() {
             rigLengthFeet: activeScheduleReservation.rig_length_feet ?? "",
             amountPaid: schedulePaymentForm.amountPaid,
             notes: activeScheduleReservation.notes || "",
+            paymentMethod:
+              activeScheduleReservation.selectedPaymentMethod || "bank",
+            discounts: schedulePaymentForm.discountQualified
+              ? activeScheduleReservation.requestedDiscounts?.length
+                ? activeScheduleReservation.requestedDiscounts
+                : ["Admin confirmed discount"]
+              : [],
             siteStays: (activeScheduleReservation.siteStays || []).map(
               (segment) => ({
                 siteId: String(segment.site_id),
@@ -7468,6 +7814,8 @@ export default function App() {
       if (createdReservation?.id === updatedReservation.id) {
         setCreatedReservation(updatedReservation);
       }
+
+      setGeneratedPaymentLink(null);
 
       setActiveSchedulePaymentAmount(
         Number(updatedReservation.cardRemainingBalance || 0) > 0
@@ -8023,6 +8371,15 @@ export default function App() {
       next.setUTCMonth(next.getUTCMonth() + offset);
       return new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth(), 1));
     });
+  }
+
+  const publicPaymentToken =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("pay")
+      : "";
+
+  if (publicPaymentToken) {
+    return <PublicPaymentPage token={publicPaymentToken} />;
   }
 
   if (
@@ -9115,7 +9472,66 @@ export default function App() {
                         }>
                         Pull up card info
                       </button>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() =>
+                          generatePaymentLink(
+                            createdReservation,
+                            "Remaining-balance payment link"
+                          )
+                        }>
+                        Generate payment link
+                      </button>
                     </div>
+                    {generatedPaymentLink?.reservationId ===
+                    createdReservation.id ? (
+                      <div className="generated-payment-link-card">
+                        <div>
+                          <span>Bank payment</span>
+                          <strong>
+                            {formatCurrency(generatedPaymentLink.bankAmount)}
+                          </strong>
+                        </div>
+                        <div>
+                          <span>Credit card payment</span>
+                          <strong>
+                            {formatCurrency(generatedPaymentLink.cardAmount)}
+                          </strong>
+                        </div>
+                        <label>
+                          Riverpark payment link
+                          <input
+                            readOnly
+                            value={generatedPaymentLink.checkoutUrl}
+                            onFocus={(event) => event.target.select()}
+                          />
+                        </label>
+                        <div className="button-row">
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={copyPaymentLinkToClipboard}>
+                            Copy link
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() =>
+                              openPaymentLinkTextMessage(createdReservation)
+                            }>
+                            Text link
+                          </button>
+                          <a
+                            className="ghost-button"
+                            href={generatedPaymentLink.checkoutUrl}
+                            target="_blank"
+                            rel="noreferrer">
+                            Open link
+                          </a>
+                        </div>
+                      </div>
+                    ) : null}
                     {hasReservationCardPayment ? (
                       <Elements stripe={getStripePromise()}>
                         <CardPaymentForm
@@ -10146,6 +10562,175 @@ export default function App() {
           </Paper>
         ) : null}
 
+        {activePage === "messages" ? (
+          <Paper component="section" className="card" elevation={0}>
+            <div className="page-section-header">
+              <h2>Text Messages</h2>
+              <div className="section-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={isLoadingTextMessages}
+                  onClick={loadTextMessageHistory}>
+                  {isLoadingTextMessages ? "Refreshing..." : "Refresh messages"}
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => clearSection("messages")}>
+                  Clear draft
+                </button>
+              </div>
+            </div>
+
+            {isTextMessagingConfigured === false ? (
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                Twilio still needs: {missingTextMessageConfig.join(", ")}.
+                Add these as private server environment variables before
+                sending.
+              </Alert>
+            ) : null}
+            {textMessageError ? (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                {textMessageError}
+              </Alert>
+            ) : null}
+            {textMessageSuccess ? (
+              <Alert severity="success" sx={{ mb: 2 }}>
+                {textMessageSuccess}
+              </Alert>
+            ) : null}
+
+            <div className="admin-text-message-layout">
+              <form className="admin-text-composer" onSubmit={sendTextMessage}>
+                <div className="section-heading">
+                  <p>
+                    Send a reservation message or a park-wide operational
+                    update to a guest.
+                  </p>
+                </div>
+                <label>
+                  Guest mobile number
+                  <input
+                    type="tel"
+                    inputMode="tel"
+                    list="text-message-customer-phones"
+                    placeholder="(541) 555-1234"
+                    value={textMessageForm.to}
+                    onChange={(event) =>
+                      setTextMessageForm((current) => ({
+                        ...current,
+                        to: formatPhoneNumber(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <datalist id="text-message-customer-phones">
+                  {customers
+                    .filter((customer) => customer.phone_number)
+                    .map((customer) => (
+                      <option
+                        key={customer.id}
+                        value={formatPhoneNumber(customer.phone_number)}>
+                        {customer.first_name} {customer.last_name}
+                      </option>
+                    ))}
+                </datalist>
+                <label>
+                  Message
+                  <textarea
+                    rows="10"
+                    maxLength="1500"
+                    placeholder="Type the message to send..."
+                    value={textMessageForm.body}
+                    onChange={(event) =>
+                      setTextMessageForm((current) => ({
+                        ...current,
+                        body: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <div className="admin-text-message-meta">
+                  <span>{textMessageForm.body.length} / 1,500 characters</span>
+                  <span>
+                    STOP and HELP instructions are added automatically.
+                  </span>
+                </div>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={
+                    isSendingTextMessage ||
+                    !textMessageForm.to.trim() ||
+                    !textMessageForm.body.trim() ||
+                    isTextMessagingConfigured === false
+                  }>
+                  {isSendingTextMessage ? "Sending..." : "Send text message"}
+                </button>
+              </form>
+
+              <section className="admin-text-history" aria-label="Recent text messages">
+                <div className="admin-text-history-heading">
+                  <div>
+                    <span className="eyebrow">Twilio history</span>
+                    <h3>Recent messages</h3>
+                  </div>
+                  <span>{textMessages.length} shown</span>
+                </div>
+                {isLoadingTextMessages && !textMessages.length ? (
+                  <p className="muted">Loading text messages...</p>
+                ) : textMessages.length ? (
+                  <div className="admin-text-history-list">
+                    {textMessages.map((message) => {
+                      const isOutbound = String(message.direction || "").startsWith(
+                        "outbound"
+                      );
+                      const guestNumber = isOutbound ? message.to : message.from;
+
+                      return (
+                        <article
+                          key={message.sid}
+                          className={`admin-text-history-item ${
+                            isOutbound ? "outbound" : "inbound"
+                          }`}>
+                          <div className="admin-text-history-meta">
+                            <strong>{isOutbound ? "Sent" : "Received"}</strong>
+                            <span>{formatPhoneNumber(guestNumber)}</span>
+                            <span>{formatTextMessageTimestamp(message.dateSent)}</span>
+                          </div>
+                          <p>{message.body}</p>
+                          <div className="admin-text-history-footer">
+                            <span>Status: {message.status || "unknown"}</span>
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() => {
+                                setTextMessageForm({
+                                  to: formatPhoneNumber(guestNumber),
+                                  body: "",
+                                });
+                                window.requestAnimationFrame(() =>
+                                  document
+                                    .querySelector(".admin-text-composer textarea")
+                                    ?.focus()
+                                );
+                              }}>
+                              Message this guest
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="muted">No text messages to show yet.</p>
+                )}
+              </section>
+            </div>
+          </Paper>
+        ) : null}
+
         {activePage === "sites" ? (
           <Paper component="section" className="card" elevation={0}>
             <div className="page-section-header">
@@ -11005,9 +11590,10 @@ export default function App() {
                   )}
                 </span>
                 <span>
-                  Discounts: {activeScheduleReservation.requestedDiscounts?.length
-                    ? activeScheduleReservation.requestedDiscounts.join(", ")
-                    : "None requested"}
+                  Discounted price:{" "}
+                  {activeScheduleReservation.requestedDiscounts?.length
+                    ? "Qualified"
+                    : "Not qualified"}
                 </span>
                 <span>
                   Deposit amount:{" "}
@@ -11015,7 +11601,10 @@ export default function App() {
                 </span>
                 <span>
                   Booking total:{" "}
-                  {formatCurrency(activeScheduleReservation.totalPrice)}
+                  {formatCurrency(
+                    activeScheduleReservation.effectiveTotalPrice ??
+                      activeScheduleReservation.totalPrice
+                  )}
                 </span>
                 <span>
                   Remaining balance:{" "}
@@ -11046,7 +11635,10 @@ export default function App() {
                 </span>
                 <span>
                   Booking total:{" "}
-                  {formatCurrency(activeScheduleReservation.totalPrice)}
+                  {formatCurrency(
+                    activeScheduleReservation.effectiveTotalPrice ??
+                      activeScheduleReservation.totalPrice
+                  )}
                 </span>
                 <span>
                   Amount paid:{" "}
@@ -11107,6 +11699,38 @@ export default function App() {
                         <span className="muted">
                           Save these only when you want to change the booking
                           totals.
+                        </span>
+                      </div>
+                      <label className="checkbox-row compact-checkbox payment-discount-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={schedulePaymentForm.discountQualified}
+                          onChange={(event) =>
+                            updateScheduleDiscountQualification(
+                              event.target.checked
+                            )
+                          }
+                        />
+                        <span>
+                          <strong>Guest qualifies for the discounted price</strong>
+                          <small>
+                            Saving will update the booking total and remaining
+                            balance using this stay’s discount pricing.
+                          </small>
+                        </span>
+                      </label>
+                      <div className="pricing-summary payment-discount-preview">
+                        <span>
+                          Standard stay price:{" "}
+                          {formatCurrency(
+                            activeScheduleReservation.totals?.normalPrice
+                          )}
+                        </span>
+                        <span>
+                          Discounted stay price:{" "}
+                          {formatCurrency(
+                            activeScheduleReservation.totals?.discountPrice
+                          )}
                         </span>
                       </div>
                       <div className="field-grid compact-grid">
@@ -11322,15 +11946,80 @@ export default function App() {
                       }>
                       Pull up card info
                     </button>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={
+                        Number(activeScheduleReservation.remainingBalance || 0) <=
+                        0
+                      }
+                      onClick={() =>
+                        generatePaymentLink(
+                          activeScheduleReservation,
+                          "Remaining-balance payment link"
+                        )
+                      }>
+                      Generate payment link
+                    </button>
                   </div>
                   {paymentLinkErrorMessage ? (
                     <div className="message error">
                       {paymentLinkErrorMessage}
                     </div>
                   ) : null}
-                  {paymentLinkSuccessMessage && hasScheduleCardPayment ? (
+                  {paymentLinkSuccessMessage ? (
                     <div className="message success">
                       {paymentLinkSuccessMessage}
+                    </div>
+                  ) : null}
+                  {generatedPaymentLink?.reservationId ===
+                  activeScheduleReservation.id ? (
+                    <div className="generated-payment-link-card">
+                      <div>
+                        <span>Bank payment</span>
+                        <strong>
+                          {formatCurrency(generatedPaymentLink.bankAmount)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Credit card payment</span>
+                        <strong>
+                          {formatCurrency(generatedPaymentLink.cardAmount)}
+                        </strong>
+                      </div>
+                      <label>
+                        Riverpark payment link
+                        <input
+                          readOnly
+                          value={generatedPaymentLink.checkoutUrl}
+                          onFocus={(event) => event.target.select()}
+                        />
+                      </label>
+                      <div className="button-row">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={copyPaymentLinkToClipboard}>
+                          Copy link
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() =>
+                            openPaymentLinkTextMessage(
+                              activeScheduleReservation
+                            )
+                          }>
+                          Text link
+                        </button>
+                        <a
+                          className="ghost-button"
+                          href={generatedPaymentLink.checkoutUrl}
+                          target="_blank"
+                          rel="noreferrer">
+                          Open link
+                        </a>
+                      </div>
                     </div>
                   ) : null}
                   {hasScheduleCardPayment ? (

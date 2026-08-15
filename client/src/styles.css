@@ -4239,6 +4239,277 @@ select option {
   background: #fffaf2;
 }
 
+.admin-text-message-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.2fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.admin-text-composer,
+.admin-text-history {
+  display: grid;
+  gap: 18px;
+  border: 1px solid rgba(18, 63, 52, 0.12);
+  border-radius: 22px;
+  padding: 22px;
+  background: rgba(255, 252, 246, 0.78);
+}
+
+.admin-text-composer label {
+  display: grid;
+  gap: 8px;
+  font-weight: 800;
+}
+
+.admin-text-composer textarea {
+  resize: vertical;
+}
+
+.admin-text-message-meta,
+.admin-text-history-meta,
+.admin-text-history-footer,
+.admin-text-history-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-text-message-meta {
+  flex-wrap: wrap;
+  color: rgba(23, 55, 47, 0.68);
+  font-size: 0.76rem;
+}
+
+.admin-text-history-heading {
+  align-items: end;
+}
+
+.admin-text-history-heading h3 {
+  margin: 3px 0 0;
+}
+
+.admin-text-history-heading > span {
+  color: rgba(23, 55, 47, 0.65);
+  font-size: 0.78rem;
+}
+
+.admin-text-history-list {
+  display: grid;
+  gap: 12px;
+  max-height: 650px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.admin-text-history-item {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(18, 63, 52, 0.1);
+  border-left: 4px solid var(--admin-river);
+  border-radius: 16px;
+  padding: 16px;
+  background: #fff;
+}
+
+.admin-text-history-item.inbound {
+  border-left-color: var(--admin-clay);
+  background: #fff9ef;
+}
+
+.admin-text-history-item p {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.admin-text-history-meta,
+.admin-text-history-footer {
+  align-items: center;
+  flex-wrap: wrap;
+  color: rgba(23, 55, 47, 0.66);
+  font-size: 0.75rem;
+}
+
+.admin-text-history-meta strong {
+  color: var(--admin-pine);
+  text-transform: uppercase;
+}
+
+.generated-payment-link-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+  border: 1px solid rgba(18, 63, 52, 0.14);
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(53, 122, 132, 0.07);
+}
+
+.payment-discount-checkbox {
+  align-items: flex-start;
+  margin-bottom: 12px;
+  border: 1px solid rgba(18, 63, 52, 0.14);
+  padding: 16px;
+  background: rgba(53, 122, 132, 0.07);
+}
+
+.payment-discount-checkbox > span {
+  display: grid;
+  gap: 4px;
+}
+
+.payment-discount-checkbox small {
+  color: rgba(23, 55, 47, 0.68);
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.payment-discount-preview {
+  margin-bottom: 14px;
+}
+
+.generated-payment-link-card > div:not(.button-row) {
+  display: grid;
+  gap: 4px;
+}
+
+.generated-payment-link-card > div > span {
+  color: rgba(23, 55, 47, 0.68);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.generated-payment-link-card label,
+.generated-payment-link-card .button-row {
+  grid-column: 1 / -1;
+}
+
+.generated-payment-link-card label {
+  display: grid;
+  gap: 8px;
+}
+
+.generated-payment-link-card a.ghost-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.public-payment-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: clamp(22px, 6vw, 72px) 18px;
+  color: var(--pine);
+  background:
+    radial-gradient(circle at top right, rgba(53, 122, 132, 0.16), transparent 32rem),
+    #f3eee4;
+}
+
+.public-payment-card {
+  width: min(100%, 920px);
+  border: 1px solid rgba(23, 55, 47, 0.13);
+  padding: clamp(26px, 6vw, 60px);
+  background: #fffaf2;
+  box-shadow: 0 24px 60px rgba(23, 55, 47, 0.12);
+}
+
+.public-payment-card h1 {
+  margin: 8px 0 28px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2.2rem, 7vw, 4rem);
+  font-weight: 400;
+  line-height: 1.05;
+}
+
+.public-payment-message {
+  margin-bottom: 20px;
+}
+
+.public-payment-reservation {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: 26px;
+  background: rgba(23, 55, 47, 0.12);
+}
+
+.public-payment-reservation > div {
+  display: grid;
+  gap: 5px;
+  padding: 16px;
+  background: #fff;
+}
+
+.public-payment-reservation span {
+  color: #65756e;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.public-payment-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.public-payment-options article {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  border: 1px solid rgba(23, 55, 47, 0.13);
+  padding: clamp(20px, 4vw, 30px);
+  background: #fff;
+}
+
+.public-payment-options h2,
+.public-payment-options p {
+  margin: 0;
+}
+
+.public-payment-options h2 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.65rem;
+  font-weight: 400;
+}
+
+.public-payment-options p {
+  min-height: 72px;
+  color: #52675e;
+  line-height: 1.55;
+}
+
+.public-payment-amount {
+  color: var(--pine-deep);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 2rem;
+}
+
+.public-payment-complete {
+  display: grid;
+  gap: 6px;
+  border-left: 5px solid #2f7d4f;
+  padding: 20px;
+  background: rgba(47, 125, 79, 0.09);
+}
+
+.public-payment-help {
+  margin: 28px 0 0;
+  color: #52675e;
+  text-align: center;
+}
+
+.public-payment-help a {
+  color: var(--pine);
+  font-weight: 800;
+}
+
 @media (max-width: 900px) {
   .two-column,
   .results-grid,
@@ -4246,6 +4517,14 @@ select option {
   .compact-grid,
   .site-filter-bar,
   .timeline-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-text-message-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .public-payment-options {
     grid-template-columns: 1fr;
   }
 
@@ -4756,6 +5035,16 @@ select option {
   .page-shell {
     width: min(100%, calc(100% - 18px));
     padding: 14px 0 36px;
+  }
+
+  .public-payment-reservation,
+  .generated-payment-link-card {
+    grid-template-columns: 1fr;
+  }
+
+  .generated-payment-link-card label,
+  .generated-payment-link-card .button-row {
+    grid-column: auto;
   }
 
   .app-header {
