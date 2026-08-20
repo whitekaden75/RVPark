@@ -9,6 +9,7 @@ import {
   buildAvailabilityMap,
   buildAvailabilityBookingContext,
   buildAvailabilityLeadTimes,
+  buildReservationRearrangementPlans,
   buildSiteSwitchPlan,
   getDirectMatches,
   normalizeSegments,
@@ -669,6 +670,20 @@ function nightsBetween(arrivalDate, leaveDate) {
   const start = new Date(`${arrivalDate}T00:00:00Z`);
   const end = new Date(`${leaveDate}T00:00:00Z`);
   return Math.round((end - start) / 86400000);
+}
+
+function getParkTodayDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "America/Los_Angeles"
+  }).formatToParts(now);
+  const dateParts = Object.fromEntries(
+    parts.map((part) => [part.type, part.value])
+  );
+
+  return `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
 }
 
 function addDays(dateString, numberOfDays) {
@@ -1578,7 +1593,7 @@ async function insertReservationPaymentEvent(
 function ensureStripeConfigured(res) {
   if (!stripe) {
     res.status(503).json({
-      message: "Stripe is not configured. Add STRIPE_SECRET_KEY on the server first."
+      message: "Online payments are not configured yet. Please call the office."
     });
     return false;
   }
@@ -2316,7 +2331,7 @@ async function handleStripeWebhookEvent(event) {
               publicCheckoutResult.rows[0].id,
               event.type === "checkout.session.expired" ? "expired" : "failed",
               event.type === "checkout.session.expired"
-                ? "Stripe Checkout expired before payment."
+                ? "The payment session expired before payment."
                 : "The bank payment failed."
             ]
           );
@@ -2680,12 +2695,15 @@ function parseAvailabilityFilters(body) {
   const rigLengthFeet = body.rigLengthFeet ? Number(body.rigLengthFeet) : null;
   const isOversizedFifthWheel = body.rvKind === "5th wheel" && rigLengthFeet > 43;
   const excludeSite23ForDriverSlide =
-    Boolean(body.isPublicGuestSearch) &&
     Boolean(body.slideDriverSide) &&
     rigLengthFeet > 25;
 
   if (!arrivalDate || !leaveDate || arrivalDate >= leaveDate) {
     return { error: "Arrival date must be before leave date." };
+  }
+
+  if (Boolean(body.isPublicGuestSearch) && arrivalDate < getParkTodayDate()) {
+    return { error: "The earliest arrival date is today in Pacific Time." };
   }
 
   return {
@@ -2706,7 +2724,6 @@ function parseFlexibleAvailabilityFilters(body) {
   const rigLengthFeet = body.rigLengthFeet ? Number(body.rigLengthFeet) : null;
   const isOversizedFifthWheel = body.rvKind === "5th wheel" && rigLengthFeet > 43;
   const excludeSite23ForDriverSlide =
-    Boolean(body.isPublicGuestSearch) &&
     Boolean(body.slideDriverSide) &&
     rigLengthFeet > 25;
   const stayLengthValue = String(body.stayLengthRange || "");
@@ -2714,6 +2731,13 @@ function parseFlexibleAvailabilityFilters(body) {
 
   if (!flexibleStartDate || !flexibleEndDate || flexibleStartDate >= flexibleEndDate) {
     return { error: "Flexible search start date must be before the end date." };
+  }
+
+  if (
+    Boolean(body.isPublicGuestSearch) &&
+    flexibleStartDate < getParkTodayDate()
+  ) {
+    return { error: "The earliest arrival date is today in Pacific Time." };
   }
 
   if (!stayLengthMatch) {
@@ -2886,6 +2910,92 @@ async function loadCandidateSites(minSizeFeet, riverfrontOnly) {
   );
 
   return result.rows;
+}
+
+async function loadReservationRearrangementInventory() {
+  const [sitesResult, staysResult, holdsResult] = await Promise.all([
+    pool.query(
+      `
+        SELECT
+          id,
+          site_number,
+          size_feet,
+          is_on_river,
+          river_category,
+          is_big_rig
+        FROM rv_sites
+        ORDER BY site_number
+      `
+    ),
+    pool.query(
+      `
+        SELECT
+          rss.id AS stay_id,
+          rss.site_id,
+          rss.arrival_date::text,
+          rss.leave_date::text,
+          (rss.arrival_date > CURRENT_DATE) AS has_not_arrived,
+          r.id AS reservation_id,
+          r.status,
+          r.reservation_term,
+          r.rig_length_feet,
+          r.slide_driver_side,
+          c.first_name,
+          c.last_name
+        FROM reservation_site_stays rss
+        JOIN reservations r ON r.id = rss.reservation_id
+        JOIN customers c ON c.id = r.customer_id
+        WHERE r.status <> 'canceled'
+          AND rss.leave_date > CURRENT_DATE
+        ORDER BY rss.arrival_date, rss.id
+      `
+    ),
+    pool.query(
+      `
+        SELECT id, site_id, arrival_date::text, leave_date::text
+        FROM public_booking_checkouts
+        WHERE payment_status IN ('open', 'processing', 'paid')
+          AND expires_at > NOW()
+        ORDER BY arrival_date, id
+      `
+    )
+  ]);
+  const sites = sitesResult.rows.map((site) => ({
+    id: site.id,
+    siteNumber: site.site_number,
+    sizeFeet: site.size_feet,
+    isOnRiver: site.is_on_river,
+    riverCategory: site.river_category,
+    isBigRig: site.is_big_rig
+  }));
+  const stays = staysResult.rows.map((stay) => {
+    const rigLengthFeet = Number(stay.rig_length_feet || 0);
+    const isOpenEnded = stay.leave_date === openEndedStayDate;
+
+    return {
+      id: stay.stay_id,
+      originalSiteId: stay.site_id,
+      reservationId: stay.reservation_id,
+      guestName: `${stay.first_name || ""} ${stay.last_name || ""}`.trim(),
+      arrivalDate: stay.arrival_date,
+      leaveDate: stay.leave_date,
+      rigLengthFeet,
+      minimumSiteSize: Math.max(1, rigLengthFeet - 5),
+      slideDriverSide: Boolean(stay.slide_driver_side),
+      movable:
+        stay.reservation_term === "standard" &&
+        Boolean(stay.has_not_arrived) &&
+        rigLengthFeet > 0 &&
+        !isOpenEnded
+    };
+  });
+  const fixedHolds = holdsResult.rows.map((hold) => ({
+    siteId: hold.site_id,
+    arrivalDate: hold.arrival_date,
+    leaveDate: hold.leave_date
+  }));
+
+  return { sites, stays, fixedHolds };
 }
 
 async function loadPricingRules(numberOfDays = null) {
@@ -4083,6 +4193,145 @@ app.post("/api/availability/plan", async (req, res) => {
   }
 });
 
+app.post("/api/availability/optimize", async (req, res) => {
+  const filters = parseAvailabilityFilters(req.body);
+
+  if (filters.error) {
+    return res.status(400).json({ message: filters.error });
+  }
+
+  if (filters.isOversizedFifthWheel) {
+    return res.json({ plans: [], restriction: "oversized_fifth_wheel" });
+  }
+
+  try {
+    const rigLengthFeet = Number(req.body.rigLengthFeet || 0);
+    const searchMore = Boolean(req.body.searchMore);
+    const inventory = await loadReservationRearrangementInventory();
+    const request = {
+      arrivalDate: filters.arrivalDate,
+      leaveDate: filters.leaveDate,
+      rigLengthFeet,
+      minimumSiteSize: filters.minSizeFeet || Math.max(1, rigLengthFeet - 5),
+      slideDriverSide: Boolean(req.body.slideDriverSide),
+      excludeSite23: filters.excludeSite23ForDriverSlide,
+      riverfrontOnly: filters.riverfrontOnly
+    };
+    const allowedSites = inventory.sites;
+    const specialCareSiteNumbers = new Set(["17", "23"]);
+    const preferredPlans = buildReservationRearrangementPlans({
+      ...inventory,
+      sites: allowedSites.filter(
+        (site) => !specialCareSiteNumbers.has(String(site.siteNumber))
+      ),
+      request,
+      maxMoves: 4,
+      maxPlans: searchMore ? 12 : 4,
+      maxAssignmentsPerTarget: searchMore ? 8 : 2,
+      maxSearchNodes: searchMore ? 75000 : 25000
+    });
+    const allPlans = buildReservationRearrangementPlans({
+      ...inventory,
+      sites: allowedSites,
+      request,
+      maxMoves: 4,
+      maxPlans: searchMore ? 50 : 12,
+      maxAssignmentsPerTarget: searchMore ? 8 : 2,
+      maxSearchNodes: searchMore ? 100000 : 30000
+    });
+    const combinedPlans = [...preferredPlans.slice(0, 2), ...allPlans];
+    const uniquePlans = new Map();
+
+    for (const plan of combinedPlans) {
+      const signature = `${plan.targetSiteId}:${plan.moves
+        .map((move) => `${move.stayId}->${move.toSiteId}`)
+        .sort()
+        .join("|")}`;
+
+      if (uniquePlans.has(signature)) {
+        continue;
+      }
+
+      const involvedSpecialCareSites = [
+        plan.targetSiteNumber,
+        ...plan.moves.flatMap((move) => [
+          move.fromSiteNumber,
+          move.toSiteNumber
+        ])
+      ]
+        .map(String)
+        .filter((siteNumber) => specialCareSiteNumbers.has(siteNumber));
+
+      uniquePlans.set(signature, {
+        ...plan,
+        specialCareSiteNumbers: [...new Set(involvedSpecialCareSites)].sort(
+          (left, right) => Number(left) - Number(right)
+        ),
+        avoidsSpecialCareSites: involvedSpecialCareSites.length === 0
+      });
+    }
+    const annotatedPlans = [...uniquePlans.values()];
+    function prioritizeDifferentTargetSites(plansToOrder) {
+      const firstPlanByTarget = [];
+      const alternatePlansForTargets = [];
+      const seenTargetSiteIds = new Set();
+
+      for (const plan of plansToOrder) {
+        if (seenTargetSiteIds.has(plan.targetSiteId)) {
+          alternatePlansForTargets.push(plan);
+        } else {
+          seenTargetSiteIds.add(plan.targetSiteId);
+          firstPlanByTarget.push(plan);
+        }
+      }
+
+      return [...firstPlanByTarget, ...alternatePlansForTargets];
+    }
+
+    const plansWithoutSpecialCareSites = prioritizeDifferentTargetSites(
+      annotatedPlans.filter((plan) => plan.avoidsSpecialCareSites)
+    );
+    const plansUsingSpecialCareSites = prioritizeDifferentTargetSites(
+      annotatedPlans.filter((plan) => !plan.avoidsSpecialCareSites)
+    );
+    const firstPlansWithoutSpecialCareSites =
+      plansWithoutSpecialCareSites.slice(0, 2);
+    const preferredTargetSiteIds = new Set(
+      firstPlansWithoutSpecialCareSites.map((plan) => plan.targetSiteId)
+    );
+    const speciallyOrderedPlans = [
+      ...plansUsingSpecialCareSites.filter(
+        (plan) => !preferredTargetSiteIds.has(plan.targetSiteId)
+      ),
+      ...plansUsingSpecialCareSites.filter((plan) =>
+        preferredTargetSiteIds.has(plan.targetSiteId)
+      )
+    ];
+    const orderedPlans = [
+      ...firstPlansWithoutSpecialCareSites,
+      ...speciallyOrderedPlans.slice(0, 4),
+      ...plansWithoutSpecialCareSites.slice(2),
+      ...speciallyOrderedPlans.slice(4)
+    ];
+    const plans = [...new Map(
+      orderedPlans.map((plan) => [
+        `${plan.targetSiteId}:${plan.moves
+          .map((move) => `${move.stayId}->${move.toSiteId}`)
+          .sort()
+          .join("|")}`,
+        plan
+      ])
+    ).values()].slice(0, searchMore ? 10 : 2);
+
+    return res.json({ plans });
+  } catch (error) {
+    console.error("Unable to optimize reservation placement", error);
+    return res.status(500).json({
+      message: "Unable to search for safe reservation moves."
+    });
+  }
+});
+
 app.post("/api/guest/reservations/request-code", async (req, res) => {
   res.set("Cache-Control", "no-store");
   const email = String(req.body.email || "").trim().toLowerCase();
@@ -4267,6 +4516,12 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
     return res.status(400).json({ message: "Choose valid arrival and departure dates." });
   }
 
+  if (arrivalDate < getParkTodayDate()) {
+    return res.status(400).json({
+      message: "The earliest arrival date is today in Pacific Time."
+    });
+  }
+
   if (numberOfNights > 14) {
     return res.status(400).json({
       message: "Stays longer than two weeks must be reserved by calling 541-295-1269."
@@ -4285,7 +4540,7 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
 
   if (!paymentMethodStorageAccepted) {
     return res.status(400).json({
-      message: "Authorize Stripe to save the payment method before continuing."
+      message: "Authorize us to securely save the payment method before continuing."
     });
   }
 
@@ -4300,11 +4555,11 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
   }
 
   if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
-    return res.status(400).json({ message: "A valid site URL is required for Stripe Checkout." });
+    return res.status(400).json({ message: "A valid site URL is required for payment." });
   }
 
   if (allowedClientOrigins.length && !allowedClientOrigins.includes(baseUrl)) {
-    return res.status(400).json({ message: "That Stripe return URL is not allowed." });
+    return res.status(400).json({ message: "That payment return URL is not allowed." });
   }
 
   if (rvKind === "5th wheel" && rigLengthFeet > 43) {
@@ -4342,7 +4597,7 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
         UPDATE public_booking_checkouts
         SET
           payment_status = 'expired',
-          last_error_message = 'Stripe Checkout expired before payment.',
+          last_error_message = 'The payment session expired before payment.',
           updated_at = NOW()
         WHERE payment_status = 'open'
           AND expires_at <= NOW()
@@ -4663,7 +4918,7 @@ app.get("/api/guest/booking-checkouts/:checkoutToken", async (req, res) => {
         UPDATE public_booking_checkouts
         SET
           payment_status = 'expired',
-          last_error_message = 'Stripe Checkout expired before payment.',
+          last_error_message = 'The payment session expired before payment.',
           updated_at = NOW()
         WHERE checkout_token = $1
           AND payment_status = 'open'
@@ -4698,14 +4953,14 @@ app.get("/api/guest/booking-checkouts/:checkoutToken", async (req, res) => {
       ? await fetchReservationDetails(pool, checkout.reservation_id)
       : null;
     const statusMessages = {
-      open: "Stripe Checkout is waiting for payment.",
+      open: "The secure payment page is waiting for payment.",
       processing: "Your bank payment is processing. Your site remains held.",
       paid: "Payment was received and your reservation is being created.",
       completed: reservation
         ? `Payment received. Reservation #${reservation.id} is confirmed.`
         : "Payment received. Your reservation is confirmed.",
       failed: checkout.last_error_message || "The payment failed. Please try again.",
-      expired: "Stripe Checkout expired before payment. No reservation was created.",
+      expired: "The payment session expired before payment. No reservation was created.",
       conflict:
         checkout.last_error_message ||
         "Payment was received, but the site became unavailable. Please call 541-295-1269."
@@ -5452,7 +5707,7 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
   }
 
   if (allowedClientOrigins.length && !allowedClientOrigins.includes(baseUrl)) {
-    return res.status(400).json({ message: "That Stripe return URL is not allowed." });
+    return res.status(400).json({ message: "That payment return URL is not allowed." });
   }
 
   try {
@@ -5571,11 +5826,11 @@ app.post("/api/guest/reservations/:id/bank-checkouts", async (req, res) => {
   }
 
   if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
-    return res.status(400).json({ message: "A valid site URL is required for Stripe Checkout." });
+    return res.status(400).json({ message: "A valid site URL is required for payment." });
   }
 
   if (allowedClientOrigins.length && !allowedClientOrigins.includes(baseUrl)) {
-    return res.status(400).json({ message: "That Stripe return URL is not allowed." });
+    return res.status(400).json({ message: "That payment return URL is not allowed." });
   }
 
   try {

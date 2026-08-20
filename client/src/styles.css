@@ -716,6 +716,12 @@ textarea {
   opacity: 0.45;
 }
 
+.calendar-day.unavailable,
+.calendar-day:disabled {
+  cursor: not-allowed;
+  opacity: 0.32;
+}
+
 .calendar-day.selected {
   background: rgba(36, 74, 49, 0.14);
   border-color: rgba(36, 74, 49, 0.3);
@@ -1143,6 +1149,125 @@ select option {
   margin-top: 6px;
   color: #5b6d60;
   font-size: 0.94rem;
+}
+
+.optimization-results-panel {
+  margin-top: 20px;
+  border-color: rgba(36, 74, 49, 0.24);
+  background: rgba(246, 251, 246, 0.9);
+}
+
+.site-fit-notice {
+  margin: 10px 0 14px;
+  border-left: 4px solid #a36d12;
+  border-radius: 8px;
+  background: rgba(177, 128, 35, 0.1);
+  padding: 10px 12px;
+  color: #765515;
+  font-size: 0.92rem;
+}
+
+.move-search-action {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.move-search-action p {
+  margin: 0;
+}
+
+.guest-payment-callout {
+  color: #244a31;
+  font-size: 1rem;
+}
+
+.optimization-results-panel .result-header {
+  align-items: flex-start;
+}
+
+.optimization-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.optimization-search-message {
+  margin: 14px 0 0;
+  border-radius: 10px;
+  background: rgba(36, 74, 49, 0.1);
+  padding: 10px 12px;
+  color: #36533e;
+  font-weight: 650;
+}
+
+.optimization-intro {
+  max-width: 720px;
+  margin: 6px 0 0;
+}
+
+.advisory-badge {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(177, 128, 35, 0.14);
+  color: #765515;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.optimization-plan-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.optimization-plan-card {
+  border: 1px solid rgba(36, 74, 49, 0.16);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 16px;
+}
+
+.optimization-plan-summary,
+.optimization-move-list li > span {
+  display: block;
+  margin-top: 5px;
+  color: #5b6d60;
+  font-size: 0.92rem;
+}
+
+.special-care-badge {
+  display: inline-block;
+  margin-top: 9px;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.special-care-badge.avoids {
+  background: rgba(53, 120, 72, 0.12);
+  color: #28613a;
+}
+
+.special-care-badge.uses {
+  background: rgba(177, 128, 35, 0.14);
+  color: #765515;
+}
+
+.optimization-move-list {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 0;
+  padding-left: 22px;
+}
+
+.optimization-move-list .optimization-warning {
+  color: #8a5a09;
+  font-weight: 650;
 }
 
 .note-modal-card {
@@ -4503,6 +4628,11 @@ select option {
   margin: 28px 0 0;
   color: #52675e;
   text-align: center;
+}
+
+.public-payment-action-heading {
+  color: #244a31;
+  font-size: 1.05rem;
 }
 
 .public-payment-help a {

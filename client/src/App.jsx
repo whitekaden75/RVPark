@@ -875,7 +875,7 @@ function formatPaymentSource(value) {
     return "Office card reader";
   }
 
-  return "Stripe";
+  return "Online payment";
 }
 
 function buildConfirmationCode(reservation) {
@@ -1407,9 +1407,14 @@ function BookingSiteCalendar({
   );
 }
 
-function AvailabilitySearchCalendar({ arrivalDate, leaveDate, onSelectRange }) {
+function AvailabilitySearchCalendar({
+  arrivalDate,
+  leaveDate,
+  onSelectRange,
+  minimumDate = "",
+}) {
   const [monthCursor, setMonthCursor] = useState(() =>
-    startOfMonth(arrivalDate || formatDateInput(new Date()))
+    startOfMonth(arrivalDate || minimumDate || formatDateInput(new Date()))
   );
 
   useEffect(() => {
@@ -1454,6 +1459,10 @@ function AvailabilitySearchCalendar({ arrivalDate, leaveDate, onSelectRange }) {
   }
 
   function handleDaySelect(dateString) {
+    if (minimumDate && dateString < minimumDate) {
+      return;
+    }
+
     if (!arrivalDate || leaveDate) {
       onSelectRange(dateString, "");
       return;
@@ -1473,6 +1482,10 @@ function AvailabilitySearchCalendar({ arrivalDate, leaveDate, onSelectRange }) {
         <button
           type="button"
           className="ghost-button"
+          disabled={
+            Boolean(minimumDate) &&
+            monthStart <= startOfMonth(minimumDate)
+          }
           onClick={() => changeMonth(-1)}>
           Previous
         </button>
@@ -1499,7 +1512,10 @@ function AvailabilitySearchCalendar({ arrivalDate, leaveDate, onSelectRange }) {
             type="button"
             className={`calendar-day ${day.isCurrentMonth ? "" : "outside"} ${
               day.isSelectedWindow ? "selected" : ""
-            } ${day.isDepartureDate ? "departure" : ""}`}
+            } ${day.isDepartureDate ? "departure" : ""} ${
+              minimumDate && day.dateString < minimumDate ? "unavailable" : ""
+            }`}
+            disabled={Boolean(minimumDate) && day.dateString < minimumDate}
             onClick={() => handleDaySelect(day.dateString)}>
             <span>{day.dayNumber}</span>
             {day.isDepartureDate ? (
@@ -1528,6 +1544,7 @@ function StaySearchModeFields({
   publicLayout = false,
 }) {
   const summary = getSearchModeSummary(searchForm);
+  const parkToday = publicLayout ? getParkDateFromTimestamp(new Date()) : "";
 
   return (
     <div className="stay-search-mode-layout">
@@ -1585,6 +1602,7 @@ function StaySearchModeFields({
             <AvailabilitySearchCalendar
               arrivalDate={searchForm.arrivalDate}
               leaveDate={searchForm.leaveDate}
+              minimumDate={parkToday}
               onSelectRange={(arrivalDate, leaveDate) => {
                 onChange("arrivalDate", arrivalDate);
                 onChange("leaveDate", leaveDate);
@@ -1605,6 +1623,7 @@ function StaySearchModeFields({
               Date range looking
               <input
                 type="date"
+                min={parkToday || undefined}
                 value={searchForm.flexibleStartDate}
                 onChange={(event) =>
                   onChange("flexibleStartDate", event.target.value)
@@ -1615,6 +1634,11 @@ function StaySearchModeFields({
               Through
               <input
                 type="date"
+                min={
+                  publicLayout
+                    ? searchForm.flexibleStartDate || parkToday
+                    : undefined
+                }
                 value={searchForm.flexibleEndDate}
                 onChange={(event) =>
                   onChange("flexibleEndDate", event.target.value)
@@ -1930,16 +1954,17 @@ function PublicTermsAndConditions() {
           <h2>Saved payment methods</h2>
           <p className="public-terms-authorization">
             <strong>
-              I authorize Stripe to securely save my payment method for future
+              I authorize the secure saving of my payment method for future
               reservation-related payments. Saving it does not authorize a new
               charge without my separate approval.
             </strong>
           </p>
           <p>
-            With the guest’s separate consent during booking, Stripe securely
-            saves the payment method and provides Riverpark RV Resort with a
-            reusable Stripe payment-method reference and limited details such
-            as the payment type, brand, expiration date, and last four digits.
+            With the guest’s separate consent during booking, our payment
+            processor securely saves the payment method and provides Riverpark
+            RV Resort with a reusable payment-method reference and limited
+            details such as the payment type, brand, expiration date, and last
+            four digits.
             Riverpark RV Resort does not receive or store the full card or bank
             account number or the card security code.
           </p>
@@ -2022,7 +2047,7 @@ function PublicPrivacyPolicy() {
             discounts, payment choice, and reservation communications.
           </p>
           <p>
-            Payment information is processed securely by Stripe. Riverpark RV
+            Payment information is processed securely. Riverpark RV
             Resort does not receive or store full card or bank account numbers
             or card security codes.
           </p>
@@ -2190,7 +2215,7 @@ function PublicPaymentPage({ token }) {
           <div className="message success public-payment-message">
             {returnPaymentChoice === "bank"
               ? "Your bank payment was submitted. It may take several business days to be confirmed."
-              : "Your card payment was submitted. Your balance will update when Stripe confirms it."}
+              : "Your card payment was submitted. Your balance will update when it is confirmed."}
           </div>
         ) : null}
         {returnStatus === "cancel" ? (
@@ -2240,48 +2265,54 @@ function PublicPaymentPage({ token }) {
                 <span>No additional payment is due.</span>
               </div>
             ) : (
-              <div className="public-payment-options">
-                <article>
-                  <span className="eyebrow">No processing fee</span>
-                  <h2>Bank payment</h2>
-                  <strong className="public-payment-amount">
-                    {formatCurrency(paymentDetails.bankAmount)}
-                  </strong>
-                  <p>
-                    Pay the remaining balance from a bank account. Bank
-                    payments may take several business days to confirm.
-                  </p>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={Boolean(openingPaymentMethod)}
-                    onClick={() => startPayment("bank")}>
-                    {openingPaymentMethod === "bank"
-                      ? "Opening secure payment..."
-                      : "Pay by bank account"}
-                  </button>
-                </article>
-                <article>
-                  <span className="eyebrow">3% processing fee included</span>
-                  <h2>Credit card</h2>
-                  <strong className="public-payment-amount">
-                    {formatCurrency(paymentDetails.cardAmount)}
-                  </strong>
-                  <p>
-                    Pay by credit card through Stripe. Debit cards are not
-                    accepted. Processing fee: {formatCurrency(paymentDetails.cardFee)}.
-                  </p>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={Boolean(openingPaymentMethod)}
-                    onClick={() => startPayment("card")}>
-                    {openingPaymentMethod === "card"
-                      ? "Opening secure payment..."
-                      : "Pay by credit card"}
-                  </button>
-                </article>
-              </div>
+              <>
+                <p className="public-payment-help public-payment-action-heading">
+                  <strong>Click here to pay by bank/card.</strong>
+                </p>
+                <div className="public-payment-options">
+                  <article>
+                    <span className="eyebrow">No processing fee</span>
+                    <h2>Bank payment</h2>
+                    <strong className="public-payment-amount">
+                      {formatCurrency(paymentDetails.bankAmount)}
+                    </strong>
+                    <p>
+                      Pay the remaining balance from a bank account. Bank
+                      payments may take several business days to confirm.
+                    </p>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={Boolean(openingPaymentMethod)}
+                      onClick={() => startPayment("bank")}>
+                      {openingPaymentMethod === "bank"
+                        ? "Opening secure payment..."
+                        : "Pay by bank account"}
+                    </button>
+                  </article>
+                  <article>
+                    <span className="eyebrow">3% processing fee included</span>
+                    <h2>Credit card</h2>
+                    <strong className="public-payment-amount">
+                      {formatCurrency(paymentDetails.cardAmount)}
+                    </strong>
+                    <p>
+                      Pay by credit card. Debit cards are not accepted.
+                      Processing fee: {" "}
+                      {formatCurrency(paymentDetails.cardFee)}.
+                    </p>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={Boolean(openingPaymentMethod)}
+                      onClick={() => startPayment("card")}>
+                      {openingPaymentMethod === "card"
+                        ? "Opening secure payment..."
+                        : "Pay by credit card"}
+                    </button>
+                  </article>
+                </div>
+              </>
             )}
           </>
         ) : null}
@@ -2373,8 +2404,8 @@ function PublicHome({
   const bookingCheckoutMessage =
     returnedBookingCheckoutState === "cancel" &&
     bookingCheckoutStatus?.status === "open"
-      ? "Stripe Checkout was canceled. No reservation was created and no payment was taken."
-      : bookingCheckoutStatus?.message || "Checking your Stripe payment...";
+      ? "Payment was canceled. No reservation was created and no payment was taken."
+      : bookingCheckoutStatus?.message || "Checking your payment...";
 
   useEffect(() => {
     setSelectedBookingSite(null);
@@ -3325,9 +3356,9 @@ function PublicHome({
                     ) : null}
                     <div className="public-created-summary public-inline-deposit-summary">
                       <p className="eyebrow">Deposit payment</p>
-                      <h3>Pay securely with Stripe.</h3>
+                      <h3>Pay securely online.</h3>
                       <p>
-                        No reservation is created until Stripe confirms the
+                        No reservation is created until we confirm the
                         deposit payment.
                       </p>
                       <BookingPriceComparison
@@ -3339,6 +3370,9 @@ function PublicHome({
                         bankPrice={selectedBookingDepositPrice}
                       />
                     </div>
+                    <p className="public-payment-disabled-hint">
+                      Click here to pay by bank/card
+                    </p>
                     {!isPublicBookingFormComplete ? (
                       <p className="public-payment-disabled-hint">
                         Complete your contact information and accept the Terms
@@ -3355,10 +3389,10 @@ function PublicHome({
                         }
                         onClick={() => startPublicBookingCheckout("bank")}>
                         {isCreatingPublicReservation
-                          ? "Opening Stripe..."
+                          ? "Opening secure payment..."
                           : `Pay ${formatCurrency(
                               selectedBookingDepositPrice
-                            )} by bank with Stripe`}
+                            )} by bank`}
                       </button>
                       <button
                         type="button"
@@ -3369,10 +3403,10 @@ function PublicHome({
                         }
                         onClick={() => startPublicBookingCheckout("card")}>
                         {isCreatingPublicReservation
-                          ? "Opening Stripe..."
+                          ? "Opening secure payment..."
                           : `Pay ${formatCurrency(
                               getCardPrice(selectedBookingDepositPrice)
-                            )} by card with Stripe`}
+                            )} by card`}
                       </button>
                     </div>
                   </div>
@@ -3700,7 +3734,7 @@ function GuestPortal({ onBackHome }) {
 
     if (returnState === "return") {
       setSuccessMessage(
-        "Your bank payment was submitted. Bank payments can take several business days for Stripe to confirm."
+        "Your bank payment was submitted. Bank payments can take several business days to confirm."
       );
     } else if (returnState === "cancel") {
       setErrorMessage("Bank payment was canceled. No new payment was submitted.");
@@ -4343,13 +4377,16 @@ function GuestPortal({ onBackHome }) {
                     Choose a secure bank-account payment with no card surcharge,
                     or pay online by card.
                   </p>
+                  <p className="guest-pricing-note guest-payment-callout">
+                    <strong>Click here to pay by bank/card.</strong>
+                  </p>
                   <button
                     type="button"
                     className="guest-payment-button guest-bank-payment-button"
                     disabled={isOpeningBankPayment}
                     onClick={startGuestBankPayment}>
                     {isOpeningBankPayment
-                      ? "Opening Stripe..."
+                      ? "Opening secure payment..."
                       : `Pay ${formatCurrency(
                           activeReservation.remainingBalance
                         )} by bank account`}
@@ -4992,7 +5029,7 @@ function CardPaymentForm({
     setErrorMessage("");
 
     if (!stripe || !elements) {
-      setErrorMessage("Stripe card entry is still loading.");
+      setErrorMessage("Secure card entry is still loading.");
       return;
     }
 
@@ -5025,7 +5062,7 @@ function CardPaymentForm({
       }
 
       if (!result.paymentIntent) {
-        throw new Error("Stripe did not return a payment result.");
+        throw new Error("The payment processor did not return a payment result.");
       }
 
       await onSuccess(result.paymentIntent);
@@ -5157,9 +5194,16 @@ export default function App() {
   const [flexibleMatches, setFlexibleMatches] = useState([]);
   const [switchPlan, setSwitchPlan] = useState(null);
   const [switchPlanTotals, setSwitchPlanTotals] = useState(null);
+  const [optimizationPlans, setOptimizationPlans] = useState([]);
   const [showAllDirectMatches, setShowAllDirectMatches] = useState(false);
   const [showAllSwitchPlanSegments, setShowAllSwitchPlanSegments] =
     useState(false);
+  const [hasSearchedMoreOptimizationPlans, setHasSearchedMoreOptimizationPlans] =
+    useState(false);
+  const [isSearchingMoreOptimizationPlans, setIsSearchingMoreOptimizationPlans] =
+    useState(false);
+  const [optimizationSearchMessage, setOptimizationSearchMessage] =
+    useState("");
   const [availabilityHasSearched, setAvailabilityHasSearched] = useState(false);
   const [availabilityRestriction, setAvailabilityRestriction] = useState("");
   const [isSearchingAvailability, setIsSearchingAvailability] = useState(false);
@@ -6259,6 +6303,7 @@ export default function App() {
     setDirectMatches([]);
     setFlexibleMatches([]);
     setSwitchPlan(null);
+    setOptimizationPlans([]);
     setAvailabilityHasSearched(false);
 
     try {
@@ -6288,10 +6333,13 @@ export default function App() {
       setFlexibleMatches([]);
       setSwitchPlan(null);
       setSwitchPlanTotals(null);
+      setOptimizationPlans([]);
       setAvailabilityHasSearched(false);
       setAvailabilityRestriction("");
       setShowAllDirectMatches(false);
       setShowAllSwitchPlanSegments(false);
+      setHasSearchedMoreOptimizationPlans(false);
+      setOptimizationSearchMessage("");
       return;
     }
 
@@ -6358,7 +6406,10 @@ export default function App() {
     setFlexibleMatches([]);
     setSwitchPlan(null);
     setSwitchPlanTotals(null);
+    setOptimizationPlans([]);
     setAvailabilityRestriction("");
+    setHasSearchedMoreOptimizationPlans(false);
+    setOptimizationSearchMessage("");
 
     setSearchForm((current) => {
       if (field === "rvKind") {
@@ -6768,9 +6819,12 @@ export default function App() {
     setFlexibleMatches([]);
     setSwitchPlan(null);
     setSwitchPlanTotals(null);
+    setOptimizationPlans([]);
     setAvailabilityRestriction("");
     setShowAllDirectMatches(false);
     setShowAllSwitchPlanSegments(false);
+    setHasSearchedMoreOptimizationPlans(false);
+    setOptimizationSearchMessage("");
     setAvailabilityHasSearched(false);
     setIsSearchingAvailability(true);
 
@@ -6833,6 +6887,14 @@ export default function App() {
       };
 
       if (searchForm.searchMode === "flexible") {
+        if (
+          !applySiteFitRestrictions &&
+          searchForm.flexibleStartDate &&
+          searchForm.flexibleStartDate < getParkDateFromTimestamp(new Date())
+        ) {
+          throw new Error("The earliest arrival date is today in Pacific Time.");
+        }
+
         const flexibleResult = await apiRequest("/availability/flexible-search", {
           method: "POST",
           body: JSON.stringify(searchPayload),
@@ -6847,20 +6909,30 @@ export default function App() {
           throw new Error("Choose both an arrival and departure date.");
         }
 
-        const [searchResult, planResult] = await Promise.all([
-          apiRequest("/availability/search", {
-            method: "POST",
-            body: JSON.stringify(searchPayload),
-          }),
-          apiRequest("/availability/plan", {
-            method: "POST",
-            body: JSON.stringify(searchPayload),
-          }),
-        ]);
+        if (
+          !applySiteFitRestrictions &&
+          searchForm.arrivalDate < getParkDateFromTimestamp(new Date())
+        ) {
+          throw new Error("The earliest arrival date is today in Pacific Time.");
+        }
 
-        setDirectMatches(
-          ensureArray(searchResult.directMatches, "Availability")
+        const searchResult = await apiRequest("/availability/search", {
+          method: "POST",
+          body: JSON.stringify(searchPayload),
+        });
+        const planResult = applySiteFitRestrictions
+          ? { plan: null, totals: null, restriction: "" }
+          : await apiRequest("/availability/plan", {
+              method: "POST",
+              body: JSON.stringify(searchPayload),
+            });
+
+        const nextDirectMatches = ensureArray(
+          searchResult.directMatches,
+          "Availability"
         );
+        setDirectMatches(nextDirectMatches);
+        setOptimizationPlans([]);
         setSwitchPlan(planResult.plan);
         setSwitchPlanTotals(planResult.totals);
         setAvailabilityRestriction(
@@ -7237,7 +7309,7 @@ export default function App() {
   ) {
     if (!stripePublishableKey) {
       setPaymentLinkErrorMessage(
-        "Add VITE_STRIPE_PUBLISHABLE_KEY to the client before collecting card details on-site."
+        "Online card payments are not configured yet."
       );
       return null;
     }
@@ -8357,6 +8429,114 @@ export default function App() {
     openReservationSection();
   }
 
+  async function copyOptimizationPlan(plan, planIndex) {
+    const requestedNights = nightsBetween(
+      searchForm.arrivalDate,
+      searchForm.leaveDate
+    );
+    const lines = [
+      `Reservation move plan ${planIndex + 1}`,
+      `New stay: ${formatDisplayDate(searchForm.arrivalDate)} to ${formatDisplayDate(
+        searchForm.leaveDate
+      )} (${requestedNights} nights)`,
+      `Put the new reservation on Site ${plan.targetSiteNumber}.`,
+      "",
+      ...plan.moves.flatMap((move, moveIndex) => [
+        `${moveIndex + 1}. Move ${move.guestName || `reservation #${move.reservationId}`} from Site ${move.fromSiteNumber} to Site ${move.toSiteNumber}.`,
+        `   Reservation #${move.reservationId}: ${formatDisplayDate(
+          move.arrivalDate
+        )} to ${formatDisplayDate(move.leaveDate)}${
+          move.rigLengthFeet ? ` • ${move.rigLengthFeet} ft rig` : ""
+        }`,
+        ...(move.warnings || []).map((warning) => `   Warning: ${warning}`),
+      ]),
+      "",
+      "Advisory only: verify each reservation before changing its site.",
+    ];
+
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      setSuccessMessage(`Copied reservation move plan ${planIndex + 1}.`);
+    } catch {
+      setErrorMessage("The move plan could not be copied.");
+    }
+  }
+
+  async function searchForMoreOptimizationPlans() {
+    const rigLength = Number(searchForm.rigLengthFeet);
+
+    if (
+      !searchForm.arrivalDate ||
+      !searchForm.leaveDate ||
+      !Number.isFinite(rigLength) ||
+      rigLength <= 0
+    ) {
+      setErrorMessage("Enter valid dates and a rig length before searching for more options.");
+      return;
+    }
+
+    setErrorMessage("");
+    setSuccessMessage("");
+    setOptimizationSearchMessage("");
+    setIsSearchingMoreOptimizationPlans(true);
+    setHasSearchedMoreOptimizationPlans(true);
+
+    try {
+      const searchPayload = {
+        ...searchForm,
+        minSizeFeet: Math.max(1, rigLength - 5),
+        isPublicGuestSearch: false,
+        searchMore: true,
+      };
+      const [result, planResult] = await Promise.all([
+        apiRequest("/availability/optimize", {
+          method: "POST",
+          body: JSON.stringify(searchPayload),
+        }),
+        apiRequest("/availability/plan", {
+          method: "POST",
+          body: JSON.stringify(searchPayload),
+        }),
+      ]);
+      const nextPlans = ensureArray(
+        result.plans,
+        "Reservation move plans"
+      );
+      const combinedPlans = [...optimizationPlans, ...nextPlans];
+      const uniquePlans = new Map();
+
+      for (const plan of combinedPlans) {
+        const signature = `${plan.targetSiteId}:${plan.moves
+          .map((move) => `${move.stayId}->${move.toSiteId}`)
+          .sort()
+          .join("|")}`;
+
+        if (!uniquePlans.has(signature)) {
+          uniquePlans.set(signature, plan);
+        }
+      }
+
+      const mergedPlans = [...uniquePlans.values()];
+      const addedPlanCount = mergedPlans.length - optimizationPlans.length;
+
+      setOptimizationPlans(mergedPlans);
+      setSwitchPlan(planResult.plan);
+      setSwitchPlanTotals(planResult.totals);
+      setOptimizationSearchMessage(
+        addedPlanCount > 0
+          ? `Found ${addedPlanCount} move plan${
+              addedPlanCount === 1 ? "" : "s"
+            } while keeping the four-move limit.`
+          : "No safe reservation-move plans were found within the four-move limit."
+      );
+    } catch (error) {
+      setHasSearchedMoreOptimizationPlans(false);
+      setErrorMessage(error.message);
+    } finally {
+      setIsSearchingMoreOptimizationPlans(false);
+    }
+  }
+
   function changeTimelineMonth(offset) {
     setTimelineMonthCursor((current) => {
       const next = new Date(current);
@@ -8704,6 +8884,14 @@ export default function App() {
                     Riverfront only
                   </label>
                 </div>
+                {searchForm.slideDriverSide &&
+                Number(searchForm.rigLengthFeet) > 25 ? (
+                  <p className="site-fit-notice">
+                    Site 23 will not be used for the new stay. The move search
+                    may still place a compatible existing rig there and will
+                    clearly label that plan.
+                  </p>
+                ) : null}
                 <button type="submit" className="primary-button">
                   {isSearchingAvailability
                     ? "Searching..."
@@ -8824,7 +9012,9 @@ export default function App() {
                   )}
                 </div>
 
-                {searchForm.searchMode === "flexible" ? null : (
+                {searchForm.searchMode === "flexible" ||
+                (!hasSearchedMoreOptimizationPlans &&
+                  !isSearchingMoreOptimizationPlans) ? null : (
                   <div className="result-panel">
                     <div className="result-header">
                       <h3>Switch plan</h3>
@@ -8885,6 +9075,139 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              {searchForm.searchMode === "exact" &&
+              availabilityHasSearched &&
+              availabilityRestriction !== "oversized_fifth_wheel" &&
+              !hasSearchedMoreOptimizationPlans ? (
+                <div className="move-search-action">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={isSearchingMoreOptimizationPlans}
+                    onClick={searchForMoreOptimizationPlans}>
+                    {isSearchingMoreOptimizationPlans
+                      ? "Searching for workable moves..."
+                      : "Find options by rearranging reservations"}
+                  </button>
+                  <p className="muted">
+                    This only searches after you click. It will not move or
+                    change any reservation.
+                  </p>
+                </div>
+              ) : null}
+
+              {searchForm.searchMode === "exact" &&
+              availabilityHasSearched &&
+              (hasSearchedMoreOptimizationPlans ||
+                isSearchingMoreOptimizationPlans) &&
+              availabilityRestriction !== "oversized_fifth_wheel" ? (
+                <div className="result-panel optimization-results-panel">
+                  <div className="result-header">
+                    <div>
+                      <h3>Make this stay fit</h3>
+                      <p className="muted optimization-intro">
+                        These plans keep every rig within its site-size rules.
+                        Current guests, yearly stays, open-ended stays, and
+                        reservations without a saved rig size are not moved.
+                        Payment holds stay locked too. Plans avoiding Sites 17
+                        and 23 are shown first.
+                      </p>
+                    </div>
+                    <div className="optimization-header-actions">
+                      <span className="advisory-badge">Suggestions only</span>
+                    </div>
+                  </div>
+
+                  {optimizationSearchMessage ? (
+                    <p className="optimization-search-message">
+                      {optimizationSearchMessage}
+                    </p>
+                  ) : null}
+
+                  {isSearchingMoreOptimizationPlans &&
+                  !optimizationPlans.length ? (
+                    <p className="muted">Searching for workable move plans…</p>
+                  ) : optimizationPlans.length ? (
+                    <div className="optimization-plan-list">
+                      {optimizationPlans.map((plan, planIndex) => (
+                        <article
+                          className="optimization-plan-card"
+                          key={`${plan.targetSiteId}-${planIndex}`}>
+                          <div className="result-header">
+                            <div>
+                              <strong>
+                                Plan {planIndex + 1}: open Site {plan.targetSiteNumber}
+                              </strong>
+                              <span className="optimization-plan-summary">
+                                Put the new {nightsBetween(
+                                  searchForm.arrivalDate,
+                                  searchForm.leaveDate
+                                )}-night stay here after making {plan.moveCount}{" "}
+                                move{plan.moveCount === 1 ? "" : "s"}.
+                              </span>
+                              {plan.avoidsSpecialCareSites ? (
+                                <span className="special-care-badge avoids">
+                                  Avoids Sites 17 and 23
+                                </span>
+                              ) : (
+                                <span className="special-care-badge uses">
+                                  Uses special-care Site
+                                  {plan.specialCareSiteNumbers?.length === 1
+                                    ? " "
+                                    : "s "}
+                                  {(plan.specialCareSiteNumbers || []).join(", ")}
+                                </span>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() =>
+                                copyOptimizationPlan(plan, planIndex)
+                              }>
+                              Copy plan
+                            </button>
+                          </div>
+
+                          <ol className="optimization-move-list">
+                            {plan.moves.map((move) => (
+                              <li key={`${move.stayId}-${move.toSiteId}`}>
+                                <strong>
+                                  Move {move.guestName || `reservation #${move.reservationId}`}
+                                </strong>{" "}
+                                from Site {move.fromSiteNumber} to Site{" "}
+                                {move.toSiteNumber}
+                                <span>
+                                  Reservation #{move.reservationId} •{" "}
+                                  {formatDisplayDate(move.arrivalDate)} to{" "}
+                                  {formatDisplayDate(move.leaveDate)}
+                                  {move.rigLengthFeet
+                                    ? ` • ${move.rigLengthFeet} ft rig`
+                                    : ""}
+                                </span>
+                                {(move.warnings || []).map((warning) => (
+                                  <span
+                                    className="optimization-warning"
+                                    key={warning}>
+                                    Check first: {warning}.
+                                  </span>
+                                ))}
+                              </li>
+                            ))}
+                          </ol>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted">
+                      No safe rearrangement was found within four reservation
+                      moves. Try a shorter stay, different dates, or remove the
+                      riverfront-only filter.
+                    </p>
+                  )}
+                </div>
+              ) : null}
             </>
           </Paper>
         ) : null}
