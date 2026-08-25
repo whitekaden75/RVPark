@@ -31,6 +31,7 @@ React + Node.js app for managing RV park registrations with:
 - `sql/014_add_stripe_webhook_tracking.sql` adds Stripe webhook event storage and richer payment-status fields
 - `sql/2026-08-01_add_public_booking_checkouts.sql` stores short-lived public booking details until Stripe confirms a card or ACH bank deposit
 - `sql/2026-08-15_add_reservation_price_choices.sql` stores each booking's requested discounts and selected payment method
+- `sql/2026-08-24_add_reservation_check_ins.sql` stores signed iPad check-in forms and arrival timestamps
 
 ## Database Setup
 
@@ -74,6 +75,30 @@ Before enabling payment-first public booking, run [sql/2026-08-01_add_public_boo
 
 Run [sql/2026-08-15_add_reservation_price_choices.sql](/Users/kadenwhite/Desktop/RVPark/sql/2026-08-15_add_reservation_price_choices.sql) so both client and admin bookings retain the requested discounts and selected payment method.
 
+Run [sql/2026-08-24_add_reservation_check_ins.sql](/Users/kadenwhite/Desktop/RVPark/sql/2026-08-24_add_reservation_check_ins.sql) before deploying the **Check In** admin page. It stores the guest count, RV details, accepted rules version, signature image, and check-in timestamp with the reservation.
+
+### Nightly balances
+
+Standard reservations do not use `reservations.total_price` as their balance. The API rebuilds the bank and card balances from the current daily rates and the unpaid chargeable nights each time the reservation is loaded. Payment events determine how many chargeable nights have already been paid.
+
+Every seventh consecutive night is free: six paid nights earn the seventh night free. The consecutive-night count continues when a guest switches sites without a date gap and resets when there is a gap. Manual-total, monthly, and yearly billing keep their separate billing behavior. This calculation uses the existing payment-event history and does not require another SQL migration.
+
+### Stripe Terminal
+
+Register the Stripe S710 to the live Stripe account and keep it assigned to the correct Terminal Location. The admin reservation flow uses Stripe's server-driven Terminal integration: after a reservation is created, the office can record cash/check or send the card deposit to the reader, and the reservation is updated only after Stripe confirms a successful card-present PaymentIntent.
+
+If the Stripe account has exactly one physical Terminal reader, the server discovers it automatically. If the account has multiple readers, set `STRIPE_TERMINAL_READER_ID` to the office reader ID (it begins with `tmr_`). Office Terminal buttons always use the card price. Bank-account/ACH payment remains available only through secure guest payment links; cash and check are recorded separately in the office.
+
+For safe local testing, create a Terminal location in the Stripe sandbox, then register a simulated reader through Stripe's API using the registration code `simulated-s710`. Use the resulting sandbox `tmr_` ID with a test secret key:
+
+```env
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_TERMINAL_READER_ID=tmr_your_simulated_reader
+STRIPE_TERMINAL_SIMULATOR_ENABLED=true
+```
+
+With simulator mode enabled, the server automatically presents Stripe's default test card after sending each server-driven Terminal payment. The admin page identifies the reader as a test simulator, and no real card is charged. Never enable simulator mode with a live secret key; the server rejects that configuration. Set `STRIPE_TERMINAL_SIMULATOR_ENABLED=false` and use the physical reader's live `tmr_` ID in production.
+
 Enable both Cards and ACH Direct Debit (`us_bank_account`) in the Stripe Dashboard. The webhook endpoint must receive `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, and `checkout.session.expired` events. ACH payments can remain processing after the guest returns to the site, so the reservation is created only after `checkout.session.async_payment_succeeded`.
 
 ## Local Setup
@@ -90,6 +115,8 @@ Required values:
 - `ADMIN_SESSION_SECRET`
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_TERMINAL_READER_ID` (optional when the account has exactly one physical reader)
+- `STRIPE_TERMINAL_SIMULATOR_ENABLED` (`true` only for a sandbox simulated reader)
 - `SENDGRID_API_KEY`
 - `SENDGRID_FROM_EMAIL`
 - `SENDGRID_FROM_NAME`
@@ -159,6 +186,7 @@ Your Postgres already lives on Railway, so the main task is connecting a backend
    - `ADMIN_SESSION_SECRET`
    - `STRIPE_SECRET_KEY`
    - `STRIPE_WEBHOOK_SECRET`
+   - `STRIPE_TERMINAL_READER_ID`
    - `SENDGRID_API_KEY`
    - `SENDGRID_FROM_EMAIL`
    - `SENDGRID_FROM_NAME`
@@ -221,6 +249,9 @@ Then redeploy the backend.
 - `POST /api/reservations/:id/payment-links`
 - `POST /api/stripe/sync`
 - `POST /api/stripe/webhooks`
+- `GET /api/stripe/terminal/status`
+- `POST /api/reservations/:id/terminal-payments`
+- `POST /api/reservations/:id/check-in`
 
 ## Booking Rules Implemented
 

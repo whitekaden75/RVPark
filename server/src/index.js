@@ -24,6 +24,9 @@ const port = Number(process.env.PORT || 4000);
 const stripeApiVersion = "2026-02-25.clover";
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
+const stripeTerminalReaderId = process.env.STRIPE_TERMINAL_READER_ID || "";
+const stripeTerminalSimulatorEnabled =
+  process.env.STRIPE_TERMINAL_SIMULATOR_ENABLED === "true";
 const sendGridApiKey = process.env.SENDGRID_API_KEY || "";
 const sendGridFromEmail = process.env.SENDGRID_FROM_EMAIL || "";
 const sendGridFromName = process.env.SENDGRID_FROM_NAME || "Riverpark RV Resort";
@@ -44,8 +47,15 @@ const allowedClientOrigins = String(process.env.CLIENT_ORIGIN || "")
   .filter(Boolean);
 const guestVerificationRequests = new Map();
 const guestVerificationAttempts = new Map();
-const cardPriceMultiplier = 1.03;
 const publicBookingTermsVersion = "2026-08-15";
+const checkInRulesVersion = "2026-08-24";
+const checkInRulesText = [
+  "This property is privately owned. Management reserves the right to refuse service to anyone and is not responsible for accidents, injuries, or loss of money or valuables of any kind.",
+  "I agree to read and comply with all campground rules and regulations provided by the office and/or posted on the park map or brochure.",
+  "Riverpark RV Resort is not liable for damage to any vehicle, RV, trailer, or personal property.",
+  "Grass is watered nightly between 8:00 PM and 6:00 AM.",
+  "No parking in empty spaces or on grass. No refunds."
+].join("\n\n");
 const pricingPreviewDays = Array.from({ length: 28 }, (_, index) => index + 1);
 const adminSessionCookieName = "rvpark_admin_session";
 const stripe = stripeSecretKey
@@ -198,7 +208,7 @@ app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), asyn
   }
 });
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 function parseCookies(cookieHeader = "") {
   return cookieHeader
@@ -777,7 +787,7 @@ function buildReservationConfirmationEmail(reservation) {
     `Phone: ${reservation.phone_number || "Not set"}`,
     "",
     "Deposit policy",
-    "The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Credit-card payments include a 3% surcharge. Debit cards are not accepted. The remaining balance may be paid by check or cash upon arrival without a surcharge.",
+    "The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. Debit cards are not accepted. The remaining balance may also be paid by check or cash upon arrival.",
     "",
     "Important information",
     ...importantInformation.map((item) => `- ${item}`),
@@ -854,7 +864,7 @@ function buildReservationConfirmationEmail(reservation) {
                 </table>
 
                 <h2 style="margin:0 0 10px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Deposit policy</h2>
-                <p style="margin:0 0 28px;color:#4b5b54;font-size:14px;line-height:1.7;">The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Credit-card payments include a 3% surcharge. Debit cards are not accepted. The remaining balance may be paid by check or cash upon arrival without a surcharge.</p>
+                <p style="margin:0 0 28px;color:#4b5b54;font-size:14px;line-height:1.7;">The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. Debit cards are not accepted. The remaining balance may also be paid by check or cash upon arrival.</p>
 
                 <div style="height:1px;background:#e4d8c5;margin:0 0 27px;"></div>
                 <h2 style="margin:0 0 18px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Before you arrive</h2>
@@ -1090,6 +1100,44 @@ async function sendReservationCancellationEmail(reservation) {
   });
 }
 
+async function sendCheckInConfirmationEmail(reservation, checkIn) {
+  const guestName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+  const siteNumbers = (reservation.siteStays || [])
+    .map((stay) => stay.site_number)
+    .filter(Boolean)
+    .join(", ");
+  const rules = String(checkIn.rules_text_snapshot || checkInRulesText);
+  const text = [
+    `Hi ${guestName || "Guest"},`,
+    "",
+    "You are checked in at Riverpark RV Resort.",
+    `Site: ${siteNumbers || "See the office"}`,
+    `Checked in: ${new Date(checkIn.checked_in_at).toLocaleString("en-US", { timeZone: "America/Los_Angeles" })}`,
+    `Signed by: ${checkIn.signed_name}`,
+    "",
+    "Park agreement",
+    rules,
+    "",
+    "Thank you, and enjoy your stay by the river.",
+    "Riverpark RV Resort",
+    "2956 Rogue River Hwy, Grants Pass, OR 97527",
+    "541-295-1269"
+  ].join("\n");
+  const ruleItems = rules
+    .split(/\n\n+/)
+    .map((rule) => `<li style="margin-bottom:12px;">${escapeEmailHtml(rule)}</li>`)
+    .join("");
+  const html = `<!doctype html><html><body style="margin:0;background:#f2eee5;color:#17372f;font-family:Arial,sans-serif;"><table role="presentation" width="100%"><tr><td align="center" style="padding:28px 12px;"><table role="presentation" width="100%" style="max-width:640px;background:#fffdf7;border-radius:18px;overflow:hidden;"><tr><td style="padding:34px;text-align:center;background:#173f35;color:white;"><div style="color:#cde1ae;font-size:12px;letter-spacing:2px;text-transform:uppercase;">Check-in complete</div><h1 style="margin:10px 0 0;font-family:Georgia,serif;font-weight:400;">Welcome to Riverpark</h1></td></tr><tr><td style="padding:34px;"><p style="font-size:17px;line-height:1.7;">Hi ${escapeEmailHtml(guestName || "Guest")}, you are checked in and ready to enjoy your stay by the river.</p><div style="padding:18px;background:#eef4e8;border-radius:12px;"><strong>Site ${escapeEmailHtml(siteNumbers || "—")}</strong><br>Signed by ${escapeEmailHtml(checkIn.signed_name)}</div><h2 style="margin-top:28px;font-family:Georgia,serif;font-weight:400;">Your park agreement</h2><ol style="padding-left:22px;line-height:1.6;">${ruleItems}</ol><p style="margin-top:28px;color:#66736c;">Questions? Call or text 541-295-1269.</p></td></tr></table></td></tr></table></body></html>`;
+
+  await sendEmailWithSendGrid({
+    to: reservation.email,
+    toName: guestName,
+    subject: "You’re checked in at Riverpark RV Resort",
+    text,
+    html
+  });
+}
+
 function signGuestToken(payload) {
   if (!guestAuthSecret) {
     throw new Error("Guest email sign-in is not configured. Add GUEST_AUTH_SECRET to the server.");
@@ -1231,8 +1279,8 @@ function getCardPrice(value) {
     return 0;
   }
 
-  const cardAmount = amount * cardPriceMultiplier;
-  return roundCurrency(Math.ceil(cardAmount - 0.99) + 0.99);
+  const amountWithCardPricing = amount * 1.03;
+  return roundCurrency(Math.ceil(amountWithCardPricing - 0.99) + 0.99);
 }
 
 function getCardStayTotal(value, chargeableNights) {
@@ -1452,31 +1500,144 @@ function buildPricingRulesByCategory(pricingRules) {
   return byCategory;
 }
 
-function applyBalanceSummary(amountPaid, totals) {
-  const paid = toPriceNumber(amountPaid) ?? 0;
+function getPaymentEventPriceType(paymentEvent) {
+  const match = String(paymentEvent?.note || "").match(
+    /price type:\s*(bank|card)/i
+  );
+
+  return match?.[1]?.toLowerCase() || "";
+}
+
+function findClosestPaidNightCount(amount, nightlyPrices, startIndex = 0) {
+  const targetAmount = Math.max(Number(amount) || 0, 0);
+  let closestCount = 0;
+  let closestDifference = targetAmount;
+  let accumulatedAmount = 0;
+
+  for (let index = startIndex; index < nightlyPrices.length; index += 1) {
+    accumulatedAmount = roundCurrency(
+      accumulatedAmount + Number(nightlyPrices[index] || 0)
+    );
+    const difference = Math.abs(targetAmount - accumulatedAmount);
+
+    if (difference < closestDifference) {
+      closestCount = index - startIndex + 1;
+      closestDifference = difference;
+    }
+  }
+
+  return { count: closestCount, difference: closestDifference };
+}
+
+function calculatePaidChargeableNights({
+  amountPaid,
+  paymentEvents,
+  bankNightlyPrices,
+  cardNightlyPrices,
+  totalChargeableNights
+}) {
+  let unallocatedPaidAmount = Math.max(Number(amountPaid) || 0, 0);
+  let paidNights = 0;
+  let partialPaymentCredit = 0;
+
+  const allocateAmountToNights = (amount, preferredPriceType = "") => {
+    partialPaymentCredit = roundCurrency(
+      partialPaymentCredit + Math.max(Number(amount) || 0, 0)
+    );
+    let priceType = preferredPriceType;
+
+    if (!priceType) {
+      const bankMatch = findClosestPaidNightCount(
+        partialPaymentCredit,
+        bankNightlyPrices,
+        paidNights
+      );
+      const cardMatch = findClosestPaidNightCount(
+        partialPaymentCredit,
+        cardNightlyPrices,
+        paidNights
+      );
+      priceType = cardMatch.difference < bankMatch.difference ? "card" : "bank";
+    }
+
+    const nightlyPrices =
+      priceType === "card" ? cardNightlyPrices : bankNightlyPrices;
+
+    while (paidNights < totalChargeableNights) {
+      const nextNightPrice = Number(nightlyPrices[paidNights]);
+
+      if (!Number.isFinite(nextNightPrice) || nextNightPrice <= 0) break;
+      if (partialPaymentCredit + 0.001 < nextNightPrice) break;
+
+      partialPaymentCredit = roundCurrency(
+        partialPaymentCredit - nextNightPrice
+      );
+      paidNights += 1;
+    }
+  };
+
+  for (const paymentEvent of paymentEvents || []) {
+    if (unallocatedPaidAmount <= 0) break;
+
+    const eventAmount = Math.min(
+      Math.max(Number(paymentEvent.amount) || 0, 0),
+      unallocatedPaidAmount
+    );
+
+    if (eventAmount <= 0) continue;
+
+    allocateAmountToNights(
+      eventAmount,
+      getPaymentEventPriceType(paymentEvent)
+    );
+    unallocatedPaidAmount -= eventAmount;
+  }
+
+  if (unallocatedPaidAmount > 0) {
+    allocateAmountToNights(unallocatedPaidAmount);
+  }
 
   return {
-    amountPaid: paid,
-    remainingNormalPrice:
-      totals?.normalPrice !== null && totals?.normalPrice !== undefined
-        ? Math.max(totals.normalPrice - paid, 0)
-        : null,
-    remainingDiscountPrice:
-      totals?.discountPrice !== null && totals?.discountPrice !== undefined
-        ? Math.max(totals.discountPrice - paid, 0)
-        : null
+    paidNights: Math.min(
+      Math.max(paidNights, 0),
+      Math.max(Number(totalChargeableNights) || 0, 0)
+    ),
+    partialPaymentCredit: roundCurrency(Math.max(partialPaymentCredit, 0))
   };
 }
 
-function buildBillingSummary(reservationRow, totals) {
+function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
   const utilityPrice = calculateUtilityPrice(reservationRow.electric_meter_reading);
   const selectedPaymentMethod = normalizeReservationPaymentMethod(
     reservationRow.payment_method
   );
   const useDiscountPrice =
     normalizeRequestedDiscounts(reservationRow.requested_discounts).length > 0;
+  const selectedDailyTotal = useDiscountPrice
+    ? totals?.discountPrice ?? totals?.normalPrice
+    : totals?.normalPrice ?? totals?.discountPrice;
+  const selectedCardDailyTotal = useDiscountPrice
+    ? totals?.discountCardPrice ?? totals?.normalCardPrice
+    : totals?.normalCardPrice ?? totals?.discountCardPrice;
+  const usesDiscountNightlyPrices = useDiscountPrice
+    ? totals?.discountPrice !== null && totals?.discountPrice !== undefined
+    : (totals?.normalPrice === null || totals?.normalPrice === undefined) &&
+      totals?.discountPrice !== null && totals?.discountPrice !== undefined;
+  const selectedBankNightlyPrices = usesDiscountNightlyPrices
+    ? totals?.discountNightlyPrices || []
+    : totals?.normalNightlyPrices || [];
+  const selectedCardNightlyPrices = usesDiscountNightlyPrices
+    ? totals?.discountCardNightlyPrices || []
+    : totals?.normalCardNightlyPrices || [];
+  const effectiveBillingMode =
+    reservationRow.billing_mode === "manual_total" &&
+    reservationRow.reservation_term !== "yearly" &&
+    selectedDailyTotal !== null &&
+    selectedDailyTotal !== undefined
+      ? "standard"
+      : reservationRow.billing_mode;
   const baseEffectiveTotalPrice = getEffectiveReservationTotal(
-    reservationRow.billing_mode,
+    effectiveBillingMode,
     totals,
     reservationRow.total_price,
     reservationRow.monthly_rent_price,
@@ -1484,39 +1645,149 @@ function buildBillingSummary(reservationRow, totals) {
     useDiscountPrice
   );
   const amountPaid = toPriceNumber(reservationRow.amount_paid) ?? 0;
+  const depositNights = Number(totals?.numberOfNights) > 7 ? 2 : 1;
+  const totalChargeableNights = Number(totals?.chargeableNights);
+  const usesDailyNightBilling =
+    effectiveBillingMode === "standard" &&
+    baseEffectiveTotalPrice !== null &&
+    baseEffectiveTotalPrice !== undefined &&
+    Number.isFinite(totalChargeableNights) &&
+    totalChargeableNights > 0;
+  const cardTotalPrice = usesDailyNightBilling
+    ? roundCurrency(selectedCardDailyTotal)
+    : getCardStayTotal(baseEffectiveTotalPrice, totals?.chargeableNights);
+  const paymentProgress = usesDailyNightBilling
+    ? calculatePaidChargeableNights({
+        amountPaid,
+        paymentEvents,
+        bankNightlyPrices: selectedBankNightlyPrices,
+        cardNightlyPrices: selectedCardNightlyPrices,
+        totalChargeableNights
+      })
+    : null;
+  const paidChargeableNights = paymentProgress?.paidNights ?? null;
+  const partialPaymentCredit = paymentProgress?.partialPaymentCredit ?? 0;
+  const unpaidChargeableNights = usesDailyNightBilling
+    ? Math.max(totalChargeableNights - paidChargeableNights, 0)
+    : null;
+  const bankDailyPrice = usesDailyNightBilling
+    ? selectedBankNightlyPrices[paidChargeableNights] ?? 0
+    : null;
+  const cardDailyPrice = usesDailyNightBilling
+    ? selectedCardNightlyPrices[paidChargeableNights] ?? 0
+    : null;
   const effectiveTotalPrice =
-    reservationRow.billing_mode === "standard" &&
-    selectedPaymentMethod === "card"
-      ? getCardStayTotal(baseEffectiveTotalPrice, totals?.chargeableNights)
+    usesDailyNightBilling && selectedPaymentMethod === "card"
+      ? cardTotalPrice
       : baseEffectiveTotalPrice;
-  const cardTotalPrice =
-    selectedPaymentMethod === "card"
-      ? effectiveTotalPrice
-      : getCardStayTotal(effectiveTotalPrice, totals?.chargeableNights);
-  const remainingBalance =
+  let remainingBalance =
     effectiveTotalPrice !== null && effectiveTotalPrice !== undefined
       ? roundCurrency(Math.max(effectiveTotalPrice - amountPaid, 0))
       : null;
+  let bankRemainingBalance = null;
+
+  if (usesDailyNightBilling) {
+    bankRemainingBalance = roundCurrency(
+      Math.max(
+        selectedBankNightlyPrices
+          .slice(paidChargeableNights)
+          .reduce((total, price) => total + Number(price), 0) -
+          partialPaymentCredit,
+        0
+      )
+    );
+    remainingBalance =
+      selectedPaymentMethod === "card"
+        ? roundCurrency(
+            Math.max(
+              selectedCardNightlyPrices
+                .slice(paidChargeableNights)
+                .reduce((total, price) => total + Number(price), 0) -
+                partialPaymentCredit,
+              0
+            )
+          )
+        : bankRemainingBalance;
+  } else if (
+    baseEffectiveTotalPrice !== null &&
+    baseEffectiveTotalPrice !== undefined
+  ) {
+    bankRemainingBalance = roundCurrency(
+      Math.max(Number(baseEffectiveTotalPrice) - amountPaid, 0)
+    );
+  }
+  let cardRemainingBalance = null;
+
+  if (usesDailyNightBilling) {
+    cardRemainingBalance = roundCurrency(
+      Math.max(
+        selectedCardNightlyPrices
+          .slice(paidChargeableNights)
+          .reduce((total, price) => total + Number(price), 0) -
+          partialPaymentCredit,
+        0
+      )
+    );
+  } else if (remainingBalance === 0) {
+    cardRemainingBalance = 0;
+  } else if (selectedPaymentMethod === "card") {
+    cardRemainingBalance = remainingBalance;
+  } else if (
+    remainingBalance !== null &&
+    baseEffectiveTotalPrice !== null &&
+    baseEffectiveTotalPrice !== undefined &&
+    Number(baseEffectiveTotalPrice) > 0 &&
+    Number(totals?.chargeableNights) > 0
+  ) {
+    const bankDailyPrice =
+      Number(baseEffectiveTotalPrice) / Number(totals.chargeableNights);
+    const unpaidDayEquivalents = Number(remainingBalance) / bankDailyPrice;
+    const cardDailyPrice = getCardPrice(bankDailyPrice);
+    cardRemainingBalance = roundCurrency(
+      Number(cardDailyPrice || 0) * unpaidDayEquivalents
+    );
+  } else {
+    cardRemainingBalance = getCardPrice(remainingBalance);
+  }
+
+  if (
+    Number(bankRemainingBalance) <= 0 &&
+    Number(cardRemainingBalance) > 0 &&
+    Number(baseEffectiveTotalPrice) > 0 &&
+    Number(cardTotalPrice) > 0
+  ) {
+    bankRemainingBalance = roundCurrency(
+      Number(cardRemainingBalance) *
+        (Number(baseEffectiveTotalPrice) / Number(cardTotalPrice))
+    );
+  }
 
   return {
     depositAmount: toPriceNumber(reservationRow.deposit_amount) ?? 0,
     cardDepositAmount:
       selectedPaymentMethod === "card"
         ? toPriceNumber(reservationRow.deposit_amount) ?? 0
-        : getCardPrice(reservationRow.deposit_amount) ?? 0,
+        : getCardStayTotal(reservationRow.deposit_amount, depositNights) ?? 0,
     totalPrice: toPriceNumber(reservationRow.total_price),
     monthlyRentPrice: toPriceNumber(reservationRow.monthly_rent_price),
     electricMeterReading: toMeterNumber(reservationRow.electric_meter_reading),
     utilityPrice,
+    amountPaid,
+    effectiveBillingMode,
+    bankTotalPrice: baseEffectiveTotalPrice,
+    bankDailyPrice,
+    cardDailyPrice,
+    totalChargeableNights: usesDailyNightBilling
+      ? totalChargeableNights
+      : null,
+    paidChargeableNights,
+    partialPaymentCredit,
+    unpaidChargeableNights,
     effectiveTotalPrice,
     cardTotalPrice,
     remainingBalance,
-    cardRemainingBalance:
-      remainingBalance === 0
-        ? 0
-        : cardTotalPrice !== null && cardTotalPrice !== undefined
-        ? roundCurrency(Math.max(cardTotalPrice - amountPaid, 0))
-        : null,
+    bankRemainingBalance,
+    cardRemainingBalance,
     selectedPaymentMethod,
     requestedDiscounts: normalizeRequestedDiscounts(
       reservationRow.requested_discounts
@@ -1525,16 +1796,20 @@ function buildBillingSummary(reservationRow, totals) {
 }
 
 function getRemainingBalancePaymentAmounts(reservation) {
-  const bankAmount = roundCurrency(Number(reservation?.remainingBalance || 0));
-  const cardAmount =
-    reservation?.selectedPaymentMethod === "card"
-      ? bankAmount
-      : roundCurrency(getCardPrice(bankAmount) || 0);
+  const bankAmount = roundCurrency(
+    Number(
+      reservation?.bankRemainingBalance ?? reservation?.remainingBalance ?? 0
+    )
+  );
+  const cardAmount = roundCurrency(
+    Number(
+      reservation?.cardRemainingBalance ?? reservation?.remainingBalance ?? 0
+    )
+  );
 
   return {
     bankAmount,
-    cardAmount,
-    cardFee: roundCurrency(Math.max(cardAmount - bankAmount, 0))
+    cardAmount
   };
 }
 
@@ -1599,6 +1874,122 @@ function ensureStripeConfigured(res) {
   }
 
   return true;
+}
+
+async function resolveStripeTerminalReader() {
+  if (!stripe) {
+    throw new Error("Stripe is not configured on the server.");
+  }
+
+  if (stripeTerminalSimulatorEnabled && !stripeSecretKey.startsWith("sk_test_")) {
+    throw new Error(
+      "Stripe Terminal simulator mode requires a test-mode Stripe secret key."
+    );
+  }
+
+  if (stripeTerminalReaderId) {
+    const reader = await stripe.terminal.readers.retrieve(stripeTerminalReaderId);
+
+    if (
+      stripeTerminalSimulatorEnabled &&
+      !String(reader.device_type || "").startsWith("simulated_")
+    ) {
+      throw new Error(
+        "STRIPE_TERMINAL_READER_ID must reference a simulated reader while simulator mode is enabled."
+      );
+    }
+
+    return reader;
+  }
+
+  const readers = await stripe.terminal.readers.list({ limit: 100 });
+  const matchingReaders = readers.data.filter((reader) =>
+    stripeTerminalSimulatorEnabled
+      ? String(reader.device_type || "").startsWith("simulated_")
+      : !String(reader.device_type || "").startsWith("simulated_")
+  );
+
+  if (matchingReaders.length === 0) {
+    throw new Error(
+      stripeTerminalSimulatorEnabled
+        ? "No simulated Stripe Terminal reader is registered in this sandbox."
+        : "No physical Stripe Terminal reader is visible to the configured Stripe account and mode."
+    );
+  }
+
+  if (matchingReaders.length > 1) {
+    throw new Error(
+      "More than one matching Terminal reader is registered. Add STRIPE_TERMINAL_READER_ID to the server environment."
+    );
+  }
+
+  return matchingReaders[0];
+}
+
+async function presentSimulatedTerminalPayment(reader) {
+  if (!stripeTerminalSimulatorEnabled) {
+    return reader;
+  }
+
+  if (!stripeSecretKey.startsWith("sk_test_")) {
+    throw new Error(
+      "Refusing to simulate a Terminal payment without a test-mode Stripe key."
+    );
+  }
+
+  if (!String(reader.device_type || "").startsWith("simulated_")) {
+    throw new Error("Refusing to present a simulated card to a physical reader.");
+  }
+
+  return stripe.testHelpers.terminal.readers.presentPaymentMethod(reader.id);
+}
+
+function serializeTerminalReader(reader) {
+  return {
+    id: reader.id,
+    label: reader.label || "Office card reader",
+    deviceType: reader.device_type,
+    serialNumber: reader.serial_number || "",
+    status: reader.status || "offline",
+    livemode: Boolean(reader.livemode),
+    simulatorMode: stripeTerminalSimulatorEnabled,
+    action: reader.action
+      ? {
+          status: reader.action.status,
+          type: reader.action.type,
+          failureCode: reader.action.failure_code || "",
+          failureMessage: reader.action.failure_message || "",
+          paymentIntentId:
+            typeof reader.action.process_payment_intent?.payment_intent === "string"
+              ? reader.action.process_payment_intent.payment_intent
+              : reader.action.process_payment_intent?.payment_intent?.id || ""
+        }
+      : null
+  };
+}
+
+function serializeReservationCheckIn(row, { includeSignature = true } = {}) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    guestCount: Number(row.guest_count),
+    homeState: row.home_state || "",
+    postalCode: row.postal_code || "",
+    rvMake: row.rv_make || "",
+    rvYear: row.rv_year || "",
+    rvType: row.rv_type || "",
+    discountMemberships: Array.isArray(row.discount_memberships)
+      ? row.discount_memberships
+      : [],
+    signedName: row.signed_name,
+    signatureDataUrl: includeSignature ? row.signature_data_url : "",
+    rulesVersion: row.rules_version,
+    guestNotes: row.guest_notes || "",
+    checkedInAt: row.checked_in_at
+  };
 }
 
 function getStripeEventTimestamp(event) {
@@ -1724,6 +2115,14 @@ async function findStripePaymentRecordForUpdate(client, { checkoutSessionId = nu
 async function applyStripePaymentSettlement(client, paymentRecord, details) {
   const wasAlreadyPaid = paymentRecord.payment_status === "paid";
   const collectedAmount = Number(paymentRecord.amount_cents) / 100;
+  const paymentPriceType =
+    details.paymentPriceType === "bank" || details.paymentPriceType === "card"
+      ? details.paymentPriceType
+      : details.paymentMethodType === "us_bank_account"
+        ? "bank"
+        : ["card", "card_present"].includes(details.paymentMethodType)
+          ? "card"
+          : null;
 
   if (!wasAlreadyPaid) {
     await client.query(
@@ -1731,6 +2130,10 @@ async function applyStripePaymentSettlement(client, paymentRecord, details) {
         UPDATE reservations
         SET
           amount_paid = COALESCE(amount_paid, 0) + $2,
+          payment_method = CASE
+            WHEN $4 IN ('bank', 'card') THEN $4
+            ELSE payment_method
+          END,
           status = CASE
             WHEN status = 'pending' AND $3::boolean THEN 'active'
             ELSE status
@@ -1740,7 +2143,8 @@ async function applyStripePaymentSettlement(client, paymentRecord, details) {
       [
         paymentRecord.reservation_id,
         collectedAmount,
-        paymentRecord.activate_reservation_on_payment
+        paymentRecord.activate_reservation_on_payment,
+        paymentPriceType
       ]
     );
 
@@ -1749,7 +2153,11 @@ async function applyStripePaymentSettlement(client, paymentRecord, details) {
       stripePaymentRecordId: paymentRecord.id,
       amount: collectedAmount,
       paymentSource: "stripe",
-      note: details.paymentIntentId ? `Stripe PaymentIntent ${details.paymentIntentId}` : "Stripe payment",
+      note: `${
+        details.paymentIntentId
+          ? `Stripe PaymentIntent ${details.paymentIntentId}`
+          : "Stripe payment"
+      }${paymentPriceType ? `. Price type: ${paymentPriceType}` : ""}`,
       recordedAt: details.paidAt || new Date().toISOString()
     });
   }
@@ -1854,6 +2262,14 @@ async function applyStripeRefundUpdate(client, paymentRecord, details) {
       details.eventType,
       details.eventCreatedAt
     ]
+  );
+}
+
+function shouldFinalizePublicBookingCheckout(checkout, session) {
+  return (
+    session.payment_status === "paid" ||
+    (checkout.payment_method_type === "us_bank_account" &&
+      session.status === "complete")
   );
 }
 
@@ -1980,7 +2396,7 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
     ? " Guest opted in to reservation-related text messages and park-wide updates or alerts."
     : " Guest did not opt in to text messages.";
   const publicReservationNotes =
-    `Created through paid public Stripe Checkout. Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}. Terms ${payload.termsVersion || publicBookingTermsVersion} accepted and payment-method storage authorized.${smsConsentNote}${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
+    `Created through public online checkout. Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}. Terms ${payload.termsVersion || publicBookingTermsVersion} accepted and payment-method storage authorized.${smsConsentNote}${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
   const reservationResult = await client.query(
     `
       INSERT INTO reservations (
@@ -2003,13 +2419,13 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
         payment_method,
         requested_discounts
       )
-      VALUES ($1, CURRENT_DATE, 'active', 'standard', 'manual_total', $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $11, $13, $14)
+      VALUES ($1, (CURRENT_TIMESTAMP AT TIME ZONE 'America/Los_Angeles')::date, 'active', 'standard', 'standard', $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $11, $13, $14)
       RETURNING id
     `,
     [
       customerId,
       Number(checkout.amount_cents) / 100,
-      Number(payload.totalPrice),
+      null,
       payload.rvKind,
       Boolean(payload.motorhomeClassA),
       Boolean(payload.motorhomeClassC),
@@ -2088,8 +2504,8 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
     paymentSource: "stripe",
     note:
       checkout.payment_method_type === "us_bank_account"
-        ? "Stripe ACH bank deposit"
-        : "Stripe card deposit"
+        ? "Stripe ACH bank deposit. Price type: bank"
+        : "Stripe card deposit. Price type: card"
   });
 
   await client.query(
@@ -2227,7 +2643,7 @@ async function handleStripeWebhookEvent(event) {
         if (publicCheckoutResult.rowCount > 0) {
           const publicCheckout = publicCheckoutResult.rows[0];
 
-          if (session.payment_status === "paid") {
+          if (shouldFinalizePublicBookingCheckout(publicCheckout, session)) {
             createdReservationId = await finalizePublicBookingCheckout(
               client,
               publicCheckout,
@@ -2308,7 +2724,7 @@ async function handleStripeWebhookEvent(event) {
         const session = event.data.object;
         const publicCheckoutResult = await client.query(
           `
-            SELECT id
+            SELECT id, reservation_id, payment_method_type
             FROM public_booking_checkouts
             WHERE stripe_checkout_session_id = $1
             LIMIT 1
@@ -2318,6 +2734,25 @@ async function handleStripeWebhookEvent(event) {
         );
 
         if (publicCheckoutResult.rowCount > 0) {
+          const publicCheckout = publicCheckoutResult.rows[0];
+
+          if (
+            publicCheckout.reservation_id &&
+            publicCheckout.payment_method_type === "us_bank_account"
+          ) {
+            await client.query(
+              `
+                UPDATE public_booking_checkouts
+                SET
+                  last_error_message = 'The bank transfer later failed; the reservation remains active for office follow-up.',
+                  updated_at = NOW()
+                WHERE id = $1
+              `,
+              [publicCheckout.id]
+            );
+            break;
+          }
+
           await client.query(
             `
               UPDATE public_booking_checkouts
@@ -2328,7 +2763,7 @@ async function handleStripeWebhookEvent(event) {
               WHERE id = $1
             `,
             [
-              publicCheckoutResult.rows[0].id,
+              publicCheckout.id,
               event.type === "checkout.session.expired" ? "expired" : "failed",
               event.type === "checkout.session.expired"
                 ? "The payment session expired before payment."
@@ -2391,6 +2826,7 @@ async function handleStripeWebhookEvent(event) {
                   ? Number(paymentIntent.amount_received)
                   : null,
               paidAt: new Date().toISOString(),
+              paymentPriceType: paymentIntent.metadata?.payment_price_type || null,
               eventId: event.id,
               eventType: event.type,
               eventCreatedAt
@@ -2479,7 +2915,7 @@ async function syncOpenStripePayments() {
         activate_reservation_on_payment,
         payment_status
       FROM stripe_payment_records
-      WHERE payment_status <> 'paid'
+      WHERE payment_status NOT IN ('paid', 'canceled')
       ORDER BY created_at ASC
       LIMIT 100
     `
@@ -2558,6 +2994,10 @@ async function syncOpenStripePayments() {
           UPDATE reservations
           SET
             amount_paid = COALESCE(amount_paid, 0) + $2,
+            payment_method = CASE
+              WHEN $4 IN ('bank', 'card') THEN $4
+              ELSE payment_method
+            END,
             status = CASE
               WHEN status = 'pending' AND $3::boolean THEN 'active'
               ELSE status
@@ -2567,7 +3007,8 @@ async function syncOpenStripePayments() {
         [
           lockedPayment.reservation_id,
           Number(lockedPayment.amount_cents) / 100,
-          lockedPayment.activate_reservation_on_payment
+          lockedPayment.activate_reservation_on_payment,
+          paymentIntent?.metadata?.payment_price_type || null
         ]
       );
 
@@ -2576,13 +3017,17 @@ async function syncOpenStripePayments() {
         stripePaymentRecordId: lockedPayment.id,
         amount: Number(lockedPayment.amount_cents) / 100,
         paymentSource: "stripe",
-        note: session
+        note: `${session
           ? typeof session.payment_intent === "string"
             ? `Stripe PaymentIntent ${session.payment_intent}`
             : "Stripe payment"
           : paymentIntent?.id
             ? `Stripe PaymentIntent ${paymentIntent.id}`
-            : "Stripe payment",
+            : "Stripe payment"}${
+          paymentIntent?.metadata?.payment_price_type
+            ? `. Price type: ${paymentIntent.metadata.payment_price_type}`
+            : ""
+        }`,
         recordedAt: new Date().toISOString()
       });
 
@@ -2638,6 +3083,8 @@ function getPricingForSiteAndNights(site, numberOfNights, pricingLookup) {
     pricingCategory,
     numberOfNights,
     pricingConfigured: Boolean(baseRule && chargeableNights !== null),
+    normalDailyPrice: baseRule?.normalPrice ?? null,
+    discountDailyPrice: baseRule?.discountPrice ?? null,
     normalPrice:
       baseRule?.normalPrice !== null &&
       baseRule?.normalPrice !== undefined &&
@@ -2664,27 +3111,106 @@ function decorateSiteWithPricingTable(site, pricingRulesByCategory) {
 }
 
 function sumReservationTotals(siteStays) {
-  return siteStays.reduce(
-    (summary, segment) => ({
-      normalPrice:
-        summary.normalPrice !== null && segment.normalPrice !== null
-          ? summary.normalPrice + segment.normalPrice
-          : null,
-      discountPrice:
-        summary.discountPrice !== null && segment.discountPrice !== null
-          ? summary.discountPrice + segment.discountPrice
-          : null,
-      chargeableNights:
-        summary.chargeableNights !== null &&
-        segment.numberOfNights !== null &&
-        segment.numberOfNights !== undefined &&
-        calculateChargeableNights(Number(segment.numberOfNights)) !== null
-          ? summary.chargeableNights +
-            calculateChargeableNights(Number(segment.numberOfNights))
-          : null
-    }),
-    { normalPrice: 0, discountPrice: 0, chargeableNights: 0 }
-  );
+  let normalPrice = 0;
+  let discountPrice = 0;
+  let normalCardPrice = 0;
+  let discountCardPrice = 0;
+  let chargeableNights = 0;
+  let numberOfNights = 0;
+  let consecutiveNight = 0;
+  let previousLeaveDate = "";
+  const normalNightlyPrices = [];
+  const discountNightlyPrices = [];
+  const normalCardNightlyPrices = [];
+  const discountCardNightlyPrices = [];
+
+  for (const segment of siteStays) {
+    const segmentNights = Number(segment.numberOfNights);
+
+    if (
+      !Number.isFinite(segmentNights) ||
+      segmentNights <= 0 ||
+      numberOfNights + segmentNights > 28
+    ) {
+      return {
+        normalPrice: null,
+        discountPrice: null,
+        normalCardPrice: null,
+        discountCardPrice: null,
+        normalNightlyPrices: [],
+        discountNightlyPrices: [],
+        normalCardNightlyPrices: [],
+        discountCardNightlyPrices: [],
+        chargeableNights: null,
+        numberOfNights: null
+      };
+    }
+
+    if (previousLeaveDate && segment.arrival_date !== previousLeaveDate) {
+      consecutiveNight = 0;
+    }
+
+    for (let nightIndex = 0; nightIndex < segmentNights; nightIndex += 1) {
+      consecutiveNight += 1;
+      numberOfNights += 1;
+
+      if (consecutiveNight % 7 === 0) continue;
+
+      chargeableNights += 1;
+      normalPrice =
+        normalPrice !== null &&
+        segment.normalDailyPrice !== null &&
+        segment.normalDailyPrice !== undefined
+          ? normalPrice + Number(segment.normalDailyPrice)
+          : null;
+      discountPrice =
+        discountPrice !== null &&
+        segment.discountDailyPrice !== null &&
+        segment.discountDailyPrice !== undefined
+          ? discountPrice + Number(segment.discountDailyPrice)
+          : null;
+      normalCardPrice =
+        normalCardPrice !== null &&
+        segment.normalDailyPrice !== null &&
+        segment.normalDailyPrice !== undefined
+          ? normalCardPrice + Number(getCardPrice(segment.normalDailyPrice))
+          : null;
+      discountCardPrice =
+        discountCardPrice !== null &&
+        segment.discountDailyPrice !== null &&
+        segment.discountDailyPrice !== undefined
+          ? discountCardPrice + Number(getCardPrice(segment.discountDailyPrice))
+          : null;
+
+      if (segment.normalDailyPrice !== null && segment.normalDailyPrice !== undefined) {
+        normalNightlyPrices.push(roundCurrency(segment.normalDailyPrice));
+        normalCardNightlyPrices.push(getCardPrice(segment.normalDailyPrice));
+      }
+
+      if (segment.discountDailyPrice !== null && segment.discountDailyPrice !== undefined) {
+        discountNightlyPrices.push(roundCurrency(segment.discountDailyPrice));
+        discountCardNightlyPrices.push(getCardPrice(segment.discountDailyPrice));
+      }
+    }
+
+    previousLeaveDate = segment.leave_date;
+  }
+
+  return {
+    normalPrice: normalPrice === null ? null : roundCurrency(normalPrice),
+    discountPrice:
+      discountPrice === null ? null : roundCurrency(discountPrice),
+    normalCardPrice:
+      normalCardPrice === null ? null : roundCurrency(normalCardPrice),
+    discountCardPrice:
+      discountCardPrice === null ? null : roundCurrency(discountCardPrice),
+    normalNightlyPrices,
+    discountNightlyPrices,
+    normalCardNightlyPrices,
+    discountCardNightlyPrices,
+    chargeableNights,
+    numberOfNights
+  };
 }
 
 function parseAvailabilityFilters(body) {
@@ -2934,7 +3460,7 @@ async function loadReservationRearrangementInventory() {
           rss.site_id,
           rss.arrival_date::text,
           rss.leave_date::text,
-          (rss.arrival_date > CURRENT_DATE) AS has_not_arrived,
+          (rss.arrival_date > (CURRENT_TIMESTAMP AT TIME ZONE 'America/Los_Angeles')::date) AS has_not_arrived,
           r.id AS reservation_id,
           r.status,
           r.reservation_term,
@@ -2946,7 +3472,7 @@ async function loadReservationRearrangementInventory() {
         JOIN reservations r ON r.id = rss.reservation_id
         JOIN customers c ON c.id = r.customer_id
         WHERE r.status <> 'canceled'
-          AND rss.leave_date > CURRENT_DATE
+          AND rss.leave_date > (CURRENT_TIMESTAMP AT TIME ZONE 'America/Los_Angeles')::date
         ORDER BY rss.arrival_date, rss.id
       `
     ),
@@ -3280,6 +3806,15 @@ async function fetchReservationDetails(queryable, reservationId) {
     `,
     [reservationId]
   );
+  const checkInResult = await queryable.query(
+    `
+      SELECT *
+      FROM reservation_check_ins
+      WHERE reservation_id = $1
+      LIMIT 1
+    `,
+    [reservationId]
+  );
   let stayRows = [];
 
   if (reservationRow.status === "canceled") {
@@ -3372,13 +3907,15 @@ async function fetchReservationDetails(queryable, reservationId) {
     })()
   }));
   const totals = sumReservationTotals(pricedSiteStays);
-  const balances = applyBalanceSummary(reservationRow.amount_paid, totals);
-  const billing = buildBillingSummary(reservationRow, totals);
+  const billing = buildBillingSummary(
+    reservationRow,
+    totals,
+    paymentEventsResult.rows
+  );
 
   return {
     ...reservationRow,
     totals,
-    ...balances,
     ...billing,
     paymentEvents: paymentEventsResult.rows.map((row) => ({
       id: row.id,
@@ -3389,6 +3926,7 @@ async function fetchReservationDetails(queryable, reservationId) {
       recordedAt: row.recorded_at,
       createdAt: row.created_at
     })),
+    checkIn: serializeReservationCheckIn(checkInResult.rows[0]),
     siteStays: pricedSiteStays
   };
 }
@@ -3397,7 +3935,8 @@ function buildReservationDetailsFromParts(
   reservationRow,
   paymentEventRows,
   stayRows,
-  pricingLookup
+  pricingLookup,
+  checkInRow = null
 ) {
   const pricedSiteStays = stayRows.map((segment) => ({
     ...(function buildSegment() {
@@ -3425,13 +3964,11 @@ function buildReservationDetailsFromParts(
     })()
   }));
   const totals = sumReservationTotals(pricedSiteStays);
-  const balances = applyBalanceSummary(reservationRow.amount_paid, totals);
-  const billing = buildBillingSummary(reservationRow, totals);
+  const billing = buildBillingSummary(reservationRow, totals, paymentEventRows);
 
   return {
     ...reservationRow,
     totals,
-    ...balances,
     ...billing,
     paymentEvents: paymentEventRows.map((row) => ({
       id: row.id,
@@ -3442,6 +3979,7 @@ function buildReservationDetailsFromParts(
       recordedAt: row.recorded_at,
       createdAt: row.created_at
     })),
+    checkIn: serializeReservationCheckIn(checkInRow, { includeSignature: false }),
     siteStays: pricedSiteStays
   };
 }
@@ -3490,7 +4028,7 @@ async function fetchReservationList(queryable) {
 
   const reservationRows = reservationsResult.rows;
   const reservationIds = reservationRows.map((row) => row.id);
-  const [paymentEventsResult, activeStaysResult, pricingRules] = await Promise.all([
+  const [paymentEventsResult, activeStaysResult, checkInsResult, pricingRules] = await Promise.all([
     queryable.query(
       `
         SELECT
@@ -3526,6 +4064,27 @@ async function fetchReservationList(queryable) {
       `,
       [reservationIds]
     ),
+    queryable.query(
+      `
+        SELECT
+          id,
+          reservation_id,
+          guest_count,
+          home_state,
+          postal_code,
+          rv_make,
+          rv_year,
+          rv_type,
+          discount_memberships,
+          signed_name,
+          rules_version,
+          guest_notes,
+          checked_in_at
+        FROM reservation_check_ins
+        WHERE reservation_id = ANY($1::bigint[])
+      `,
+      [reservationIds]
+    ),
     loadPricingRules()
   ]);
 
@@ -3543,6 +4102,10 @@ async function fetchReservationList(queryable) {
     reservationStays.push(row);
     activeStaysByReservationId.set(row.reservation_id, reservationStays);
   }
+
+  const checkInsByReservationId = new Map(
+    checkInsResult.rows.map((row) => [Number(row.reservation_id), row])
+  );
 
   const canceledSiteIds = [
     ...new Set(
@@ -3609,7 +4172,8 @@ async function fetchReservationList(queryable) {
       reservationRow,
       paymentEventRows,
       stayRows,
-      pricingLookup
+      pricingLookup,
+      checkInsByReservationId.get(Number(reservationRow.id)) || null
     );
   });
 }
@@ -3715,10 +4279,18 @@ function sanitizeGuestReservation(reservation) {
     cardDepositAmount: reservation.cardDepositAmount,
     totalPrice: reservation.totalPrice,
     effectiveTotalPrice: reservation.effectiveTotalPrice,
+    bankTotalPrice: reservation.bankTotalPrice,
     cardTotalPrice: reservation.cardTotalPrice,
+    bankDailyPrice: reservation.bankDailyPrice,
+    cardDailyPrice: reservation.cardDailyPrice,
     amountPaid: reservation.amountPaid,
+    totalChargeableNights: reservation.totalChargeableNights,
+    paidChargeableNights: reservation.paidChargeableNights,
+    unpaidChargeableNights: reservation.unpaidChargeableNights,
     remainingBalance: reservation.remainingBalance,
+    bankRemainingBalance: reservation.bankRemainingBalance,
     cardRemainingBalance: reservation.cardRemainingBalance,
+    selectedPaymentMethod: reservation.selectedPaymentMethod,
     siteStays: reservation.siteStays.map((segment) => ({
       id: segment.id,
       site_id: segment.site_id,
@@ -4684,7 +5256,7 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       totalPrice
     );
     const checkoutAmount = paymentMethodType === "card"
-      ? getCardPrice(baseDepositAmount)
+      ? getCardStayTotal(baseDepositAmount, requiredDepositNights)
       : baseDepositAmount;
     const selectedTotalPrice = paymentMethodType === "card"
       ? getCardStayTotal(totalPrice, calculateChargeableNights(numberOfNights))
@@ -4807,7 +5379,10 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       checkoutUrl: session.url,
       paymentMethod: paymentMethodType === "card" ? "card" : "bank",
       depositAmount: baseDepositAmount,
-      cardDepositAmount: getCardPrice(baseDepositAmount),
+      cardDepositAmount: getCardStayTotal(
+        baseDepositAmount,
+        requiredDepositNights
+      ),
       expiresAt: expiresAt.toISOString()
     });
   } catch (error) {
@@ -4835,7 +5410,7 @@ app.get("/api/guest/booking-checkouts/:checkoutToken", async (req, res) => {
   try {
     const initialResult = await pool.query(
       `
-        SELECT stripe_checkout_session_id, payment_status
+        SELECT stripe_checkout_session_id, payment_status, payment_method_type
         FROM public_booking_checkouts
         WHERE checkout_token = $1
         LIMIT 1
@@ -4854,7 +5429,7 @@ app.get("/api/guest/booking-checkouts/:checkoutToken", async (req, res) => {
           initialCheckout.stripe_checkout_session_id
         );
 
-        if (session.payment_status === "paid") {
+        if (shouldFinalizePublicBookingCheckout(initialCheckout, session)) {
           const client = await pool.connect();
           let reservationId = null;
 
@@ -4887,7 +5462,13 @@ app.get("/api/guest/booking-checkouts/:checkoutToken", async (req, res) => {
             client.release();
           }
 
-          await sendPublicBookingConfirmation(reservationId);
+          await Promise.all([
+            sendPublicBookingConfirmation(reservationId),
+            sendPublicBookingPushNotification(reservationId)
+          ]);
+          if (reservationId) {
+            broadcastAdminDataChange({ reason: "online_booking_created" });
+          }
         } else if (session.status === "complete") {
           await pool.query(
             `
@@ -5211,7 +5792,7 @@ app.post("/api/guest/reservations/legacy-pending", async (req, res) => {
           amount_paid,
           notes
         )
-        VALUES ($1, CURRENT_DATE, 'pending', 'standard', 'standard', $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11)
+        VALUES ($1, (CURRENT_TIMESTAMP AT TIME ZONE 'America/Los_Angeles')::date, 'pending', 'standard', 'standard', $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11)
         RETURNING id
       `,
       [
@@ -5220,7 +5801,7 @@ app.post("/api/guest/reservations/legacy-pending", async (req, res) => {
           roundCurrency(oneNightDeposit * (numberOfNights > 7 ? 2 : 1)),
           totalPrice
         ),
-        totalPrice,
+        null,
         rvKind,
         rvKind === "motor home" ? Boolean(req.body.motorhomeClassA) : false,
         rvKind === "motor home" ? Boolean(req.body.motorhomeClassC) : false,
@@ -5657,7 +6238,7 @@ app.get("/api/guest/payment-links/:token", async (req, res) => {
       });
     }
 
-    const { bankAmount, cardAmount, cardFee } =
+    const { bankAmount, cardAmount } =
       getRemainingBalancePaymentAmounts(reservation);
 
     return res.json({
@@ -5666,7 +6247,6 @@ app.get("/api/guest/payment-links/:token", async (req, res) => {
       amountPaid: Number(reservation.amountPaid || 0),
       bankAmount,
       cardAmount,
-      cardFee,
       paymentComplete: bankAmount <= 0,
       siteStays: reservation.siteStays.map((stay) => ({
         siteNumber: stay.site_number,
@@ -5747,6 +6327,7 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
         reservation_id: String(reservation.id),
         payment_amount_cents: String(amountCents),
         payment_method_type: paymentMethod,
+        payment_price_type: paymentChoice,
         source: "riverpark_guest_payment_link"
       },
       payment_intent_data: {
@@ -5755,6 +6336,7 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
           reservation_id: String(reservation.id),
           payment_amount_cents: String(amountCents),
           payment_method_type: paymentMethod,
+          payment_price_type: paymentChoice,
           source: "riverpark_guest_payment_link"
         }
       },
@@ -5851,7 +6433,9 @@ app.post("/api/guest/reservations/:id/bank-checkouts", async (req, res) => {
       return res.status(400).json({ message: "This reservation cannot accept payments." });
     }
 
-    const amountCents = toAmountCents(reservation.remainingBalance);
+    const amountCents = toAmountCents(
+      reservation.bankRemainingBalance ?? reservation.remainingBalance
+    );
 
     if (!amountCents) {
       return res.status(400).json({ message: "This reservation does not have a remaining balance." });
@@ -5867,14 +6451,16 @@ app.post("/api/guest/reservations/:id/bank-checkouts", async (req, res) => {
       metadata: {
         reservation_id: String(reservation.id),
         payment_amount_cents: String(amountCents),
-        payment_method_type: "us_bank_account"
+        payment_method_type: "us_bank_account",
+        payment_price_type: "bank"
       },
       payment_intent_data: {
         receipt_email: reservation.email || undefined,
         metadata: {
           reservation_id: String(reservation.id),
           payment_amount_cents: String(amountCents),
-          payment_method_type: "us_bank_account"
+          payment_method_type: "us_bank_account",
+          payment_price_type: "bank"
         }
       },
       line_items: [
@@ -5975,6 +6561,7 @@ app.post("/api/guest/reservations/:id/payment-intents", async (req, res) => {
       metadata: {
         reservation_id: String(reservation.id),
         payment_amount_cents: String(amountCents),
+        payment_price_type: "card",
         activate_reservation_on_payment: activateReservationOnPayment ? "true" : "false"
       }
     });
@@ -6039,6 +6626,439 @@ app.get("/api/reservations/:id", async (req, res) => {
     res.json(reservation);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/stripe/terminal/status", async (_req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  try {
+    const reader = await resolveStripeTerminalReader();
+    return res.json({ reader: serializeTerminalReader(reader) });
+  } catch (error) {
+    return res.status(503).json({ message: error.message });
+  }
+});
+
+app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  const reservationId = Number(req.params.id);
+  const amountCents = toAmountCents(req.body?.amount);
+  const priceType = "card";
+
+  if (!reservationId || !amountCents) {
+    return res.status(400).json({ message: "Reservation and payment amount are required." });
+  }
+
+  try {
+    await syncOpenStripePayments();
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation) {
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status === "canceled") {
+      return res.status(400).json({ message: "Canceled reservations cannot accept payments." });
+    }
+
+    const maximumAmountCents = toAmountCents(
+      priceType === "card"
+        ? reservation.cardRemainingBalance
+        : reservation.bankRemainingBalance ?? reservation.remainingBalance
+    );
+
+    if (!maximumAmountCents) {
+      return res.status(400).json({ message: "This reservation does not have a remaining balance." });
+    }
+
+    if (amountCents > maximumAmountCents) {
+      return res.status(400).json({
+        message: `Payment cannot exceed the ${priceType} balance.`
+      });
+    }
+
+    const reader = await resolveStripeTerminalReader();
+
+    if (reader.status !== "online") {
+      return res.status(409).json({
+        message: "The office reader is offline. Wake it and confirm Wi-Fi or cellular connectivity."
+      });
+    }
+
+    if (reader.action?.status === "in_progress") {
+      return res.status(409).json({
+        message: "The office reader is already processing a payment. Finish or cancel it first."
+      });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amountCents,
+      currency: "usd",
+      payment_method_types: ["card_present"],
+      capture_method: "automatic",
+      receipt_email: reservation.email || undefined,
+      description: `Riverpark RV Resort reservation #${reservation.id}`,
+      metadata: {
+        reservation_id: String(reservation.id),
+        payment_amount_cents: String(amountCents),
+        payment_price_type: priceType,
+        terminal_reader_id: reader.id,
+        activate_reservation_on_payment: reservation.status === "pending" ? "true" : "false"
+      }
+    });
+
+    await pool.query(
+      `
+        INSERT INTO stripe_payment_records (
+          reservation_id,
+          stripe_checkout_session_id,
+          stripe_payment_intent_id,
+          amount_cents,
+          currency,
+          payment_status,
+          activate_reservation_on_payment,
+          stripe_customer_email,
+          stripe_payment_method_type
+        )
+        VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, 'card_present')
+      `,
+      [
+        reservation.id,
+        paymentIntent.id,
+        amountCents,
+        paymentIntent.currency || "usd",
+        "processing",
+        reservation.status === "pending",
+        reservation.email || null
+      ]
+    );
+
+    let updatedReader;
+
+    try {
+      updatedReader = await stripe.terminal.readers.processPaymentIntent(reader.id, {
+        payment_intent: paymentIntent.id,
+        process_config: { enable_customer_cancellation: true }
+      });
+      updatedReader = await presentSimulatedTerminalPayment(updatedReader);
+    } catch (error) {
+      if (error.code === "terminal_reader_timeout") {
+        return res.status(202).json({
+          reservationId: reservation.id,
+          paymentIntentId: paymentIntent.id,
+          amount: (amountCents / 100).toFixed(2),
+          priceType,
+          reader: serializeTerminalReader(reader),
+          message: "The reader response timed out; checking whether it received the payment."
+        });
+      }
+
+      await Promise.allSettled([
+        stripe.paymentIntents.cancel(paymentIntent.id),
+        pool.query(
+          `UPDATE stripe_payment_records SET payment_status = 'canceled' WHERE stripe_payment_intent_id = $1`,
+          [paymentIntent.id]
+        )
+      ]);
+      throw error;
+    }
+
+    return res.status(202).json({
+      reservationId: reservation.id,
+      paymentIntentId: paymentIntent.id,
+      amount: (amountCents / 100).toFixed(2),
+      priceType,
+      reader: serializeTerminalReader(updatedReader),
+      message: "Payment sent. Ask the guest to follow the prompts on the reader."
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+});
+
+app.get("/api/stripe/terminal/payments/:paymentIntentId", async (req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  const paymentIntentId = String(req.params.paymentIntentId || "");
+
+  try {
+    const recordResult = await pool.query(
+      `
+        SELECT reservation_id
+        FROM stripe_payment_records
+        WHERE stripe_payment_intent_id = $1
+          AND stripe_payment_method_type = 'card_present'
+        LIMIT 1
+      `,
+      [paymentIntentId]
+    );
+
+    if (recordResult.rowCount === 0) {
+      return res.status(404).json({ message: "Terminal payment not found." });
+    }
+
+    const [reader, paymentIntent] = await Promise.all([
+      resolveStripeTerminalReader(),
+      stripe.paymentIntents.retrieve(paymentIntentId)
+    ]);
+    const serializedReader = serializeTerminalReader(reader);
+    const readerActionMatches =
+      serializedReader.action?.paymentIntentId === paymentIntentId;
+    const succeeded = paymentIntent.status === "succeeded";
+    const canRetry =
+      paymentIntent.status === "requires_payment_method" &&
+      (!readerActionMatches || serializedReader.action?.status === "failed");
+
+    if (succeeded) {
+      await syncOpenStripePayments();
+    }
+
+    const reservation = succeeded
+      ? await fetchReservationDetails(pool, recordResult.rows[0].reservation_id)
+      : null;
+
+    return res.json({
+      paymentIntentId,
+      paymentStatus: paymentIntent.status,
+      actionStatus: readerActionMatches
+        ? serializedReader.action?.status || "in_progress"
+        : succeeded
+          ? "succeeded"
+          : canRetry
+            ? "failed"
+            : "unknown",
+      failureCode: readerActionMatches ? serializedReader.action?.failureCode || "" : "",
+      failureMessage: readerActionMatches ? serializedReader.action?.failureMessage || "" : "",
+      canRetry,
+      reader: serializedReader,
+      reservation
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+});
+
+app.post("/api/stripe/terminal/payments/:paymentIntentId/retry", async (req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  const paymentIntentId = String(req.params.paymentIntentId || "");
+
+  try {
+    const recordResult = await pool.query(
+      `SELECT id FROM stripe_payment_records WHERE stripe_payment_intent_id = $1 LIMIT 1`,
+      [paymentIntentId]
+    );
+
+    if (recordResult.rowCount === 0) {
+      return res.status(404).json({ message: "Terminal payment not found." });
+    }
+
+    const [reader, paymentIntent] = await Promise.all([
+      resolveStripeTerminalReader(),
+      stripe.paymentIntents.retrieve(paymentIntentId)
+    ]);
+
+    if (paymentIntent.status !== "requires_payment_method") {
+      return res.status(409).json({ message: "This payment cannot be retried in its current state." });
+    }
+
+    let updatedReader = await stripe.terminal.readers.processPaymentIntent(reader.id, {
+      payment_intent: paymentIntentId,
+      process_config: { enable_customer_cancellation: true }
+    });
+    updatedReader = await presentSimulatedTerminalPayment(updatedReader);
+    await pool.query(
+      `UPDATE stripe_payment_records SET payment_status = 'processing' WHERE id = $1`,
+      [recordResult.rows[0].id]
+    );
+
+    return res.status(202).json({
+      paymentIntentId,
+      reader: serializeTerminalReader(updatedReader),
+      message: "Payment sent back to the reader."
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+});
+
+app.post("/api/stripe/terminal/payments/:paymentIntentId/cancel", async (req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  const paymentIntentId = String(req.params.paymentIntentId || "");
+
+  try {
+    const recordResult = await pool.query(
+      `SELECT id FROM stripe_payment_records WHERE stripe_payment_intent_id = $1 LIMIT 1`,
+      [paymentIntentId]
+    );
+
+    if (recordResult.rowCount === 0) {
+      return res.status(404).json({ message: "Terminal payment not found." });
+    }
+
+    const reader = await resolveStripeTerminalReader();
+    const serializedReader = serializeTerminalReader(reader);
+
+    if (
+      reader.action?.status === "in_progress" &&
+      serializedReader.action?.paymentIntentId === paymentIntentId
+    ) {
+      await stripe.terminal.readers.cancelAction(reader.id);
+    }
+
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    if (["requires_payment_method", "requires_confirmation"].includes(paymentIntent.status)) {
+      await stripe.paymentIntents.cancel(paymentIntentId);
+    }
+
+    await pool.query(
+      `UPDATE stripe_payment_records SET payment_status = 'canceled' WHERE id = $1`,
+      [recordResult.rows[0].id]
+    );
+
+    return res.json({ canceled: true });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+});
+
+app.post("/api/reservations/:id/check-in", async (req, res) => {
+  const reservationId = Number(req.params.id);
+  const guestCount = Number(req.body?.guestCount);
+  const signedName = String(req.body?.signedName || "").trim();
+  const signatureDataUrl = String(req.body?.signatureDataUrl || "");
+  const rulesAccepted = Boolean(req.body?.rulesAccepted);
+
+  if (!reservationId) {
+    return res.status(400).json({ message: "Reservation is required." });
+  }
+
+  if (!Number.isInteger(guestCount) || guestCount < 1 || guestCount > 50) {
+    return res.status(400).json({ message: "Enter the number of guests checking in." });
+  }
+
+  if (!rulesAccepted) {
+    return res.status(400).json({ message: "The guest must accept the park rules." });
+  }
+
+  if (!signedName) {
+    return res.status(400).json({ message: "Enter the guest's signed name." });
+  }
+
+  if (!signatureDataUrl.startsWith("data:image/png;base64,") || signatureDataUrl.length > 700000) {
+    return res.status(400).json({ message: "A valid signature is required." });
+  }
+
+  const discountMemberships = Array.isArray(req.body?.discountMemberships)
+    ? req.body.discountMemberships
+        .map((value) => String(value || "").trim())
+        .filter((value) => ["AAA", "Good Sam", "Veterans", "AARP"].includes(value))
+    : [];
+
+  try {
+    const reservation = await fetchReservationDetails(pool, reservationId);
+
+    if (!reservation) {
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status === "canceled") {
+      return res.status(400).json({ message: "Canceled reservations cannot be checked in." });
+    }
+
+    const result = await pool.query(
+      `
+        INSERT INTO reservation_check_ins (
+          reservation_id,
+          guest_count,
+          home_state,
+          postal_code,
+          rv_make,
+          rv_year,
+          rv_type,
+          discount_memberships,
+          signed_name,
+          signature_data_url,
+          rules_version,
+          rules_text_snapshot,
+          guest_notes,
+          checked_in_by_admin_user_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        ON CONFLICT (reservation_id) DO UPDATE SET
+          guest_count = EXCLUDED.guest_count,
+          home_state = EXCLUDED.home_state,
+          postal_code = EXCLUDED.postal_code,
+          rv_make = EXCLUDED.rv_make,
+          rv_year = EXCLUDED.rv_year,
+          rv_type = EXCLUDED.rv_type,
+          discount_memberships = EXCLUDED.discount_memberships,
+          signed_name = EXCLUDED.signed_name,
+          signature_data_url = EXCLUDED.signature_data_url,
+          rules_version = EXCLUDED.rules_version,
+          rules_text_snapshot = EXCLUDED.rules_text_snapshot,
+          guest_notes = EXCLUDED.guest_notes,
+          checked_in_at = NOW(),
+          checked_in_by_admin_user_id = EXCLUDED.checked_in_by_admin_user_id,
+          updated_at = NOW()
+        RETURNING *
+      `,
+      [
+        reservationId,
+        guestCount,
+        String(req.body?.homeState || "").trim().slice(0, 50) || null,
+        String(req.body?.postalCode || "").trim().slice(0, 20) || null,
+        String(req.body?.rvMake || "").trim().slice(0, 100) || null,
+        String(req.body?.rvYear || "").trim().slice(0, 20) || null,
+        String(req.body?.rvType || reservation.rv_kind || "").trim().slice(0, 100) || null,
+        discountMemberships,
+        signedName.slice(0, 150),
+        signatureDataUrl,
+        checkInRulesVersion,
+        checkInRulesText,
+        String(req.body?.guestNotes || "").trim().slice(0, 2000) || null,
+        req.adminUser?.id || null
+      ]
+    );
+
+    let confirmationEmail = { sent: false, message: "" };
+
+    if (reservation.email && sendGridApiKey && sendGridFromEmail) {
+      try {
+        await sendCheckInConfirmationEmail(reservation, result.rows[0]);
+        confirmationEmail = {
+          sent: true,
+          message: `Check-in confirmation emailed to ${reservation.email}.`
+        };
+      } catch (error) {
+        console.error("Unable to send check-in confirmation", reservationId, error);
+        confirmationEmail = {
+          sent: false,
+          message: `Check-in was saved, but the email could not be sent: ${error.message}`
+        };
+      }
+    }
+
+    return res.json({
+      reservationId,
+      checkIn: serializeReservationCheckIn(result.rows[0]),
+      confirmationEmail
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
   }
 });
 
@@ -6116,6 +7136,8 @@ app.post("/api/reservations", async (req, res) => {
   const reservationBillingMode = normalizeBillingMode(billingMode);
   const isMotorhome = rvKind === "motor home";
   const parsedTotalPrice = toPriceNumber(totalPrice);
+  const storedTotalPrice =
+    reservationBillingMode === "standard" ? null : parsedTotalPrice;
   const parsedDepositAmount = toPriceNumber(depositAmount) ?? 0;
   const parsedMonthlyRentPrice = toPriceNumber(monthlyRentPrice);
   const parsedElectricMeterReading = toMeterNumber(electricMeterReading);
@@ -6183,7 +7205,7 @@ app.post("/api/reservations", async (req, res) => {
         normalizedReservationTerm,
         reservationBillingMode,
         parsedDepositAmount,
-        parsedTotalPrice,
+        storedTotalPrice,
         parsedMonthlyRentPrice,
         parsedElectricMeterReading,
         reservationStatus === "canceled" ? new Date().toISOString() : null,
@@ -6310,6 +7332,8 @@ app.put("/api/reservations/:id", async (req, res) => {
   const reservationBillingMode = normalizeBillingMode(billingMode);
   const isMotorhome = rvKind === "motor home";
   const parsedTotalPrice = toPriceNumber(totalPrice);
+  const storedTotalPrice =
+    reservationBillingMode === "standard" ? null : parsedTotalPrice;
   let parsedDepositAmount = toPriceNumber(depositAmount) ?? 0;
   const parsedMonthlyRentPrice = toPriceNumber(monthlyRentPrice);
   const parsedElectricMeterReading = toMeterNumber(electricMeterReading);
@@ -6416,7 +7440,7 @@ app.put("/api/reservations/:id", async (req, res) => {
         normalizedReservationTerm,
         reservationBillingMode,
         parsedDepositAmount,
-        parsedTotalPrice,
+        storedTotalPrice,
         parsedMonthlyRentPrice,
         parsedElectricMeterReading,
         reservationStatus === "canceled"
@@ -6615,8 +7639,6 @@ app.post("/api/reservations/:id/extend-stay", async (req, res) => {
     const useDiscountPrice = normalizeRequestedDiscounts(
       reservation.requested_discounts
     ).length > 0;
-    let selectedTotal = 0;
-
     for (const stay of stays) {
       const leaveDate = stay.id === finalStay.id ? newLeaveDate : stay.leave_date;
       const numberOfNights = nightsBetween(stay.arrival_date, leaveDate);
@@ -6632,10 +7654,6 @@ app.post("/api/reservations/:id/extend-stay", async (req, res) => {
         });
       }
 
-      selectedTotal +=
-        reservation.payment_method === "card"
-          ? getCardStayTotal(basePrice, calculateChargeableNights(numberOfNights))
-          : basePrice;
     }
 
     await client.query(
@@ -6645,10 +7663,10 @@ app.post("/api/reservations/:id/extend-stay", async (req, res) => {
     await client.query(
       `
         UPDATE reservations
-        SET billing_mode = 'manual_total', total_price = $2
+        SET billing_mode = 'standard', total_price = NULL
         WHERE id = $1
       `,
-      [reservationId, roundCurrency(selectedTotal)]
+      [reservationId]
     );
     const updatedReservation = await fetchReservationDetails(client, reservationId);
     await client.query("COMMIT");
@@ -6779,6 +7797,7 @@ app.post("/api/reservations/:id/payment-intents", async (req, res) => {
       metadata: {
         reservation_id: String(reservation.id),
         payment_amount_cents: String(amountCents),
+        payment_price_type: "card",
         activate_reservation_on_payment: activateReservationOnPayment ? "true" : "false"
       }
     });
@@ -6855,20 +7874,12 @@ app.post("/api/reservations/:id/mark-paid", async (req, res) => {
       return res.status(400).json({ message: "Canceled reservations cannot be updated." });
     }
 
-    if (reservation.effectiveTotalPrice === null || reservation.effectiveTotalPrice === undefined) {
-      return res.status(400).json({ message: "Set the reservation total before marking it paid." });
-    }
-
-    const amountToRecord = Math.max(
-      Number(reservation.effectiveTotalPrice) - (Number(reservation.amountPaid || 0) || 0),
-      0
-    );
     const cardAmountToRecord = Math.max(
       Number(reservation.cardRemainingBalance || 0) || 0,
       0
     );
 
-    if (amountToRecord <= 0) {
+    if (cardAmountToRecord <= 0) {
       return res.status(400).json({ message: "This reservation is already fully paid." });
     }
 
@@ -6881,21 +7892,22 @@ app.post("/api/reservations/:id/mark-paid", async (req, res) => {
         `
           UPDATE reservations
           SET
-            amount_paid = $2,
+            amount_paid = COALESCE(amount_paid, 0) + $2,
+            payment_method = 'card',
             status = CASE
               WHEN status = 'pending' THEN 'active'
               ELSE status
             END
           WHERE id = $1
         `,
-        [reservationId, reservation.effectiveTotalPrice]
+        [reservationId, cardAmountToRecord]
       );
 
       await insertReservationPaymentEvent(client, {
         reservationId,
-        amount: cardAmountToRecord || amountToRecord,
+        amount: cardAmountToRecord,
         paymentSource,
-        note: paymentNote || "Office card reader payment"
+        note: `${paymentNote || "Office card reader payment"}. Price type: card`
       });
 
       await client.query("COMMIT");
@@ -6918,6 +7930,9 @@ app.post("/api/reservations/:id/record-payment", async (req, res) => {
   const paymentSource = "office_card_reader";
   const paymentNote = typeof req.body?.note === "string" ? req.body.note.trim() : "";
   const paymentAmount = toPriceNumber(req.body?.amount);
+  const paymentPriceType = req.body?.priceType === "bank" ? "bank" : "card";
+  const tenderType = req.body?.tenderType === "check" ? "check" :
+    req.body?.tenderType === "cash" ? "cash" : "card";
 
   if (!reservationId) {
     return res.status(400).json({ message: "Reservation ID is required." });
@@ -6938,7 +7953,15 @@ app.post("/api/reservations/:id/record-payment", async (req, res) => {
       return res.status(400).json({ message: "Canceled reservations cannot be updated." });
     }
 
-    if (reservation.remainingBalance !== null && paymentAmount > Number(reservation.remainingBalance)) {
+    const selectedRemainingBalance = paymentPriceType === "bank"
+      ? reservation.bankRemainingBalance
+      : reservation.cardRemainingBalance;
+
+    if (
+      selectedRemainingBalance !== null &&
+      selectedRemainingBalance !== undefined &&
+      paymentAmount > Number(selectedRemainingBalance)
+    ) {
       return res.status(400).json({ message: "Office payment cannot exceed the remaining balance." });
     }
 
@@ -6952,20 +7975,21 @@ app.post("/api/reservations/:id/record-payment", async (req, res) => {
           UPDATE reservations
           SET
             amount_paid = COALESCE(amount_paid, 0) + $2,
+            payment_method = $3,
             status = CASE
               WHEN status = 'pending' THEN 'active'
               ELSE status
             END
           WHERE id = $1
         `,
-        [reservationId, paymentAmount]
+        [reservationId, paymentAmount, paymentPriceType]
       );
 
       await insertReservationPaymentEvent(client, {
         reservationId,
         amount: paymentAmount,
         paymentSource,
-        note: paymentNote || "Office card reader payment"
+        note: `${paymentNote || `Office ${tenderType} payment`}. Tender: ${tenderType}. Price type: ${paymentPriceType}`
       });
 
       await client.query("COMMIT");

@@ -9,6 +9,799 @@
   scroll-behavior: smooth;
 }
 
+/* Stripe Terminal */
+.terminal-status-panel {
+  display: grid;
+  gap: 14px;
+  margin: 20px 0;
+  padding: 18px;
+  border: 1px solid rgba(28, 76, 65, 0.14);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(237, 247, 242, 0.92), #fffdf8);
+}
+
+.terminal-reader-heading,
+.terminal-payment-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.terminal-reader-heading > div,
+.terminal-payment-progress > div:not(.button-row) {
+  display: grid;
+  gap: 2px;
+}
+
+.terminal-reader-heading span,
+.terminal-payment-progress span {
+  color: #627269;
+  font-size: 0.88rem;
+}
+
+.terminal-reader-dot {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border-radius: 999px;
+  background: #a04f42;
+  box-shadow: 0 0 0 5px rgba(160, 79, 66, 0.12);
+}
+
+.terminal-reader-dot.online {
+  background: #3c9669;
+  box-shadow: 0 0 0 5px rgba(60, 150, 105, 0.13);
+}
+
+.terminal-payment-progress {
+  flex-wrap: wrap;
+  padding-top: 14px;
+  border-top: 1px solid rgba(28, 76, 65, 0.1);
+}
+
+.terminal-payment-spinner {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border: 3px solid rgba(34, 101, 79, 0.16);
+  border-top-color: #22654f;
+  border-radius: 999px;
+  animation: spin 0.9s linear infinite;
+}
+
+.terminal-payment-result {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 999px;
+  background: #22654f;
+  color: white !important;
+  font-weight: 800;
+}
+
+.terminal-status-panel.failed .terminal-payment-result,
+.terminal-status-panel.canceled .terminal-payment-result {
+  background: #a04f42;
+}
+
+.terminal-payment-actions {
+  margin-left: auto;
+}
+
+.terminal-send-button {
+  min-height: 50px;
+  padding-inline: 24px !important;
+}
+
+/* Today's Arrivals and iPad check-in */
+.checkin-dashboard {
+  overflow: hidden;
+  padding: 0 !important;
+  border: 0 !important;
+  background: #f7f5ee !important;
+}
+
+.checkin-dashboard-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 34px;
+  color: #f8fbf7;
+  background:
+    radial-gradient(circle at 82% 12%, rgba(207, 230, 181, 0.22), transparent 30%),
+    linear-gradient(135deg, #163f36, #28664f);
+}
+
+.checkin-dashboard-hero h2,
+.checkin-dashboard-hero p {
+  margin: 0;
+}
+
+.checkin-dashboard-hero h2 {
+  margin: 4px 0 8px;
+  font-size: clamp(2rem, 5vw, 3.4rem);
+}
+
+.checkin-eyebrow {
+  margin: 0;
+  color: #bfda9c;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.checkin-progress-ring {
+  display: grid;
+  width: 126px;
+  height: 126px;
+  flex: 0 0 126px;
+  place-content: center;
+  text-align: center;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 9px rgba(255, 255, 255, 0.04);
+}
+
+.checkin-progress-ring strong {
+  font-size: 1.6rem;
+}
+
+.checkin-progress-ring span {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.checkin-dashboard-tools {
+  padding: 24px 30px 12px;
+}
+
+.checkin-dashboard-tools label {
+  max-width: 520px;
+}
+
+.checkin-arrival-grid {
+  display: grid;
+  gap: 14px;
+  padding: 14px 30px 30px;
+}
+
+.checkin-arrival-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 20px;
+  padding: 22px;
+  border: 1px solid rgba(26, 66, 55, 0.11);
+  border-radius: 20px;
+  background: #fffefa;
+  box-shadow: 0 10px 24px rgba(38, 62, 48, 0.05);
+}
+
+.checkin-arrival-card.complete {
+  background: #f1f7ee;
+}
+
+.checkin-arrival-card h3,
+.checkin-arrival-card p {
+  margin: 0;
+}
+
+.checkin-arrival-card p {
+  margin-top: 3px;
+  color: #68756e;
+}
+
+.checkin-site-chip {
+  display: grid;
+  min-width: 78px;
+  min-height: 64px;
+  place-items: center;
+  padding: 10px;
+  border-radius: 16px;
+  background: #e4edda;
+  color: #234f3d;
+  font-weight: 800;
+}
+
+.checkin-arrival-actions {
+  display: grid;
+  justify-items: end;
+  gap: 7px;
+}
+
+.checkin-status {
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.checkin-status.complete { color: #2d7652; }
+.checkin-status.pending { color: #9b6a34; }
+
+.checkin-text-button,
+.checkin-back-button,
+.signature-clear {
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: #386653;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.checkin-empty-state {
+  padding: 70px 24px;
+  text-align: center;
+}
+
+.checkin-empty-state > span {
+  font-size: 2.4rem;
+}
+
+.checkin-kiosk-card {
+  position: fixed;
+  inset: 0;
+  z-index: 1600;
+  overflow: hidden;
+  overflow-y: auto;
+  width: 100%;
+  height: 100dvh;
+  margin: 0;
+  border-radius: 0;
+  background: #fffdf7;
+  box-shadow: 0 30px 80px rgba(26, 58, 45, 0.14);
+}
+
+.checkin-kiosk-header {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  padding: 42px 30px 36px;
+  text-align: center;
+  color: white;
+  background:
+    radial-gradient(circle at 18% 10%, rgba(203, 231, 169, 0.22), transparent 30%),
+    linear-gradient(145deg, #133d35, #2a7055);
+}
+
+.checkin-kiosk-header h2 {
+  margin: 8px 0 6px;
+  font-size: clamp(2.2rem, 6vw, 4.2rem);
+  line-height: 1;
+}
+
+.checkin-kiosk-header > p:last-child {
+  margin: 8px 0 0;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 1.05rem;
+}
+
+.checkin-brand-mark {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  place-items: center;
+  margin-bottom: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 50% 50% 46% 54%;
+  color: #d8e9bc;
+  font-family: Georgia, serif;
+  font-size: 2rem;
+  font-style: italic;
+}
+
+.checkin-back-button {
+  position: absolute;
+  top: 22px;
+  left: 24px;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.checkin-stay-banner {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  border-bottom: 1px solid #e4e7dc;
+  background: #e4e7dc;
+}
+
+.checkin-stay-banner > div {
+  display: grid;
+  gap: 3px;
+  padding: 18px 22px;
+  background: #f3f5ec;
+}
+
+.checkin-stay-banner span {
+  color: #748077;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.checkin-form-section {
+  display: grid;
+  gap: 22px;
+  padding: 36px clamp(22px, 6vw, 64px);
+  border-bottom: 1px solid #e7e7de;
+}
+
+.checkin-section-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.checkin-section-heading > span {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border-radius: 50%;
+  background: #dfead3;
+  color: #285b47;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.checkin-section-heading h3,
+.checkin-section-heading p {
+  margin: 0;
+}
+
+.checkin-section-heading h3 {
+  font-size: 1.5rem;
+}
+
+.checkin-section-heading p {
+  color: #728078;
+}
+
+.checkin-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+}
+
+.checkin-field-grid.three-column {
+  grid-template-columns: 1.35fr 0.65fr 1fr;
+}
+
+.checkin-kiosk-card label {
+  display: grid;
+  gap: 7px;
+  color: #31443a;
+  font-weight: 700;
+}
+
+.checkin-kiosk-card input,
+.checkin-kiosk-card select,
+.checkin-kiosk-card textarea {
+  width: 100%;
+  min-height: 54px;
+  border: 1px solid #d6dbd2;
+  border-radius: 14px;
+  padding: 13px 15px;
+  background: #fff;
+  color: #1e352b;
+  font-size: 1rem;
+}
+
+.checkin-kiosk-card input:focus,
+.checkin-kiosk-card select:focus,
+.checkin-kiosk-card textarea:focus {
+  outline: 3px solid rgba(82, 137, 101, 0.17);
+  border-color: #5b8d70;
+}
+
+.checkin-kiosk-card input[readonly] {
+  background: #f2f3ef;
+  color: #68736c;
+}
+
+.checkin-discounts {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.checkin-discounts legend {
+  margin-bottom: 10px;
+  font-weight: 700;
+}
+
+.checkin-discounts > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.checkin-choice {
+  display: block !important;
+}
+
+.checkin-choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.checkin-choice span {
+  display: block;
+  padding: 11px 17px;
+  border: 1px solid #d5ded4;
+  border-radius: 999px;
+  background: white;
+  cursor: pointer;
+}
+
+.checkin-choice input:checked + span {
+  border-color: #2f7456;
+  background: #e4f0dd;
+  color: #1f5a41;
+  box-shadow: inset 0 0 0 1px #2f7456;
+}
+
+.checkin-rules-section {
+  background: #f3f6ed;
+}
+
+.checkin-rules-list {
+  display: grid;
+  gap: 12px;
+}
+
+.checkin-rules-list > div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 15px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.checkin-rules-list > div > span {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 50%;
+  background: #315f4c;
+  color: white;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.checkin-rules-list p {
+  margin: 1px 0 0;
+}
+
+.checkin-important-notice {
+  display: grid;
+  gap: 3px;
+  padding: 18px 20px;
+  border-left: 5px solid #c58948;
+  border-radius: 12px;
+  background: #fff4df;
+  color: #6f4824;
+}
+
+.checkin-acceptance {
+  grid-template-columns: auto 1fr !important;
+  align-items: center;
+  padding: 18px;
+  border: 2px solid #bad0b7;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.checkin-acceptance input {
+  width: 28px;
+  min-height: 28px;
+}
+
+.checkin-acceptance span {
+  display: grid;
+}
+
+.checkin-acceptance small {
+  color: #738078;
+  font-weight: 400;
+}
+
+.signature-pad-shell {
+  position: relative;
+  overflow: hidden;
+  border: 2px dashed #93aa98;
+  border-radius: 18px;
+  background:
+    linear-gradient(#fff, #fff) padding-box,
+    repeating-linear-gradient(0deg, transparent 0 38px, #eff1eb 39px 40px);
+}
+
+.signature-pad {
+  display: block;
+  width: 100%;
+  height: 230px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.signature-line-label {
+  position: absolute;
+  left: 20px;
+  bottom: 12px;
+  color: #8a938d;
+  font-size: 0.74rem;
+  pointer-events: none;
+}
+
+.signature-clear {
+  position: absolute;
+  right: 16px;
+  bottom: 9px;
+  font-size: 0.78rem;
+}
+
+.checkin-terminal-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px 28px;
+  align-items: center;
+  padding: 28px clamp(22px, 6vw, 64px);
+  border-bottom: 1px solid #dbe4d8;
+  background: #edf4e8;
+}
+
+.checkin-terminal-section > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.checkin-terminal-section > div:first-child > div,
+.checkin-terminal-balance,
+.checkin-terminal-progress {
+  display: grid;
+  gap: 3px;
+}
+
+.checkin-terminal-section span {
+  color: #64766a;
+  font-size: 0.84rem;
+}
+
+.checkin-terminal-balance {
+  justify-items: end;
+}
+
+.checkin-cash-payment {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid rgba(26, 66, 55, 0.13);
+  border-radius: 16px;
+  background: #fffefa;
+}
+
+.checkin-cash-payment label {
+  max-width: 320px;
+}
+
+.checkin-cash-payment small {
+  color: #68756e;
+  line-height: 1.5;
+}
+
+.checkin-terminal-balance strong {
+  color: #173f35;
+  font-size: 1.6rem;
+}
+
+.checkin-terminal-progress,
+.checkin-terminal-section > .message {
+  grid-column: 1 / -1;
+}
+
+.checkin-terminal-progress {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 16px 18px;
+  border: 1px solid #cbdac7;
+  border-radius: 14px;
+  background: white;
+}
+
+.checkin-terminal-progress > span {
+  grid-column: 1;
+}
+
+.checkin-terminal-progress > button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.checkin-submit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 26px clamp(22px, 6vw, 64px);
+  background: #173f35;
+  color: white;
+}
+
+.checkin-submit-bar > div {
+  display: grid;
+}
+
+.checkin-submit-bar span {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.84rem;
+}
+
+.checkin-footer-payment-area {
+  width: min(100%, 760px);
+  min-width: 0;
+  flex: 1;
+  gap: 12px;
+}
+
+.checkin-terminal-submit-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.checkin-terminal-submit-actions .ghost-button {
+  border-color: rgba(255, 255, 255, 0.55);
+  color: white;
+}
+
+.checkin-large-button {
+  min-height: 56px;
+  padding: 14px 25px !important;
+  font-size: 1rem;
+}
+
+.checkin-message {
+  margin: 0 clamp(22px, 6vw, 64px);
+}
+
+.checkin-complete-card {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  min-height: 620px;
+  place-content: center;
+  padding: 50px;
+  text-align: center;
+  background:
+    radial-gradient(circle at top, rgba(204, 232, 179, 0.62), transparent 38%),
+    #fffdf7;
+}
+
+.checkin-success-mark {
+  display: grid;
+  width: 78px;
+  height: 78px;
+  place-items: center;
+  border-radius: 50%;
+  background: #2d7554;
+  color: white;
+  font-size: 2.5rem;
+}
+
+.checkin-complete-card h2,
+.checkin-complete-card p {
+  margin: 0;
+}
+
+.checkin-complete-signature {
+  display: grid;
+  width: min(480px, 100%);
+  gap: 6px;
+  margin: 16px 0;
+  padding: 16px;
+  border-radius: 16px;
+  background: white;
+  box-shadow: 0 8px 24px rgba(34, 67, 51, 0.08);
+}
+
+.checkin-complete-signature img {
+  width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+}
+
+@media (max-width: 760px) {
+  .checkin-dashboard-hero,
+  .checkin-submit-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .checkin-footer-payment-area {
+    width: 100%;
+  }
+
+  .checkin-progress-ring {
+    width: 96px;
+    height: 96px;
+    flex-basis: 96px;
+  }
+
+  .checkin-arrival-card {
+    grid-template-columns: auto 1fr;
+  }
+
+  .checkin-arrival-actions {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .checkin-stay-banner,
+  .checkin-field-grid,
+  .checkin-field-grid.three-column {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .terminal-payment-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .checkin-terminal-section,
+  .checkin-terminal-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .checkin-terminal-balance {
+    justify-items: start;
+  }
+
+  .checkin-terminal-progress > button {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .checkin-terminal-submit-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .checkin-stay-banner,
+  .checkin-field-grid,
+  .checkin-field-grid.three-column {
+    grid-template-columns: 1fr;
+  }
+
+  .checkin-dashboard-hero,
+  .checkin-arrival-grid,
+  .checkin-dashboard-tools {
+    padding-inline: 18px;
+  }
+
+  .checkin-kiosk-header {
+    padding-top: 72px;
+  }
+
+  .signature-pad {
+    height: 190px;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
