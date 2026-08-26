@@ -5366,8 +5366,12 @@ export default function App() {
     useState("");
   const [reservationCashCheckPaymentAmount, setReservationCashCheckPaymentAmount] =
     useState("");
+  const [reservationCheckNumber, setReservationCheckNumber] = useState("");
   const [activeSchedulePaymentAmount, setActiveSchedulePaymentAmount] =
     useState("");
+  const [activeScheduleCashCheckPaymentAmount, setActiveScheduleCashCheckPaymentAmount] =
+    useState("");
+  const [activeScheduleCheckNumber, setActiveScheduleCheckNumber] = useState("");
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] =
@@ -5773,7 +5777,8 @@ export default function App() {
             try {
               completedReservation = await submitReservationCheckIn(
                 updatedReservation,
-                pendingCheckIn.form
+                pendingCheckIn.form,
+                { paymentIntentId }
               );
               paymentSuccessMessage =
                 "Payment approved and the guest was checked in.";
@@ -5877,12 +5882,23 @@ export default function App() {
       setSchedulePaymentForm(createSchedulePaymentForm());
       setSchedulePaymentErrorMessage("");
       setSchedulePaymentSuccessMessage("");
+      setActiveScheduleCashCheckPaymentAmount("");
+      setActiveScheduleCheckNumber("");
       return;
     }
 
     setSchedulePaymentForm(
       createSchedulePaymentForm(activeScheduleReservation)
     );
+    const cashCheckBalance =
+      activeScheduleReservation.bankRemainingBalance ??
+      activeScheduleReservation.remainingBalance;
+    setActiveScheduleCashCheckPaymentAmount(
+      Number(cashCheckBalance || 0) > 0
+        ? Number(cashCheckBalance).toFixed(2)
+        : ""
+    );
+    setActiveScheduleCheckNumber("");
     setSchedulePaymentErrorMessage("");
     setSchedulePaymentSuccessMessage("");
   }, [activeScheduleReservation]);
@@ -6698,6 +6714,7 @@ export default function App() {
       setCreatedReservation(null);
       setReservationCardPaymentAmount("");
       setReservationCashCheckPaymentAmount("");
+      setReservationCheckNumber("");
       setGeneratedPaymentLink(null);
       setPaymentLinkErrorMessage("");
       setPaymentLinkSuccessMessage("");
@@ -7323,6 +7340,7 @@ export default function App() {
     setReservationCardPayment(null);
     setReservationCardPaymentAmount("");
     setReservationCashCheckPaymentAmount("");
+    setReservationCheckNumber("");
     setConfirmationCopyMessage("");
 
     try {
@@ -8056,10 +8074,10 @@ export default function App() {
     }
   }
 
-  async function submitReservationCheckIn(reservation, form) {
+  async function submitReservationCheckIn(reservation, form, paymentDetails = {}) {
     const result = await apiRequest(`/reservations/${reservation.id}/check-in`, {
       method: "POST",
-      body: JSON.stringify(form),
+      body: JSON.stringify({ ...form, ...paymentDetails }),
     });
     const updatedReservation = { ...reservation, checkIn: result.checkIn };
 
@@ -8178,7 +8196,8 @@ export default function App() {
   async function recordCashCheckPayment(
     reservation,
     amountValue,
-    tenderType = "cash"
+    tenderType = "cash",
+    checkNumber = ""
   ) {
     setErrorMessage("");
     setSuccessMessage("");
@@ -8193,6 +8212,12 @@ export default function App() {
         throw new Error("Enter an office payment amount greater than zero.");
       }
 
+      const normalizedCheckNumber = String(checkNumber || "").trim();
+
+      if (tenderType === "check" && !normalizedCheckNumber) {
+        throw new Error("Enter the check number.");
+      }
+
       const updatedReservation = await apiRequest(
         `/reservations/${reservation.id}/record-payment`,
         {
@@ -8202,6 +8227,7 @@ export default function App() {
             paymentSource: "office_card_reader",
             priceType: "bank",
             tenderType,
+            checkNumber: tenderType === "check" ? normalizedCheckNumber : "",
           }),
         }
       );
@@ -8230,6 +8256,15 @@ export default function App() {
       setReservationCashCheckPaymentAmount(
         remainingBankDeposit > 0 ? remainingBankDeposit.toFixed(2) : ""
       );
+      setActiveScheduleCashCheckPaymentAmount(
+        Number(updatedReservation.bankRemainingBalance || 0) > 0
+          ? Number(updatedReservation.bankRemainingBalance).toFixed(2)
+          : ""
+      );
+      if (tenderType === "check") {
+        setReservationCheckNumber("");
+        setActiveScheduleCheckNumber("");
+      }
       setSuccessMessage(
         `Recorded ${tenderType} payment for reservation #${updatedReservation.id}.`
       );
@@ -10277,22 +10312,38 @@ export default function App() {
                       amount will update automatically.
                     </p>
                     <div className="payment-grid created-payment-grid">
-                      <label className="payment-amount-field">
-                        Cash or check amount
-                        <input
-                          type="number"
-                          min="0.01"
-                          step="0.01"
-                          value={reservationCashCheckPaymentAmount}
-                          disabled={isRecordingOfficePayment}
-                          onChange={(event) =>
-                            setReservationCashCheckPaymentAmount(
-                              event.target.value
-                            )
-                          }
-                          onWheel={(event) => event.currentTarget.blur()}
-                        />
-                      </label>
+                      <div className="payment-entry-fields">
+                        <label className="payment-amount-field">
+                          Cash or check amount
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={reservationCashCheckPaymentAmount}
+                            disabled={isRecordingOfficePayment}
+                            onChange={(event) =>
+                              setReservationCashCheckPaymentAmount(
+                                event.target.value
+                              )
+                            }
+                            onWheel={(event) => event.currentTarget.blur()}
+                          />
+                        </label>
+                        <label>
+                          Check number
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            maxLength="50"
+                            value={reservationCheckNumber}
+                            disabled={isRecordingOfficePayment}
+                            onChange={(event) =>
+                              setReservationCheckNumber(event.target.value)
+                            }
+                            placeholder="Required for check payments"
+                          />
+                        </label>
+                      </div>
                       <label className="payment-amount-field">
                         Card amount for terminal
                         <input
@@ -10384,13 +10435,15 @@ export default function App() {
                         className="ghost-button"
                         disabled={
                           isRecordingOfficePayment ||
-                          Number(reservationCashCheckPaymentAmount || 0) <= 0
+                          Number(reservationCashCheckPaymentAmount || 0) <= 0 ||
+                          !reservationCheckNumber.trim()
                         }
                         onClick={() =>
                           recordCashCheckPayment(
                             createdReservation,
                             reservationCashCheckPaymentAmount,
-                            "check"
+                            "check",
+                            reservationCheckNumber
                           ).catch(() => {})
                         }>
                         {isRecordingOfficePayment
@@ -12507,12 +12560,6 @@ export default function App() {
                     type="button"
                     className="ghost-button"
                     onClick={() => setActiveScheduleReservation(null)}>
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => setActiveScheduleReservation(null)}>
                     Close
                   </button>
                 </div>
@@ -12754,6 +12801,91 @@ export default function App() {
                             onWheel={(event) => event.currentTarget.blur()}
                           />
                         </label>
+                      </div>
+                    </div>
+                    <div className="timeline-card payment-edit-card">
+                      <div className="result-header">
+                        <h4>Record cash or check payment</h4>
+                        <span className="muted">
+                          Cash/check balance:{" "}
+                          {formatCurrency(
+                            activeScheduleReservation.bankRemainingBalance ??
+                              activeScheduleReservation.remainingBalance
+                          )}
+                        </span>
+                      </div>
+                      <div className="field-grid compact-grid">
+                        <label>
+                          Payment amount
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={activeScheduleCashCheckPaymentAmount}
+                            disabled={isRecordingOfficePayment}
+                            onChange={(event) =>
+                              setActiveScheduleCashCheckPaymentAmount(
+                                event.target.value
+                              )
+                            }
+                            onWheel={(event) => event.currentTarget.blur()}
+                          />
+                        </label>
+                        <label>
+                          Check number
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            maxLength="50"
+                            value={activeScheduleCheckNumber}
+                            disabled={isRecordingOfficePayment}
+                            onChange={(event) =>
+                              setActiveScheduleCheckNumber(event.target.value)
+                            }
+                            placeholder="Required for check payments"
+                          />
+                        </label>
+                      </div>
+                      <div className="button-row">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          disabled={
+                            isRecordingOfficePayment ||
+                            Number(activeScheduleCashCheckPaymentAmount || 0) <= 0
+                          }
+                          onClick={() =>
+                            recordCashCheckPayment(
+                              activeScheduleReservation,
+                              activeScheduleCashCheckPaymentAmount,
+                              "cash"
+                            ).catch(() => {})
+                          }>
+                          {isRecordingOfficePayment
+                            ? "Recording…"
+                            : "Record cash"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          disabled={
+                            isRecordingOfficePayment ||
+                            Number(activeScheduleCashCheckPaymentAmount || 0) <=
+                              0 ||
+                            !activeScheduleCheckNumber.trim()
+                          }
+                          onClick={() =>
+                            recordCashCheckPayment(
+                              activeScheduleReservation,
+                              activeScheduleCashCheckPaymentAmount,
+                              "check",
+                              activeScheduleCheckNumber
+                            ).catch(() => {})
+                          }>
+                          {isRecordingOfficePayment
+                            ? "Recording…"
+                            : "Record check"}
+                        </button>
                       </div>
                     </div>
                   </div>

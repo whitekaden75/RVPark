@@ -231,6 +231,7 @@ export default function CheckInPage({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRecordingPayment, setIsRecordingPayment] = useState(false);
   const [officePaymentAmount, setOfficePaymentAmount] = useState("");
+  const [checkNumber, setCheckNumber] = useState("");
   const [isCashCheckOpen, setIsCashCheckOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -259,7 +260,18 @@ export default function CheckInPage({
             .toLowerCase()
             .includes(query);
         })
-        .sort((a, b) => Number(getArrivalStay(a, today)?.site_number || 0) - Number(getArrivalStay(b, today)?.site_number || 0)),
+        .sort((a, b) => {
+          const checkInOrder = Number(Boolean(a.checkIn)) - Number(Boolean(b.checkIn));
+
+          if (checkInOrder !== 0) {
+            return checkInOrder;
+          }
+
+          return (
+            Number(getArrivalStay(a, today)?.site_number || 0) -
+            Number(getArrivalStay(b, today)?.site_number || 0)
+          );
+        }),
     [reservations, search, today]
   );
   const activeReservation = reservations.find(
@@ -277,6 +289,7 @@ export default function CheckInPage({
       setActiveReservationId(completeReservation.id);
       setForm(createCheckInForm(completeReservation));
       setIsCashCheckOpen(false);
+      setCheckNumber("");
       const bankBalance = getCheckInBankBalance(completeReservation);
       setOfficePaymentAmount(bankBalance > 0 ? bankBalance.toFixed(2) : "");
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -293,6 +306,11 @@ export default function CheckInPage({
       return;
     }
 
+    if (tenderType === "check" && !checkNumber.trim()) {
+      setErrorMessage("Enter the check number.");
+      return;
+    }
+
     setErrorMessage("");
     setIsRecordingPayment(true);
 
@@ -300,12 +318,16 @@ export default function CheckInPage({
       const updatedReservation = await onRecordOfficePayment(
         activeReservation,
         amount,
-        tenderType
+        tenderType,
+        checkNumber
       );
       const remainingBankBalance = getCheckInBankBalance(updatedReservation);
       setOfficePaymentAmount(
         remainingBankBalance > 0 ? remainingBankBalance.toFixed(2) : ""
       );
+      if (tenderType === "check") {
+        setCheckNumber("");
+      }
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
@@ -372,22 +394,6 @@ export default function CheckInPage({
     const standardBalance = getCheckInBankBalance(activeReservation);
     const cardBalance = getCheckInCardBalance(activeReservation);
     const hasBalance = standardBalance > 0 || cardBalance > 0;
-    const displayedBankPrice = hasBalance
-      ? standardBalance
-      : Number(
-          activeReservation.bankTotalPrice ??
-            (activeReservation.selectedPaymentMethod === "bank"
-              ? activeReservation.effectiveTotalPrice
-              : 0)
-        ) || 0;
-    const displayedCardPrice = hasBalance
-      ? cardBalance
-      : Number(
-          activeReservation.cardTotalPrice ??
-            (activeReservation.selectedPaymentMethod === "card"
-              ? activeReservation.effectiveTotalPrice
-              : 0)
-        ) || 0;
     const activeTerminalPayment =
       terminalPayment?.reservationId === activeReservation.id
         ? terminalPayment
@@ -435,7 +441,7 @@ export default function CheckInPage({
           <SignaturePad value={form.signatureDataUrl} onChange={(value) => updateField("signatureDataUrl", value)} />
         </section>
 
-        {displayedBankPrice > 0 || displayedCardPrice > 0 ? (
+        {hasBalance ? (
           <section className="checkin-terminal-section">
             <div>
               <span className={`terminal-reader-dot ${readerOnline ? "online" : "offline"}`} />
@@ -454,9 +460,9 @@ export default function CheckInPage({
             </div>
             <div className="checkin-terminal-balance">
               <span>Cash/check balance</span>
-              <strong>{formatCurrency(displayedBankPrice)}</strong>
+              <strong>{formatCurrency(standardBalance)}</strong>
               <span>Terminal card balance</span>
-              <strong>{formatCurrency(displayedCardPrice)}</strong>
+              <strong>{formatCurrency(cardBalance)}</strong>
             </div>
             {activeTerminalPayment ? (
               <div className={`checkin-terminal-progress ${activeTerminalPayment.status}`}>
@@ -513,6 +519,18 @@ export default function CheckInPage({
                       }
                     />
                   </label>
+                  <label>
+                    Check number
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength="50"
+                      value={checkNumber}
+                      disabled={isRecordingPayment || terminalBusy}
+                      onChange={(event) => setCheckNumber(event.target.value)}
+                      placeholder="Required for check payments"
+                    />
+                  </label>
                   <div className="button-row">
                     <button
                       type="button"
@@ -524,7 +542,11 @@ export default function CheckInPage({
                     <button
                       type="button"
                       className="ghost-button"
-                      disabled={isRecordingPayment || terminalBusy}
+                      disabled={
+                        isRecordingPayment ||
+                        terminalBusy ||
+                        !checkNumber.trim()
+                      }
                       onClick={() => recordCashCheckPayment("check")}>
                       {isRecordingPayment ? "Recording…" : "Record check"}
                     </button>

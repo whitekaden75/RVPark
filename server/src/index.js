@@ -787,7 +787,7 @@ function buildReservationConfirmationEmail(reservation) {
     `Phone: ${reservation.phone_number || "Not set"}`,
     "",
     "Deposit policy",
-    "The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. Debit cards are not accepted. The remaining balance may also be paid by check or cash upon arrival.",
+    "The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. The remaining balance may also be paid by check or cash upon arrival.",
     "",
     "Important information",
     ...importantInformation.map((item) => `- ${item}`),
@@ -864,7 +864,7 @@ function buildReservationConfirmationEmail(reservation) {
                 </table>
 
                 <h2 style="margin:0 0 10px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Deposit policy</h2>
-                <p style="margin:0 0 28px;color:#4b5b54;font-size:14px;line-height:1.7;">The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. Debit cards are not accepted. The remaining balance may also be paid by check or cash upon arrival.</p>
+                <p style="margin:0 0 28px;color:#4b5b54;font-size:14px;line-height:1.7;">The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. The remaining balance may also be paid by check or cash upon arrival.</p>
 
                 <div style="height:1px;background:#e4d8c5;margin:0 0 27px;"></div>
                 <h2 style="margin:0 0 18px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Before you arrive</h2>
@@ -1100,20 +1100,57 @@ async function sendReservationCancellationEmail(reservation) {
   });
 }
 
-async function sendCheckInConfirmationEmail(reservation, checkIn) {
+async function sendCheckInConfirmationEmail(reservation, checkIn, paymentReceipt = null) {
   const guestName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
-  const siteNumbers = (reservation.siteStays || [])
-    .map((stay) => stay.site_number)
-    .filter(Boolean)
-    .join(", ");
+  const siteStays = Array.isArray(reservation.siteStays) ? reservation.siteStays : [];
+  const siteNumbers = siteStays.map((stay) => stay.site_number).filter(Boolean).join(", ");
   const rules = String(checkIn.rules_text_snapshot || checkInRulesText);
+  const checkedInAt = new Date(checkIn.checked_in_at).toLocaleString("en-US", {
+    timeZone: "America/Los_Angeles"
+  });
+  const discounts = Array.isArray(checkIn.discount_memberships) && checkIn.discount_memberships.length
+    ? checkIn.discount_memberships.join(", ")
+    : "None";
+  const checkInDetails = [
+    ["Site", siteNumbers || "See the office"],
+    ["Checked in", checkedInAt],
+    ["Number of guests", String(checkIn.guest_count)],
+    ["Home state", checkIn.home_state || "Not provided"],
+    ["Postal code", checkIn.postal_code || "Not provided"],
+    ["RV make", checkIn.rv_make || "Not provided"],
+    ["RV year", checkIn.rv_year || "Not provided"],
+    ["RV type", checkIn.rv_type || reservation.rv_kind || "Not provided"],
+    ["Discount memberships", discounts],
+    ["Guest notes", checkIn.guest_notes || "None"],
+    ["Signed by", checkIn.signed_name],
+    ["Park rules accepted", "Yes"]
+  ];
+  const transactionAmount = paymentReceipt
+    ? formatEmailCurrency(Number(paymentReceipt.amount_cents) / 100)
+    : null;
+  const transactionDate = paymentReceipt?.paid_at
+    ? new Date(paymentReceipt.paid_at).toLocaleString("en-US", {
+        timeZone: "America/Los_Angeles"
+      })
+    : checkedInAt;
+  const receiptLines = paymentReceipt
+    ? [
+        "",
+        "Payment receipt",
+        `Transaction total: ${transactionAmount}`,
+        "Payment method: Card at front desk",
+        `Paid: ${transactionDate}`,
+        `Transaction: ${paymentReceipt.stripe_payment_intent_id}`
+      ]
+    : [];
   const text = [
     `Hi ${guestName || "Guest"},`,
     "",
     "You are checked in at Riverpark RV Resort.",
-    `Site: ${siteNumbers || "See the office"}`,
-    `Checked in: ${new Date(checkIn.checked_in_at).toLocaleString("en-US", { timeZone: "America/Los_Angeles" })}`,
-    `Signed by: ${checkIn.signed_name}`,
+    "",
+    "Check-in form",
+    ...checkInDetails.map(([label, value]) => `${label}: ${value}`),
+    ...receiptLines,
     "",
     "Park agreement",
     rules,
@@ -1123,16 +1160,67 @@ async function sendCheckInConfirmationEmail(reservation, checkIn) {
     "2956 Rogue River Hwy, Grants Pass, OR 97527",
     "541-295-1269"
   ].join("\n");
+  const checkInRows = checkInDetails
+    .map(
+      ([label, value]) => `
+        <tr>
+          <td style="padding:9px 0;color:#6d756f;font-size:13px;line-height:1.4;vertical-align:top;width:42%;">${escapeEmailHtml(label)}</td>
+          <td style="padding:9px 0;color:#17372f;font-size:14px;font-weight:700;line-height:1.4;text-align:right;vertical-align:top;">${escapeEmailHtml(value)}</td>
+        </tr>`
+    )
+    .join("");
   const ruleItems = rules
     .split(/\n\n+/)
     .map((rule) => `<li style="margin-bottom:12px;">${escapeEmailHtml(rule)}</li>`)
     .join("");
-  const html = `<!doctype html><html><body style="margin:0;background:#f2eee5;color:#17372f;font-family:Arial,sans-serif;"><table role="presentation" width="100%"><tr><td align="center" style="padding:28px 12px;"><table role="presentation" width="100%" style="max-width:640px;background:#fffdf7;border-radius:18px;overflow:hidden;"><tr><td style="padding:34px;text-align:center;background:#173f35;color:white;"><div style="color:#cde1ae;font-size:12px;letter-spacing:2px;text-transform:uppercase;">Check-in complete</div><h1 style="margin:10px 0 0;font-family:Georgia,serif;font-weight:400;">Welcome to Riverpark</h1></td></tr><tr><td style="padding:34px;"><p style="font-size:17px;line-height:1.7;">Hi ${escapeEmailHtml(guestName || "Guest")}, you are checked in and ready to enjoy your stay by the river.</p><div style="padding:18px;background:#eef4e8;border-radius:12px;"><strong>Site ${escapeEmailHtml(siteNumbers || "—")}</strong><br>Signed by ${escapeEmailHtml(checkIn.signed_name)}</div><h2 style="margin-top:28px;font-family:Georgia,serif;font-weight:400;">Your park agreement</h2><ol style="padding-left:22px;line-height:1.6;">${ruleItems}</ol><p style="margin-top:28px;color:#66736c;">Questions? Call or text 541-295-1269.</p></td></tr></table></td></tr></table></body></html>`;
+  const receiptHtml = paymentReceipt
+    ? `
+      <div style="margin-top:28px;padding:22px;background:#eef4e8;border:1px solid #d9e5d2;border-radius:12px;">
+        <div style="color:#5f7067;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Payment receipt</div>
+        <div style="margin-top:9px;color:#17372f;font-family:Georgia,serif;font-size:30px;font-weight:700;">${escapeEmailHtml(transactionAmount)}</div>
+        <div style="margin-top:8px;color:#4b5b54;font-size:14px;line-height:1.7;">Transaction total paid by card at the front desk on ${escapeEmailHtml(transactionDate)}.</div>
+        <div style="margin-top:5px;color:#6d756f;font-size:12px;line-height:1.6;">Transaction ${escapeEmailHtml(paymentReceipt.stripe_payment_intent_id)}</div>
+      </div>`
+    : "";
+  const html = `<!doctype html>
+<html lang="en">
+  <body style="margin:0;background:#f2eee5;color:#17372f;font-family:Arial,sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr>
+        <td align="center" style="padding:28px 12px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background:#fffdf7;border-radius:18px;overflow:hidden;">
+            <tr>
+              <td style="padding:34px;text-align:center;background:#173f35;color:white;">
+                <div style="color:#cde1ae;font-size:12px;letter-spacing:2px;text-transform:uppercase;">Check-in complete</div>
+                <h1 style="margin:10px 0 0;font-family:Georgia,serif;font-weight:400;">Welcome to Riverpark</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:34px;">
+                <p style="font-size:17px;line-height:1.7;">Hi ${escapeEmailHtml(guestName || "Guest")}, you are checked in and ready to enjoy your stay by the river.</p>
+                <h2 style="margin:28px 0 10px;font-family:Georgia,serif;font-weight:400;">Your check-in form</h2>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="padding:10px 20px;background:#f6f0e5;border:1px solid #e4d8c5;border-radius:12px;">
+                  ${checkInRows}
+                </table>
+                ${receiptHtml}
+                <h2 style="margin-top:30px;font-family:Georgia,serif;font-weight:400;">Your park agreement</h2>
+                <ol style="padding-left:22px;line-height:1.6;">${ruleItems}</ol>
+                <p style="margin-top:28px;color:#66736c;">Questions? Call or text 541-295-1269.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
 
   await sendEmailWithSendGrid({
     to: reservation.email,
     toName: guestName,
-    subject: "You’re checked in at Riverpark RV Resort",
+    subject: paymentReceipt
+      ? "Your Riverpark check-in and payment receipt"
+      : "You’re checked in at Riverpark RV Resort",
     text,
     html
   });
@@ -6941,6 +7029,7 @@ app.post("/api/reservations/:id/check-in", async (req, res) => {
   const signedName = String(req.body?.signedName || "").trim();
   const signatureDataUrl = String(req.body?.signatureDataUrl || "");
   const rulesAccepted = Boolean(req.body?.rulesAccepted);
+  const paymentIntentId = String(req.body?.paymentIntentId || "").trim();
 
   if (!reservationId) {
     return res.status(400).json({ message: "Reservation is required." });
@@ -6977,6 +7066,35 @@ app.post("/api/reservations/:id/check-in", async (req, res) => {
 
     if (reservation.status === "canceled") {
       return res.status(400).json({ message: "Canceled reservations cannot be checked in." });
+    }
+
+    let paymentReceipt = null;
+
+    if (paymentIntentId) {
+      const paymentResult = await pool.query(
+        `
+          SELECT
+            stripe_payment_intent_id,
+            COALESCE(amount_received_cents, amount_cents) AS amount_cents,
+            currency,
+            paid_at
+          FROM stripe_payment_records
+          WHERE reservation_id = $1
+            AND stripe_payment_intent_id = $2
+            AND stripe_payment_method_type = 'card_present'
+            AND payment_status = 'paid'
+          LIMIT 1
+        `,
+        [reservationId, paymentIntentId]
+      );
+
+      if (paymentResult.rowCount === 0) {
+        return res.status(400).json({
+          message: "The accepted check-in payment could not be verified for the receipt."
+        });
+      }
+
+      paymentReceipt = paymentResult.rows[0];
     }
 
     const result = await pool.query(
@@ -7036,9 +7154,13 @@ app.post("/api/reservations/:id/check-in", async (req, res) => {
 
     let confirmationEmail = { sent: false, message: "" };
 
-    if (reservation.email && sendGridApiKey && sendGridFromEmail) {
+    if (reservation.email?.includes("@") && sendGridApiKey && sendGridFromEmail) {
       try {
-        await sendCheckInConfirmationEmail(reservation, result.rows[0]);
+        await sendCheckInConfirmationEmail(
+          reservation,
+          result.rows[0],
+          paymentReceipt
+        );
         confirmationEmail = {
           sent: true,
           message: `Check-in confirmation emailed to ${reservation.email}.`
@@ -7391,7 +7513,7 @@ app.put("/api/reservations/:id", async (req, res) => {
     }
 
     const shouldSendCancellationEmail =
-      currentReservationResult.rows[0].status !== "canceled" &&
+      currentReservationResult.rows[0].status === "active" &&
       reservationStatus === "canceled";
 
     if (reservationStatus !== "canceled") {
@@ -7933,6 +8055,9 @@ app.post("/api/reservations/:id/record-payment", async (req, res) => {
   const paymentPriceType = req.body?.priceType === "bank" ? "bank" : "card";
   const tenderType = req.body?.tenderType === "check" ? "check" :
     req.body?.tenderType === "cash" ? "cash" : "card";
+  const checkNumber = typeof req.body?.checkNumber === "string"
+    ? req.body.checkNumber.trim()
+    : "";
 
   if (!reservationId) {
     return res.status(400).json({ message: "Reservation ID is required." });
@@ -7940,6 +8065,14 @@ app.post("/api/reservations/:id/record-payment", async (req, res) => {
 
   if (paymentAmount === null || paymentAmount <= 0) {
     return res.status(400).json({ message: "Enter an office payment amount greater than zero." });
+  }
+
+  if (tenderType === "check" && !checkNumber) {
+    return res.status(400).json({ message: "Enter the check number." });
+  }
+
+  if (checkNumber.length > 50) {
+    return res.status(400).json({ message: "Check number must be 50 characters or fewer." });
   }
 
   try {
@@ -7989,7 +8122,9 @@ app.post("/api/reservations/:id/record-payment", async (req, res) => {
         reservationId,
         amount: paymentAmount,
         paymentSource,
-        note: `${paymentNote || `Office ${tenderType} payment`}. Tender: ${tenderType}. Price type: ${paymentPriceType}`
+        note: `${paymentNote || `Office ${tenderType} payment`}.${
+          tenderType === "check" ? ` Check number: ${checkNumber}.` : ""
+        } Tender: ${tenderType}. Price type: ${paymentPriceType}`
       });
 
       await client.query("COMMIT");

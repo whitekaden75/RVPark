@@ -1824,6 +1824,11 @@ select option {
   align-items: start;
 }
 
+.payment-entry-fields {
+  display: grid;
+  gap: 14px;
+}
+
 .payment-amount-field {
   display: grid;
   gap: 8px;
