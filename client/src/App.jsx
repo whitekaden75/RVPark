@@ -12875,6 +12875,22 @@ export default function App() {
                       }>
                       Pay by card {formatCurrency(activeSchedulePaymentAmount)}
                     </button>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={
+                        Number(
+                          activeScheduleReservation.remainingBalance || 0
+                        ) <= 0
+                      }
+                      onClick={() =>
+                        generatePaymentLink(
+                          activeScheduleReservation,
+                          "Remaining-balance payment link"
+                        )
+                      }>
+                      Generate payment link
+                    </button>
                   </div>
                   {paymentLinkErrorMessage ? (
                     <div className="message error">
