@@ -77,9 +77,9 @@ Run [sql/2026-08-15_add_reservation_price_choices.sql](/Users/kadenwhite/Desktop
 
 Run [sql/2026-08-24_add_reservation_check_ins.sql](/Users/kadenwhite/Desktop/RVPark/sql/2026-08-24_add_reservation_check_ins.sql) before deploying the **Check In** admin page. It stores the guest count, RV details, accepted rules version, signature image, and check-in timestamp with the reservation.
 
-### Nightly balances
+### Nightly payment progress
 
-Standard reservations do not use `reservations.total_price` as their balance. The API rebuilds the bank and card balances from the current daily rates and the unpaid chargeable nights each time the reservation is loaded. Payment events determine how many chargeable nights have already been paid.
+Standard reservations derive payment amounts from the current nightly rates and payment history instead of displaying a running dollar balance throughout the site. The UI reports paid stay nights and nights left to pay, then hides that progress once every stay night is covered. Exact dollar amounts remain available only inside payment collection screens.
 
 Every seventh consecutive night is free: six paid nights earn the seventh night free. The consecutive-night count continues when a guest switches sites without a date gap and resets when there is a gap. Manual-total, monthly, and yearly billing keep their separate billing behavior. This calculation uses the existing payment-event history and does not require another SQL migration.
 
@@ -95,9 +95,12 @@ For safe local testing, create a Terminal location in the Stripe sandbox, then r
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_TERMINAL_READER_ID=tmr_your_simulated_reader
 STRIPE_TERMINAL_SIMULATOR_ENABLED=true
+STRIPE_MOTO_ENABLED=false
 ```
 
 With simulator mode enabled, the server automatically presents Stripe's default test card after sending each server-driven Terminal payment. The admin page identifies the reader as a test simulator, and no real card is charged. Never enable simulator mode with a live secret key; the server rejects that configuration. Set `STRIPE_TERMINAL_SIMULATOR_ENABLED=false` and use the physical reader's live `tmr_` ID in production.
+
+Phone orders use Stripe Terminal MOTO and are disabled by default. Ask Stripe Support to approve MOTO for the account before setting `STRIPE_MOTO_ENABLED=true`. Prefer a secure guest payment link whenever the caller can open one; manually entered MOTO payments have higher fraud and dispute risk.
 
 Enable both Cards and ACH Direct Debit (`us_bank_account`) in the Stripe Dashboard. The webhook endpoint must receive `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, and `checkout.session.expired` events. ACH payments can remain processing after the guest returns to the site, so the reservation is created only after `checkout.session.async_payment_succeeded`.
 
@@ -117,6 +120,7 @@ Required values:
 - `STRIPE_WEBHOOK_SECRET`
 - `STRIPE_TERMINAL_READER_ID` (optional when the account has exactly one physical reader)
 - `STRIPE_TERMINAL_SIMULATOR_ENABLED` (`true` only for a sandbox simulated reader)
+- `STRIPE_MOTO_ENABLED` (`true` only after Stripe approves MOTO on the account)
 - `SENDGRID_API_KEY`
 - `SENDGRID_FROM_EMAIL`
 - `SENDGRID_FROM_NAME`
@@ -187,6 +191,7 @@ Your Postgres already lives on Railway, so the main task is connecting a backend
    - `STRIPE_SECRET_KEY`
    - `STRIPE_WEBHOOK_SECRET`
    - `STRIPE_TERMINAL_READER_ID`
+   - `STRIPE_MOTO_ENABLED` (`true` only after Stripe approves MOTO)
    - `SENDGRID_API_KEY`
    - `SENDGRID_FROM_EMAIL`
    - `SENDGRID_FROM_NAME`

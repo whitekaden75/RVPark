@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const parkRules = [
   "This property is privately owned. Management reserves the right to refuse service to anyone and is not responsible for accidents, injuries, or loss of money or valuables of any kind.",
@@ -39,6 +39,43 @@ function formatCurrency(value) {
     style: "currency",
     currency: "USD",
   }).format(amount);
+}
+
+function getNightPaymentProgress(reservation) {
+  const total = Number(
+    reservation?.totalStayNights ??
+      reservation?.totals?.numberOfNights ??
+      reservation?.totalChargeableNights
+  );
+  const hasChargeableProgress =
+    reservation?.paidChargeableNights !== null &&
+    reservation?.paidChargeableNights !== undefined &&
+    reservation?.totalChargeableNights !== null &&
+    reservation?.totalChargeableNights !== undefined;
+  const hasPaidStayProgress =
+    reservation?.paidStayNights !== null &&
+    reservation?.paidStayNights !== undefined;
+
+  if (!hasPaidStayProgress && !hasChargeableProgress) return null;
+
+  const paidChargeableNights = Number(reservation?.paidChargeableNights);
+  const totalChargeableNights = Number(reservation?.totalChargeableNights);
+  const paid = Number(
+    reservation?.paidStayNights ??
+      (hasChargeableProgress &&
+      Number.isFinite(paidChargeableNights) &&
+      Number.isFinite(totalChargeableNights) &&
+      paidChargeableNights >= totalChargeableNights
+        ? total
+        : paidChargeableNights)
+  );
+
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(paid)) {
+    return null;
+  }
+
+  const safePaid = Math.min(Math.max(paid, 0), total);
+  return { total, paid: safePaid, unpaid: Math.max(total - safePaid, 0) };
 }
 
 function getCheckInCardBalance(reservation) {
@@ -224,6 +261,7 @@ export default function CheckInPage({
   onRecordOfficePayment,
   onRetryTerminal,
   onCancelTerminal,
+  onActiveReservationChange,
 }) {
   const [activeReservationId, setActiveReservationId] = useState(null);
   const [form, setForm] = useState(null);
@@ -277,6 +315,12 @@ export default function CheckInPage({
   const activeReservation = reservations.find(
     (reservation) => reservation.id === activeReservationId
   );
+
+  useEffect(() => {
+    onActiveReservationChange?.(activeReservationId);
+
+    return () => onActiveReservationChange?.(null);
+  }, [activeReservationId, onActiveReservationChange]);
 
   async function beginCheckIn(reservation) {
     setErrorMessage("");
@@ -353,8 +397,18 @@ export default function CheckInPage({
       const standardBalance = getCheckInBankBalance(activeReservation);
       const cardBalance = getCheckInCardBalance(activeReservation);
       const selectedBalance = cardBalance;
+      const nightProgress = getNightPaymentProgress(activeReservation);
+      const paymentIsDue = nightProgress
+        ? nightProgress.unpaid > 0
+        : selectedBalance > 0;
 
-      if (selectedBalance > 0) {
+      if (paymentIsDue && selectedBalance <= 0) {
+        throw new Error(
+          "The nightly payment amount is not available. Open the reservation and check its nightly rate."
+        );
+      }
+
+      if (paymentIsDue) {
         const result = await onSendToTerminal(
           activeReservation,
           form,
@@ -393,14 +447,20 @@ export default function CheckInPage({
     const arrivalStay = getArrivalStay(activeReservation, today) || activeReservation.siteStays?.[0];
     const standardBalance = getCheckInBankBalance(activeReservation);
     const cardBalance = getCheckInCardBalance(activeReservation);
-    const hasBalance = standardBalance > 0 || cardBalance > 0;
+    const nightProgress = getNightPaymentProgress(activeReservation);
+    const hasBalance = nightProgress
+      ? nightProgress.unpaid > 0
+      : standardBalance > 0 || cardBalance > 0;
     const activeTerminalPayment =
       terminalPayment?.reservationId === activeReservation.id
         ? terminalPayment
         : null;
     const terminalInProgress = activeTerminalPayment?.status === "in_progress";
+    const terminalFinalizing = activeTerminalPayment?.status === "finalizing";
     const terminalFailed = activeTerminalPayment?.status === "failed";
-    const terminalBusy = terminalPayment?.status === "in_progress";
+    const terminalBusy = ["in_progress", "finalizing"].includes(
+      terminalPayment?.status
+    );
     const readerOnline = terminalReader?.status === "online";
 
     return (
@@ -459,16 +519,26 @@ export default function CheckInPage({
               </div>
             </div>
             <div className="checkin-terminal-balance">
-              <span>Cash/check balance</span>
-              <strong>{formatCurrency(standardBalance)}</strong>
-              <span>Terminal card balance</span>
-              <strong>{formatCurrency(cardBalance)}</strong>
+              <span>Nights paid</span>
+              <strong>
+                {nightProgress
+                  ? `${nightProgress.paid} of ${nightProgress.total}`
+                  : "Not set"}
+              </strong>
+              {nightProgress?.unpaid > 0 ? (
+                <>
+                  <span>Nights left</span>
+                  <strong>{nightProgress.unpaid}</strong>
+                </>
+              ) : null}
             </div>
             {activeTerminalPayment ? (
               <div className={`checkin-terminal-progress ${activeTerminalPayment.status}`}>
                 <strong>
                   {activeTerminalPayment.status === "succeeded"
                     ? "Payment approved"
+                    : terminalFinalizing
+                      ? "Payment approved — saving check-in"
                     : terminalFailed
                       ? "Payment needs attention"
                       : activeTerminalPayment.status === "canceled"
@@ -581,6 +651,8 @@ export default function CheckInPage({
                     ? "Sending…"
                     : terminalInProgress
                       ? "Waiting for payment…"
+                      : terminalFinalizing
+                        ? "Saving check-in…"
                       : terminalBusy
                         ? "Terminal is busy"
                         : `Pay by card ${formatCurrency(cardBalance)}`}

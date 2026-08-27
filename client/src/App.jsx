@@ -28,6 +28,7 @@ const apiBaseUrl = (
 const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
 const lastBookedSiteStorageKey = "rvpark-last-booked-site";
 const guestAccessTokenStorageKey = "rvpark-guest-access-token";
+const pendingTerminalWorkflowStorageKey = "rvpark-pending-terminal-workflow";
 const adminClientId =
   typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
@@ -48,6 +49,29 @@ const cardElementOptions = {
 };
 
 let cachedStripePromise = null;
+
+function readPendingTerminalWorkflow() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const workflow = JSON.parse(
+      window.localStorage.getItem(pendingTerminalWorkflowStorageKey) || "null"
+    );
+    const payment = workflow?.payment;
+
+    if (
+      !payment?.paymentIntentId ||
+      !Number(payment.reservationId) ||
+      ["succeeded", "canceled"].includes(payment.status)
+    ) {
+      return null;
+    }
+
+    return workflow;
+  } catch {
+    return null;
+  }
+}
 
 function getStripePromise() {
   if (!stripePublishableKey) {
@@ -628,6 +652,85 @@ function formatSelectedPaymentMethod(value) {
   return value === "card" ? "Card" : "Cash / check";
 }
 
+function getNightPaymentProgress(reservation) {
+  const total = Number(
+    reservation?.totalStayNights ??
+      reservation?.totals?.numberOfNights ??
+      reservation?.totalChargeableNights
+  );
+  const hasChargeableProgress =
+    reservation?.paidChargeableNights !== null &&
+    reservation?.paidChargeableNights !== undefined &&
+    reservation?.totalChargeableNights !== null &&
+    reservation?.totalChargeableNights !== undefined;
+  const hasPaidStayProgress =
+    reservation?.paidStayNights !== null &&
+    reservation?.paidStayNights !== undefined;
+
+  if (!hasPaidStayProgress && !hasChargeableProgress) return null;
+
+  const paidChargeableNights = Number(reservation?.paidChargeableNights);
+  const totalChargeableNights = Number(reservation?.totalChargeableNights);
+  const paid = Number(
+    reservation?.paidStayNights ??
+      (hasChargeableProgress &&
+      Number.isFinite(paidChargeableNights) &&
+      Number.isFinite(totalChargeableNights) &&
+      paidChargeableNights >= totalChargeableNights
+        ? total
+        : paidChargeableNights)
+  );
+
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(paid)) {
+    return null;
+  }
+
+  const safePaid = Math.min(Math.max(paid, 0), total);
+  return {
+    total,
+    paid: safePaid,
+    unpaid: Math.max(total - safePaid, 0),
+  };
+}
+
+function NightPaymentStatus({ reservation, className = "" }) {
+  const progress = getNightPaymentProgress(reservation);
+
+  if (!progress || progress.unpaid <= 0) return null;
+
+  return (
+    <div className={`night-payment-status ${className}`.trim()}>
+      <strong>
+        {progress.paid} of {progress.total} nights paid
+      </strong>
+      <span>
+        {progress.unpaid} {progress.unpaid === 1 ? "night" : "nights"} left to
+        pay
+      </span>
+    </div>
+  );
+}
+
+function formatNightPaymentSummary(reservation) {
+  const progress = getNightPaymentProgress(reservation);
+
+  return progress?.unpaid > 0
+    ? ` • ${progress.paid} of ${progress.total} nights paid`
+    : "";
+}
+
+function hasPaymentDueForReservation(reservation) {
+  const progress = getNightPaymentProgress(reservation);
+
+  if (progress) return progress.unpaid > 0;
+
+  return (
+    Number(
+      reservation?.bankRemainingBalance ?? reservation?.remainingBalance ?? 0
+    ) > 0 || Number(reservation?.cardRemainingBalance || 0) > 0
+  );
+}
+
 function BookingPriceComparison({
   title,
   bankPrice,
@@ -964,7 +1067,7 @@ function buildReservationConfirmationText(reservation, paymentLink) {
     "",
     "Deposit",
     "Non Refundable",
-    "A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. (No Debit cards.) You may write a check or pay cash for the arrival balance.",
+    "A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. (No Debit cards.) You may pay for unpaid nights by check or cash upon arrival.",
     `Deposit amount: ${depositAmount}`,
     "",
     ...(siteStays.length
@@ -1038,13 +1141,7 @@ function buildArrivalReminderText(reservation, arrivalDate) {
     ) ||
     reservation.siteStays?.[0] ||
     null;
-  const balanceAmount = Number(reservation.remainingBalance || 0);
-  const formattedBalance = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: Number.isInteger(balanceAmount) ? 0 : 2,
-    maximumFractionDigits: 2,
-  }).format(balanceAmount);
+  const nightProgress = getNightPaymentProgress(reservation);
 
   return [
     "Riverpark RV Resort",
@@ -1067,7 +1164,13 @@ function buildArrivalReminderText(reservation, arrivalDate) {
         : "Not set"
     }`,
     "Check-in: 1:00 PM",
-    `Balance Due: ${formattedBalance}`,
+    ...(nightProgress?.unpaid > 0
+      ? [
+          `${nightProgress.unpaid} ${
+            nightProgress.unpaid === 1 ? "night remains" : "nights remain"
+          } to be paid`,
+        ]
+      : []),
     "",
     "Payment Information",
     "We do not accept debit cards.",
@@ -1961,7 +2064,7 @@ function PublicTermsAndConditions() {
           </p>
           <p>
             Bank and card payments have separate displayed daily prices. Debit
-            cards are not accepted. The remaining balance may also be paid by
+            cards are not accepted. Unpaid nights may also be paid by
             check or cash upon arrival.
           </p>
         </section>
@@ -2028,7 +2131,7 @@ function PublicTermsAndConditions() {
           <p>
             Guests may separately choose to receive text messages from
             Riverpark RV Resort. Messages may include reservation
-            confirmations, arrival and check-in reminders, balance reminders,
+            confirmations, arrival and check-in reminders, payment reminders,
             reservation changes, cancellation notices, responses to guest
             questions, and park-wide operational updates or alerts such as
             weather, safety, closure, or utility notices.
@@ -2255,13 +2358,13 @@ function PublicPaymentPage({ token }) {
           Riverpark RV Resort
         </a>
         <p className="eyebrow">Secure reservation payment</p>
-        <h1>Pay your remaining balance</h1>
+        <h1>Pay for your stay</h1>
 
         {returnStatus === "success" ? (
           <div className="message success public-payment-message">
             {returnPaymentChoice === "bank"
               ? "Your bank payment was submitted. It may take several business days to be confirmed."
-              : "Your card payment was submitted. Your balance will update when it is confirmed."}
+              : "Your card payment was submitted. Your paid-night count will update when it is confirmed."}
           </div>
         ) : null}
         {returnStatus === "cancel" ? (
@@ -2276,7 +2379,7 @@ function PublicPaymentPage({ token }) {
         ) : null}
 
         {isLoading ? (
-          <p className="muted">Loading your reservation balance...</p>
+          <p className="muted">Loading your reservation payment...</p>
         ) : paymentDetails ? (
           <>
             <div className="public-payment-reservation">
@@ -2299,15 +2402,12 @@ function PublicPaymentPage({ token }) {
                   </strong>
                 </div>
               ))}
-              <div>
-                <span>Already paid</span>
-                <strong>{formatCurrency(paymentDetails.amountPaid)}</strong>
-              </div>
+              <NightPaymentStatus reservation={paymentDetails} />
             </div>
 
             {paymentDetails.paymentComplete ? (
               <div className="public-payment-complete">
-                <strong>Your reservation balance is paid.</strong>
+                <strong>Your stay is paid in full.</strong>
                 <span>No additional payment is due.</span>
               </div>
             ) : (
@@ -2323,7 +2423,7 @@ function PublicPaymentPage({ token }) {
                       {formatCurrency(paymentDetails.bankAmount)}
                     </strong>
                     <p>
-                      Pay the remaining balance from a bank account. Bank
+                      Pay for the unpaid nights from a bank account. Bank
                       payments may take several business days to confirm.
                     </p>
                     <button
@@ -2363,7 +2463,7 @@ function PublicPaymentPage({ token }) {
         ) : null}
 
         <p className="public-payment-help">
-          Questions about your balance? Call Riverpark RV Resort at{" "}
+          Questions about your payment? Call Riverpark RV Resort at{" "}
           <a href="tel:+15412951269">(541) 295-1269</a>.
         </p>
       </section>
@@ -4060,7 +4160,7 @@ function GuestPortal({ onBackHome }) {
     setSuccessMessage("Your card payment was received.");
     await loadGuestReservations({ showLoading: false });
     setSuccessMessage(
-      "Your card payment was received and your balance has been updated."
+      "Your card payment was received and the paid-night count was updated."
     );
   }
 
@@ -4369,28 +4469,11 @@ function GuestPortal({ onBackHome }) {
                   <small>Check-out 11:00 AM</small>
                 </div>
               </div>
-              <div className="guest-balance-panel">
-                <BookingPriceComparison
-                  title="Price per night"
-                  bankPrice={activeReservation.bankDailyPrice}
-                  cardPrice={activeReservation.cardDailyPrice}
-                />
-                <BookingPriceComparison
-                  title="Unpaid nights"
-                  bankPrice={
-                    activeReservation.bankRemainingBalance ??
-                    activeReservation.remainingBalance
-                  }
-                  cardPrice={
-                    activeReservation.cardRemainingBalance ??
-                    activeReservation.remainingBalance
-                  }
-                />
-                <div className="guest-paid-summary">
-                  <span>Paid</span>
-                  <strong>{formatCurrency(activeReservation.amountPaid)}</strong>
+              {getNightPaymentProgress(activeReservation)?.unpaid > 0 ? (
+                <div className="guest-balance-panel">
+                  <NightPaymentStatus reservation={activeReservation} />
                 </div>
-              </div>
+              ) : null}
               <p className="guest-reservation-meta">
                 {activeReservation.rv_kind} ·{" "}
                 {activeReservation.rig_length_feet || "No size"} ft
@@ -4407,18 +4490,15 @@ function GuestPortal({ onBackHome }) {
               ) : null}
             </section>
 
-            {activeReservation.status !== "canceled" ? (
+            {activeReservation.status !== "canceled" &&
+            hasPaymentDueForReservation(activeReservation) ? (
               <section className="guest-payment-card">
               <p className="eyebrow light">Secure payment</p>
               <h2>Pay toward your stay</h2>
-              {Number(
-                activeReservation.bankRemainingBalance ??
-                  activeReservation.remainingBalance ??
-                  0
-              ) > 0 || Number(activeReservation.cardRemainingBalance || 0) > 0 ? (
+              {hasPaymentDueForReservation(activeReservation) ? (
                 <>
                   <BookingPriceComparison
-                    title="Remaining payment options"
+                    title="Payment for unpaid nights"
                     bankPrice={
                       activeReservation.bankRemainingBalance ??
                       activeReservation.remainingBalance
@@ -4494,9 +4574,6 @@ function GuestPortal({ onBackHome }) {
               ) : (
                 <div className="guest-paid-state">
                   <strong>Paid in full</strong>
-                  <span>
-                    There is no remaining balance on this reservation.
-                  </span>
                 </div>
               )}
               {activeReservation.paymentEvents.length ? (
@@ -5194,6 +5271,8 @@ function TerminalPaymentPanel({
         <div className="terminal-payment-progress">
           {activePayment.status === "in_progress" ? (
             <span className="terminal-payment-spinner" aria-hidden="true" />
+          ) : activePayment.status === "finalizing" ? (
+            <span className="terminal-payment-spinner" aria-hidden="true" />
           ) : (
             <span className="terminal-payment-result" aria-hidden="true">
               {activePayment.status === "succeeded" ? "✓" : "!"}
@@ -5203,6 +5282,8 @@ function TerminalPaymentPanel({
             <strong>
               {activePayment.status === "succeeded"
                 ? "Payment approved"
+                : activePayment.status === "finalizing"
+                  ? "Payment approved — saving check-in"
                 : activePayment.status === "failed"
                   ? "Payment needs attention"
                   : activePayment.status === "canceled"
@@ -5227,6 +5308,50 @@ function TerminalPaymentPanel({
       ) : null}
       {errorMessage ? <div className="message error">{errorMessage}</div> : null}
     </div>
+  );
+}
+
+function FloatingTerminalPayment({
+  reader,
+  payment,
+  errorMessage,
+  onRetry,
+  onCancel,
+  onDismiss,
+}) {
+  if (!payment) return null;
+
+  const canDismiss = !["in_progress", "finalizing"].includes(payment.status);
+
+  return (
+    <aside
+      className={`terminal-floating-status ${payment.status || ""}`}
+      aria-label="Active card reader transaction"
+      aria-live="polite">
+      <div className="terminal-floating-heading">
+        <div>
+          <strong>Card reader transaction</strong>
+          <span>Reservation #{payment.reservationId}</span>
+        </div>
+        {canDismiss ? (
+          <button
+            type="button"
+            className="terminal-floating-dismiss"
+            aria-label="Dismiss terminal status"
+            onClick={onDismiss}>
+            ×
+          </button>
+        ) : null}
+      </div>
+      <TerminalPaymentPanel
+        reader={reader}
+        payment={payment}
+        reservationId={payment.reservationId}
+        errorMessage={errorMessage}
+        onRetry={onRetry}
+        onCancel={onCancel}
+      />
+    </aside>
   );
 }
 
@@ -5393,8 +5518,12 @@ export default function App() {
   const [schedulePaymentSuccessMessage, setSchedulePaymentSuccessMessage] =
     useState("");
   const [terminalReader, setTerminalReader] = useState(null);
-  const [terminalPayment, setTerminalPayment] = useState(null);
+  const [terminalPayment, setTerminalPayment] = useState(
+    () => readPendingTerminalWorkflow()?.payment || null
+  );
   const [terminalPaymentError, setTerminalPaymentError] = useState("");
+  const [activeCheckInReservationId, setActiveCheckInReservationId] =
+    useState(null);
   const [startingTerminalReservationId, setStartingTerminalReservationId] =
     useState(null);
   const [isPreparingCreatedTerminalPayment, setIsPreparingCreatedTerminalPayment] =
@@ -5425,7 +5554,32 @@ export default function App() {
   const customersRequestRef = useRef(null);
   const reservationsRequestRef = useRef(null);
   const liveRefreshTimeoutRef = useRef(null);
-  const pendingTerminalCheckInRef = useRef(null);
+  const pendingTerminalCheckInRef = useRef(
+    readPendingTerminalWorkflow()?.pendingCheckIn || null
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      if (
+        terminalPayment?.paymentIntentId &&
+        !["succeeded", "canceled"].includes(terminalPayment.status)
+      ) {
+        window.localStorage.setItem(
+          pendingTerminalWorkflowStorageKey,
+          JSON.stringify({
+            payment: terminalPayment,
+            pendingCheckIn: pendingTerminalCheckInRef.current,
+          })
+        );
+      } else {
+        window.localStorage.removeItem(pendingTerminalWorkflowStorageKey);
+      }
+    } catch {
+      // In-app navigation remains safe even if browser storage is unavailable.
+    }
+  }, [terminalPayment]);
 
   useEffect(() => {
     if (!stripeReturnState.paymentStatus) {
@@ -5743,6 +5897,7 @@ export default function App() {
     const paymentIntentId = terminalPayment?.paymentIntentId;
 
     if (
+      !isUnlocked ||
       !paymentIntentId ||
       ["succeeded", "canceled"].includes(terminalPayment.status)
     ) {
@@ -5772,25 +5927,33 @@ export default function App() {
             "Payment approved and recorded on the reservation.";
 
           if (pendingCheckIn?.reservationId === updatedReservation.id) {
-            pendingTerminalCheckInRef.current = null;
-
             try {
               completedReservation = await submitReservationCheckIn(
                 updatedReservation,
                 pendingCheckIn.form,
                 { paymentIntentId }
               );
+              pendingTerminalCheckInRef.current = null;
               paymentSuccessMessage =
                 "Payment approved and the guest was checked in.";
             } catch (checkInError) {
               paymentSuccessMessage =
-                "Payment was approved, but the signed check-in could not be saved.";
+                "Payment was approved. Saving the signed check-in is still pending and will retry automatically.";
               setTerminalPaymentError(
                 `${paymentSuccessMessage} ${checkInError.message}`
               );
+              setTerminalPayment((current) => ({
+                ...current,
+                status: "finalizing",
+                message: paymentSuccessMessage,
+                canRetry: false,
+              }));
+              timeoutId = window.setTimeout(pollTerminalPayment, 3000);
+              return;
             }
           }
 
+          setTerminalPaymentError("");
           setTerminalPayment((current) => ({
             ...current,
             status: "succeeded",
@@ -5850,6 +6013,17 @@ export default function App() {
           return;
         }
 
+        if (result.paymentStatus === "canceled") {
+          pendingTerminalCheckInRef.current = null;
+          setTerminalPayment((current) => ({
+            ...current,
+            status: "canceled",
+            message: "Terminal payment canceled. No payment was recorded.",
+            canRetry: false,
+          }));
+          return;
+        }
+
         setTerminalPayment((current) => ({
           ...current,
           status: "in_progress",
@@ -5874,7 +6048,7 @@ export default function App() {
       isCancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [terminalPayment?.paymentIntentId, terminalPayment?.status]);
+  }, [isUnlocked, terminalPayment?.paymentIntentId, terminalPayment?.status]);
 
   useEffect(() => {
     if (!activeScheduleReservation) {
@@ -7881,7 +8055,7 @@ export default function App() {
 
     try {
       if (!reservation?.id || Number(reservation.remainingBalance || 0) <= 0) {
-        throw new Error("This reservation does not have a remaining balance.");
+        throw new Error("This reservation does not have any unpaid nights.");
       }
 
       const result = await apiRequest(
@@ -7935,7 +8109,7 @@ export default function App() {
       "",
       `Hello ${reservation.first_name || "Guest"},`,
       "",
-      "You can securely pay the remaining balance for your stay using the link below. Choose either bank account or credit card payment:",
+      "You can securely pay for the unpaid nights using the link below. Choose either bank account or credit card payment:",
       generatedPaymentLink.checkoutUrl,
       "",
       "Questions? Call (541) 295-1269.",
@@ -7963,7 +8137,8 @@ export default function App() {
   async function startTerminalPayment(
     reservation,
     amountValue,
-    priceTypeOverride = ""
+    priceTypeOverride = "",
+    { moto = false } = {}
   ) {
     setTerminalPaymentError("");
     setPaymentLinkErrorMessage("");
@@ -7984,6 +8159,7 @@ export default function App() {
           body: JSON.stringify({
             amount: amount.toFixed(2),
             priceType: priceTypeOverride || "card",
+            moto,
           }),
         }
       );
@@ -7994,6 +8170,7 @@ export default function App() {
         paymentIntentId: result.paymentIntentId,
         amount: result.amount,
         priceType: result.priceType,
+        moto: Boolean(result.moto ?? moto),
         status: "in_progress",
         message: result.message,
         canRetry: false,
@@ -8063,6 +8240,7 @@ export default function App() {
         `/stripe/terminal/payments/${terminalPayment.paymentIntentId}/cancel`,
         { method: "POST" }
       );
+      pendingTerminalCheckInRef.current = null;
       setTerminalPayment((current) => ({
         ...current,
         status: "canceled",
@@ -8398,7 +8576,7 @@ export default function App() {
     setIsSavingAdminEdit(true);
 
     try {
-      const updatedReservation = await apiRequest(
+      const savedReservation = await apiRequest(
         `/reservations/${activeScheduleReservation.id}`,
         {
           method: "PUT",
@@ -8455,6 +8633,9 @@ export default function App() {
           }),
         }
       );
+      const updatedReservation = await apiRequest(
+        `/reservations/${savedReservation.id}`
+      );
 
       setReservations((current) =>
         current.map((entry) =>
@@ -8462,6 +8643,7 @@ export default function App() {
         )
       );
       setActiveScheduleReservation(updatedReservation);
+      setSchedulePaymentForm(createSchedulePaymentForm(updatedReservation));
 
       if (createdReservation?.id === updatedReservation.id) {
         setCreatedReservation(updatedReservation);
@@ -9143,6 +9325,26 @@ export default function App() {
       ? new URLSearchParams(window.location.search).get("pay")
       : "";
 
+  const isTerminalSourceVisible = terminalPayment
+    ? (activePage === "checkin" &&
+        activeCheckInReservationId === terminalPayment.reservationId) ||
+      (activePage === "schedule" &&
+        activeScheduleReservation?.id === terminalPayment.reservationId) ||
+      (activePage === "reservation" &&
+        createdReservation?.id === terminalPayment.reservationId)
+    : false;
+  const floatingTerminalPayment =
+    terminalPayment && !isTerminalSourceVisible ? (
+      <FloatingTerminalPayment
+        reader={terminalReader}
+        payment={terminalPayment}
+        errorMessage={terminalPaymentError}
+        onRetry={retryTerminalPayment}
+        onCancel={cancelTerminalPayment}
+        onDismiss={() => setTerminalPayment(null)}
+      />
+    ) : null;
+
   if (publicPaymentToken) {
     return <PublicPaymentPage token={publicPaymentToken} />;
   }
@@ -9163,36 +9365,44 @@ export default function App() {
 
   if (activePage === "home") {
     return (
-      <PublicHome
-        searchForm={searchForm}
-        onSearchChange={updateSearchField}
-        onSearch={handleAvailabilitySearch}
-        isCalendarOpen={isAvailabilityCalendarOpen}
-        onToggleCalendar={() =>
-          setIsAvailabilityCalendarOpen((current) => !current)
-        }
-        directMatches={directMatches}
-        flexibleMatches={flexibleMatches}
-        switchPlan={switchPlan}
-        availabilityRestriction={availabilityRestriction}
-        hasSearched={availabilityHasSearched}
-        isSearching={isSearchingAvailability}
-        errorMessage={errorMessage}
-        onOpenGuest={() => {
-          setActivePage("guest");
-          window.scrollTo({ top: 0, behavior: "smooth" });
-        }}
-        onOpenAdmin={() => {
-          setErrorMessage("");
-          setActivePage("availability");
-          window.scrollTo({ top: 0, behavior: "smooth" });
-        }}
-      />
+      <>
+        <PublicHome
+          searchForm={searchForm}
+          onSearchChange={updateSearchField}
+          onSearch={handleAvailabilitySearch}
+          isCalendarOpen={isAvailabilityCalendarOpen}
+          onToggleCalendar={() =>
+            setIsAvailabilityCalendarOpen((current) => !current)
+          }
+          directMatches={directMatches}
+          flexibleMatches={flexibleMatches}
+          switchPlan={switchPlan}
+          availabilityRestriction={availabilityRestriction}
+          hasSearched={availabilityHasSearched}
+          isSearching={isSearchingAvailability}
+          errorMessage={errorMessage}
+          onOpenGuest={() => {
+            setActivePage("guest");
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+          onOpenAdmin={() => {
+            setErrorMessage("");
+            setActivePage("availability");
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        />
+        {isUnlocked ? floatingTerminalPayment : null}
+      </>
     );
   }
 
   if (activePage === "guest") {
-    return <GuestPortal onBackHome={() => setActivePage("home")} />;
+    return (
+      <>
+        <GuestPortal onBackHome={() => setActivePage("home")} />
+        {isUnlocked ? floatingTerminalPayment : null}
+      </>
+    );
   }
 
   if (!isUnlocked) {
@@ -9407,6 +9617,7 @@ export default function App() {
           {successMessage}
         </Alert>
       ) : null}
+      {floatingTerminalPayment}
 
       <main className="layout">
         {activePage === "checkin" ? (
@@ -9424,6 +9635,7 @@ export default function App() {
             onRecordOfficePayment={recordCashCheckPayment}
             onRetryTerminal={retryTerminalPayment}
             onCancelTerminal={cancelTerminalPayment}
+            onActiveReservationChange={setActiveCheckInReservationId}
           />
         ) : null}
         {activePage === "availability" ? (
@@ -10212,9 +10424,9 @@ export default function App() {
                       need a price entered through payment info after booking.
                     </p>
                     <BookingPriceComparison
-                      title="Unpaid nights"
-                      bankPrice={previewBankRemainingBalance}
-                      cardPrice={previewCardRemainingBalance}
+                      title="Price per night"
+                      bankPrice={reservationDailyPricing?.bankNightlyPrices?.[0]}
+                      cardPrice={reservationDailyPricing?.cardNightlyPrices?.[0]}
                       bankLabel="Cash / check"
                     />
                     <BookingPriceComparison
@@ -10232,18 +10444,10 @@ export default function App() {
                         Selected: {formatSelectedPaymentMethod(reservationForm.paymentMethod)}
                       </span>
                       <span>
-                        Chargeable nights: {reservationDailyPricing?.chargeableNights ?? "Not set"}
+                        Stay length: {reservationNightCount || "Not set"} nights
                       </span>
                       <span>
                         Deposit due: {formatCurrency(reservationForm.depositAmount || null)}
-                      </span>
-                      <span>
-                        Unpaid-night balance:{" "}
-                        {formatCurrency(
-                          reservationForm.paymentMethod === "card"
-                            ? previewCardRemainingBalance
-                            : previewBankRemainingBalance
-                        )}
                       </span>
                     </div>
                   </div>
@@ -10385,30 +10589,7 @@ export default function App() {
                             {formatReservationStatus(createdReservation.status)}
                           </strong>
                         </div>
-                        <div className="payment-summary-row">
-                          <span>Amount paid</span>
-                          <strong>
-                            {formatCurrency(createdReservation.amountPaid)}
-                          </strong>
-                        </div>
-                        <div className="payment-summary-row">
-                          <span>Cash/check balance</span>
-                          <strong>
-                            {formatCurrency(
-                              createdReservation.bankRemainingBalance ??
-                                createdReservation.remainingBalance
-                            )}
-                          </strong>
-                        </div>
-                        <div className="payment-summary-row">
-                          <span>Card balance</span>
-                          <strong>
-                            {formatCurrency(
-                              createdReservation.cardRemainingBalance ??
-                                createdReservation.remainingBalance
-                            )}
-                          </strong>
-                        </div>
+                        <NightPaymentStatus reservation={createdReservation} />
                       </div>
                     </div>
                     <div className="button-row created-payment-actions">
@@ -10471,7 +10652,9 @@ export default function App() {
                           terminalReader?.status !== "online" ||
                           (terminalPayment?.reservationId ===
                             createdReservation.id &&
-                            terminalPayment.status === "in_progress")
+                            ["in_progress", "finalizing"].includes(
+                              terminalPayment.status
+                            ))
                         }
                         onClick={() =>
                           startTerminalPayment(
@@ -10490,13 +10673,55 @@ export default function App() {
                               ? "Loading card deposit…"
                           : terminalPayment?.reservationId ===
                                 createdReservation.id &&
-                              terminalPayment.status === "in_progress"
+                              ["in_progress", "finalizing"].includes(
+                                terminalPayment.status
+                              )
                             ? "Card deposit sent to terminal"
                             : `Send card price ${formatCurrency(
                                 reservationCardPaymentAmount
                               )} to terminal`}
                       </button>
+                      {terminalReader?.motoEnabled ? (
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          disabled={
+                            isPreparingCreatedTerminalPayment ||
+                            startingTerminalReservationId ===
+                              createdReservation.id ||
+                            Number(reservationCardPaymentAmount || 0) <= 0 ||
+                            terminalReader?.status !== "online" ||
+                            (terminalPayment?.reservationId ===
+                              createdReservation.id &&
+                              ["in_progress", "finalizing"].includes(
+                                terminalPayment.status
+                              ))
+                          }
+                          onClick={() =>
+                            startTerminalPayment(
+                              createdReservation,
+                              reservationCardPaymentAmount,
+                              "card",
+                              { moto: true }
+                            )
+                          }>
+                          Collect card over phone
+                        </button>
+                      ) : null}
                     </div>
+                    {terminalReader?.motoEnabled ? (
+                      <p className="muted">
+                        Phone payments use Stripe MOTO. The office reader will
+                        prompt you to enter the caller’s card number, CVC,
+                        expiration date, and postal code.
+                      </p>
+                    ) : (
+                      <p className="muted">
+                        Phone card entry stays disabled until Stripe approves
+                        MOTO for this account. Use the secure payment link when
+                        possible.
+                      </p>
+                    )}
                     {generatedPaymentLink?.reservationId ===
                     createdReservation.id ? (
                       <div className="generated-payment-link-card">
@@ -10752,11 +10977,7 @@ export default function App() {
                             {reservation.rig_length_feet
                               ? ` • ${reservation.rig_length_feet} ft rig`
                               : ""}
-                            {` • Paid ${formatCurrency(
-                              reservation.amountPaid
-                            )} • Balance ${formatCurrency(
-                              reservation.remainingBalance
-                            )}`}
+                            {formatNightPaymentSummary(reservation)}
                           </p>
                           <ol className="timeline-list">
                             {reservation.siteStays.map((segment) => (
@@ -10877,11 +11098,7 @@ export default function App() {
                                 {reservation.rig_length_feet
                                   ? ` • ${reservation.rig_length_feet} ft rig`
                                   : ""}
-                                {` • Paid ${formatCurrency(
-                                  reservation.amountPaid
-                                )} • Balance ${formatCurrency(
-                                  reservation.remainingBalance
-                                )}`}
+                                {formatNightPaymentSummary(reservation)}
                               </p>
                               {reservation.notes?.trim() ? (
                                 <button
@@ -11019,11 +11236,7 @@ export default function App() {
                                 {reservation.rig_length_feet
                                   ? ` • ${reservation.rig_length_feet} ft rig`
                                   : ""}
-                                {` • Paid ${formatCurrency(
-                                  reservation.amountPaid
-                                )} • Balance ${formatCurrency(
-                                  reservation.remainingBalance
-                                )}`}
+                                {formatNightPaymentSummary(reservation)}
                               </p>
                               {reservation.notes?.trim() ? (
                                 <button
@@ -11156,11 +11369,7 @@ export default function App() {
                                 {reservation.rig_length_feet
                                   ? ` • ${reservation.rig_length_feet} ft rig`
                                   : ""}
-                                {` • Paid ${formatCurrency(
-                                  reservation.amountPaid
-                                )} • Balance ${formatCurrency(
-                                  reservation.remainingBalance
-                                )}`}
+                                {formatNightPaymentSummary(reservation)}
                               </p>
                               {reservation.notes?.trim() ? (
                                 <button
@@ -11400,7 +11609,6 @@ export default function App() {
                             : ""}{" "}
                           •{" "}
                           {formatReservationTerm(reservation.reservation_term)}{" "}
-                          • Amount paid {formatCurrency(reservation.amountPaid)}
                         </p>
                         <div className="pricing-summary">
                           <span>
@@ -11417,24 +11625,7 @@ export default function App() {
                             Deposit amount:{" "}
                             {formatCurrency(reservation.depositAmount)}
                           </span>
-                          <span>
-                            Unpaid chargeable nights:{" "}
-                            {reservation.unpaidChargeableNights ?? "Not set"}
-                          </span>
-                          <span>
-                            Bank balance:{" "}
-                            {formatCurrency(
-                              reservation.bankRemainingBalance ??
-                                reservation.remainingBalance
-                            )}
-                          </span>
-                          <span>
-                            Card balance:{" "}
-                            {formatCurrency(
-                              reservation.cardRemainingBalance ??
-                                reservation.remainingBalance
-                            )}
-                          </span>
+                          <NightPaymentStatus reservation={reservation} />
                         </div>
                         <ol className="timeline-list">
                           {reservation.siteStays.map((segment) => (
@@ -12609,24 +12800,7 @@ export default function App() {
                   Deposit amount:{" "}
                   {formatCurrency(activeScheduleReservation.depositAmount)}
                 </span>
-                <span>
-                  Unpaid chargeable nights:{" "}
-                  {activeScheduleReservation.unpaidChargeableNights ?? "Not set"}
-                </span>
-                <span>
-                  Bank balance:{" "}
-                  {formatCurrency(
-                    activeScheduleReservation.bankRemainingBalance ??
-                      activeScheduleReservation.remainingBalance
-                  )}
-                </span>
-                <span>
-                  Card balance:{" "}
-                  {formatCurrency(
-                    activeScheduleReservation.cardRemainingBalance ??
-                      activeScheduleReservation.remainingBalance
-                  )}
-                </span>
+                <NightPaymentStatus reservation={activeScheduleReservation} />
               </div>
               <ol className="timeline-list">
                 {(
@@ -12650,18 +12824,7 @@ export default function App() {
                   Deposit amount:{" "}
                   {formatCurrency(activeScheduleReservation.depositAmount)}
                 </span>
-                <span>
-                  Unpaid chargeable nights:{" "}
-                  {activeScheduleReservation.unpaidChargeableNights ?? "Not set"}
-                </span>
-                <span>
-                  Amount paid:{" "}
-                  {formatCurrency(activeScheduleReservation.amountPaid)}
-                </span>
-                <span>
-                  Selected unpaid-night balance:{" "}
-                  {formatCurrency(activeScheduleReservation.remainingBalance)}
-                </span>
+                <NightPaymentStatus reservation={activeScheduleReservation} />
               </div>
               {activeScheduleReservation.paymentEvents?.length ? (
                 <div className="timeline-card payment-history-card">
@@ -12699,19 +12862,14 @@ export default function App() {
                 <div className="payment-panel">
                   <div className="result-header">
                     <h3>Edit payment info</h3>
-                    <span className="balance-pill">
-                      Balance{" "}
-                      {formatCurrency(
-                        activeScheduleReservation.remainingBalance
-                      )}
-                    </span>
+                    <NightPaymentStatus reservation={activeScheduleReservation} />
                   </div>
                   <div className="payment-edit-sections">
                     <div className="timeline-card payment-edit-card">
                       <div className="result-header">
                         <h4>Reservation amounts</h4>
                         <span className="muted">
-                          Standard balances come from daily rates and payment
+                          Paid nights come from the nightly rates and payment
                           history.
                         </span>
                       </div>
@@ -12728,8 +12886,8 @@ export default function App() {
                         <span>
                           <strong>Guest qualifies for the discounted price</strong>
                           <small>
-                            Saving will update the daily stay price and remaining
-                            balance using this stay’s discount pricing.
+                            Saving will update the nightly price and paid-night
+                            count using this stay’s discount pricing.
                           </small>
                         </span>
                       </label>
@@ -12806,13 +12964,7 @@ export default function App() {
                     <div className="timeline-card payment-edit-card">
                       <div className="result-header">
                         <h4>Record cash or check payment</h4>
-                        <span className="muted">
-                          Cash/check balance:{" "}
-                          {formatCurrency(
-                            activeScheduleReservation.bankRemainingBalance ??
-                              activeScheduleReservation.remainingBalance
-                          )}
-                        </span>
+                        <NightPaymentStatus reservation={activeScheduleReservation} />
                       </div>
                       <div className="field-grid compact-grid">
                         <label>
@@ -12923,17 +13075,12 @@ export default function App() {
                   ) : null}
                 </div>
               ) : null}
-              {activeScheduleReservation.status !== "canceled" ? (
+              {activeScheduleReservation.status !== "canceled" &&
+              hasPaymentDueForReservation(activeScheduleReservation) ? (
                 <div className="payment-panel">
                   <div className="result-header">
                     <h3>Collect payment on terminal</h3>
-                    <span className="balance-pill">
-                      Card balance{" "}
-                      {formatCurrency(
-                        activeScheduleReservation.cardRemainingBalance ??
-                          activeScheduleReservation.remainingBalance
-                      )}
-                    </span>
+                    <NightPaymentStatus reservation={activeScheduleReservation} />
                   </div>
                   <div className="payment-grid">
                     <label>
@@ -12952,24 +13099,7 @@ export default function App() {
                       />
                     </label>
                     <div className="pricing-summary">
-                      <span>
-                        Cash/check balance:{" "}
-                        {formatCurrency(
-                          activeScheduleReservation.bankRemainingBalance ??
-                            activeScheduleReservation.remainingBalance
-                        )}
-                      </span>
-                      <span>
-                        Card balance:{" "}
-                        {formatCurrency(
-                          activeScheduleReservation.cardRemainingBalance ??
-                            activeScheduleReservation.remainingBalance
-                        )}
-                      </span>
-                      <span>
-                        Amount paid:{" "}
-                        {formatCurrency(activeScheduleReservation.amountPaid)}
-                      </span>
+                      <NightPaymentStatus reservation={activeScheduleReservation} />
                       <span>
                         Status:{" "}
                         {formatReservationStatus(
@@ -12996,7 +13126,9 @@ export default function App() {
                         Number(activeSchedulePaymentAmount || 0) <= 0 ||
                         (terminalPayment?.reservationId ===
                           activeScheduleReservation.id &&
-                          terminalPayment.status === "in_progress")
+                          ["in_progress", "finalizing"].includes(
+                            terminalPayment.status
+                          ))
                       }
                       onClick={() =>
                         startTerminalPayment(
@@ -13007,6 +13139,30 @@ export default function App() {
                       }>
                       Pay by card {formatCurrency(activeSchedulePaymentAmount)}
                     </button>
+                    {terminalReader?.motoEnabled ? (
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={
+                          terminalReader?.status !== "online" ||
+                          Number(activeSchedulePaymentAmount || 0) <= 0 ||
+                          (terminalPayment?.reservationId ===
+                            activeScheduleReservation.id &&
+                            ["in_progress", "finalizing"].includes(
+                              terminalPayment.status
+                            ))
+                        }
+                        onClick={() =>
+                          startTerminalPayment(
+                            activeScheduleReservation,
+                            activeSchedulePaymentAmount,
+                            "card",
+                            { moto: true }
+                          )
+                        }>
+                        Collect card over phone
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="primary-button"
@@ -13018,12 +13174,17 @@ export default function App() {
                       onClick={() =>
                         generatePaymentLink(
                           activeScheduleReservation,
-                          "Remaining-balance payment link"
+                          "Stay payment link"
                         )
                       }>
                       Generate payment link
                     </button>
                   </div>
+                  <p className="muted">
+                    {terminalReader?.motoEnabled
+                      ? "Phone payments use Stripe MOTO and are entered securely on the office reader."
+                      : "Phone card entry is disabled until Stripe approves MOTO for this account. Prefer the secure payment link."}
+                  </p>
                   {paymentLinkErrorMessage ? (
                     <div className="message error">
                       {paymentLinkErrorMessage}

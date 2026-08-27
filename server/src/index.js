@@ -27,6 +27,7 @@ const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
 const stripeTerminalReaderId = process.env.STRIPE_TERMINAL_READER_ID || "";
 const stripeTerminalSimulatorEnabled =
   process.env.STRIPE_TERMINAL_SIMULATOR_ENABLED === "true";
+const stripeMotoEnabled = process.env.STRIPE_MOTO_ENABLED === "true";
 const sendGridApiKey = process.env.SENDGRID_API_KEY || "";
 const sendGridFromEmail = process.env.SENDGRID_FROM_EMAIL || "";
 const sendGridFromName = process.env.SENDGRID_FROM_NAME || "Riverpark RV Resort";
@@ -787,7 +788,7 @@ function buildReservationConfirmationEmail(reservation) {
     `Phone: ${reservation.phone_number || "Not set"}`,
     "",
     "Deposit policy",
-    "The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. The remaining balance may also be paid by check or cash upon arrival.",
+    "The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. Unpaid nights may also be paid by check or cash upon arrival.",
     "",
     "Important information",
     ...importantInformation.map((item) => `- ${item}`),
@@ -864,7 +865,7 @@ function buildReservationConfirmationEmail(reservation) {
                 </table>
 
                 <h2 style="margin:0 0 10px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Deposit policy</h2>
-                <p style="margin:0 0 28px;color:#4b5b54;font-size:14px;line-height:1.7;">The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. The remaining balance may also be paid by check or cash upon arrival.</p>
+                <p style="margin:0 0 28px;color:#4b5b54;font-size:14px;line-height:1.7;">The deposit is non-refundable. A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. Unpaid nights may also be paid by check or cash upon arrival.</p>
 
                 <div style="height:1px;background:#e4d8c5;margin:0 0 27px;"></div>
                 <h2 style="margin:0 0 18px;color:#17372f;font-family:Georgia,'Times New Roman',serif;font-size:21px;font-weight:400;">Before you arrive</h2>
@@ -1758,6 +1759,21 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
   const unpaidChargeableNights = usesDailyNightBilling
     ? Math.max(totalChargeableNights - paidChargeableNights, 0)
     : null;
+  const totalStayNights = usesDailyNightBilling
+    ? Number(totals?.numberOfNights)
+    : null;
+  const paidStayNights = usesDailyNightBilling
+    ? Math.min(
+        Number(
+          totals?.coveredStayNightsByPaidNightCount?.[paidChargeableNights] ??
+            paidChargeableNights
+        ),
+        totalStayNights
+      )
+    : null;
+  const unpaidStayNights = usesDailyNightBilling
+    ? Math.max(totalStayNights - paidStayNights, 0)
+    : null;
   const bankDailyPrice = usesDailyNightBilling
     ? selectedBankNightlyPrices[paidChargeableNights] ?? 0
     : null;
@@ -1871,6 +1887,9 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
     paidChargeableNights,
     partialPaymentCredit,
     unpaidChargeableNights,
+    totalStayNights,
+    paidStayNights,
+    unpaidStayNights,
     effectiveTotalPrice,
     cardTotalPrice,
     remainingBalance,
@@ -1899,6 +1918,23 @@ function getRemainingBalancePaymentAmounts(reservation) {
     bankAmount,
     cardAmount
   };
+}
+
+function hasPaymentDueForReservation(reservation) {
+  const totalStayNights = Number(reservation?.totalStayNights);
+  const unpaidStayNights = Number(reservation?.unpaidStayNights);
+
+  if (
+    Number.isFinite(totalStayNights) &&
+    totalStayNights > 0 &&
+    Number.isFinite(unpaidStayNights)
+  ) {
+    return unpaidStayNights > 0;
+  }
+
+  const { bankAmount, cardAmount } =
+    getRemainingBalancePaymentAmounts(reservation);
+  return bankAmount > 0 || cardAmount > 0;
 }
 
 async function insertReservationPaymentEvent(
@@ -2041,6 +2077,7 @@ function serializeTerminalReader(reader) {
     status: reader.status || "offline",
     livemode: Boolean(reader.livemode),
     simulatorMode: stripeTerminalSimulatorEnabled,
+    motoEnabled: stripeMotoEnabled,
     action: reader.action
       ? {
           status: reader.action.status,
@@ -3211,6 +3248,7 @@ function sumReservationTotals(siteStays) {
   const discountNightlyPrices = [];
   const normalCardNightlyPrices = [];
   const discountCardNightlyPrices = [];
+  const coveredStayNightsByPaidNightCount = [0];
 
   for (const segment of siteStays) {
     const segmentNights = Number(segment.numberOfNights);
@@ -3229,6 +3267,7 @@ function sumReservationTotals(siteStays) {
         discountNightlyPrices: [],
         normalCardNightlyPrices: [],
         discountCardNightlyPrices: [],
+        coveredStayNightsByPaidNightCount: [],
         chargeableNights: null,
         numberOfNights: null
       };
@@ -3242,9 +3281,13 @@ function sumReservationTotals(siteStays) {
       consecutiveNight += 1;
       numberOfNights += 1;
 
-      if (consecutiveNight % 7 === 0) continue;
+      if (consecutiveNight % 7 === 0) {
+        coveredStayNightsByPaidNightCount[chargeableNights] = numberOfNights;
+        continue;
+      }
 
       chargeableNights += 1;
+      coveredStayNightsByPaidNightCount[chargeableNights] = numberOfNights;
       normalPrice =
         normalPrice !== null &&
         segment.normalDailyPrice !== null &&
@@ -3296,6 +3339,7 @@ function sumReservationTotals(siteStays) {
     discountNightlyPrices,
     normalCardNightlyPrices,
     discountCardNightlyPrices,
+    coveredStayNightsByPaidNightCount,
     chargeableNights,
     numberOfNights
   };
@@ -4375,6 +4419,9 @@ function sanitizeGuestReservation(reservation) {
     totalChargeableNights: reservation.totalChargeableNights,
     paidChargeableNights: reservation.paidChargeableNights,
     unpaidChargeableNights: reservation.unpaidChargeableNights,
+    totalStayNights: reservation.totalStayNights,
+    paidStayNights: reservation.paidStayNights,
+    unpaidStayNights: reservation.unpaidStayNights,
     remainingBalance: reservation.remainingBalance,
     bankRemainingBalance: reservation.bankRemainingBalance,
     cardRemainingBalance: reservation.cardRemainingBalance,
@@ -6333,9 +6380,12 @@ app.get("/api/guest/payment-links/:token", async (req, res) => {
       reservationId: reservation.id,
       guestName: `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim(),
       amountPaid: Number(reservation.amountPaid || 0),
+      totalStayNights: reservation.totalStayNights,
+      paidStayNights: reservation.paidStayNights,
+      unpaidStayNights: reservation.unpaidStayNights,
       bankAmount,
       cardAmount,
-      paymentComplete: bankAmount <= 0,
+      paymentComplete: !hasPaymentDueForReservation(reservation),
       siteStays: reservation.siteStays.map((stay) => ({
         siteNumber: stay.site_number,
         arrivalDate: stay.arrival_date,
@@ -6391,9 +6441,9 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
     const paymentAmount = paymentMethod === "card" ? cardAmount : bankAmount;
     const amountCents = toAmountCents(paymentAmount);
 
-    if (!amountCents) {
+    if (!hasPaymentDueForReservation(reservation) || !amountCents) {
       return res.status(400).json({
-        message: "This reservation does not have a remaining balance."
+        message: "This reservation does not have any unpaid nights."
       });
     }
 
@@ -6435,7 +6485,7 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
             currency: "usd",
             unit_amount: amountCents,
             product_data: {
-              name: "Riverpark RV Resort remaining balance",
+              name: "Riverpark RV Resort stay payment",
               description: `Reservation #${reservation.id} · Site ${
                 reservation.siteStays[0]?.site_number || "reservation"
               }`
@@ -6526,7 +6576,7 @@ app.post("/api/guest/reservations/:id/bank-checkouts", async (req, res) => {
     );
 
     if (!amountCents) {
-      return res.status(400).json({ message: "This reservation does not have a remaining balance." });
+      return res.status(400).json({ message: "This reservation does not have any unpaid nights." });
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -6630,12 +6680,12 @@ app.post("/api/guest/reservations/:id/payment-intents", async (req, res) => {
     const remainingBalanceCents = toAmountCents(reservation.cardRemainingBalance);
 
     if (!remainingBalanceCents) {
-      return res.status(400).json({ message: "This reservation does not have a remaining balance." });
+      return res.status(400).json({ message: "This reservation does not have any unpaid nights." });
     }
 
     if (amountCents > remainingBalanceCents) {
       return res.status(400).json({
-        message: "Payment amount cannot be greater than the current remaining balance."
+        message: "Payment amount cannot exceed the amount due for unpaid nights."
       });
     }
 
@@ -6738,9 +6788,16 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
   const reservationId = Number(req.params.id);
   const amountCents = toAmountCents(req.body?.amount);
   const priceType = "card";
+  const isMoto = Boolean(req.body?.moto);
 
   if (!reservationId || !amountCents) {
     return res.status(400).json({ message: "Reservation and payment amount are required." });
+  }
+
+  if (isMoto && !stripeMotoEnabled) {
+    return res.status(403).json({
+      message: "Phone card entry is disabled. Ask Stripe to enable MOTO for this account, then set STRIPE_MOTO_ENABLED=true on the server."
+    });
   }
 
   try {
@@ -6762,12 +6819,12 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
     );
 
     if (!maximumAmountCents) {
-      return res.status(400).json({ message: "This reservation does not have a remaining balance." });
+      return res.status(400).json({ message: "This reservation does not have any unpaid nights." });
     }
 
     if (amountCents > maximumAmountCents) {
       return res.status(400).json({
-        message: `Payment cannot exceed the ${priceType} balance.`
+        message: `Payment cannot exceed the ${priceType} amount due for unpaid nights.`
       });
     }
 
@@ -6788,7 +6845,7 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,
       currency: "usd",
-      payment_method_types: ["card_present"],
+      payment_method_types: [isMoto ? "card" : "card_present"],
       capture_method: "automatic",
       receipt_email: reservation.email || undefined,
       description: `Riverpark RV Resort reservation #${reservation.id}`,
@@ -6796,6 +6853,7 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
         reservation_id: String(reservation.id),
         payment_amount_cents: String(amountCents),
         payment_price_type: priceType,
+        payment_entry_mode: isMoto ? "moto" : "card_present",
         terminal_reader_id: reader.id,
         activate_reservation_on_payment: reservation.status === "pending" ? "true" : "false"
       }
@@ -6814,7 +6872,7 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
           stripe_customer_email,
           stripe_payment_method_type
         )
-        VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, 'card_present')
+        VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8)
       `,
       [
         reservation.id,
@@ -6823,17 +6881,23 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
         paymentIntent.currency || "usd",
         "processing",
         reservation.status === "pending",
-        reservation.email || null
+        reservation.email || null,
+        isMoto ? "card" : "card_present"
       ]
     );
 
     let updatedReader;
 
     try {
-      updatedReader = await stripe.terminal.readers.processPaymentIntent(reader.id, {
-        payment_intent: paymentIntent.id,
-        process_config: { enable_customer_cancellation: true }
-      });
+      updatedReader = await stripe.terminal.readers.processPaymentIntent(
+        reader.id,
+        {
+          payment_intent: paymentIntent.id,
+          process_config: isMoto
+            ? { moto: true }
+            : { enable_customer_cancellation: true }
+        }
+      );
       updatedReader = await presentSimulatedTerminalPayment(updatedReader);
     } catch (error) {
       if (error.code === "terminal_reader_timeout") {
@@ -6862,8 +6926,11 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
       paymentIntentId: paymentIntent.id,
       amount: (amountCents / 100).toFixed(2),
       priceType,
+      moto: isMoto,
       reader: serializeTerminalReader(updatedReader),
-      message: "Payment sent. Ask the guest to follow the prompts on the reader."
+      message: isMoto
+        ? "Phone payment ready. Enter the caller’s card details on the Stripe reader."
+        : "Payment sent. Ask the guest to follow the prompts on the reader."
     });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ message: error.message });
@@ -6883,7 +6950,7 @@ app.get("/api/stripe/terminal/payments/:paymentIntentId", async (req, res) => {
         SELECT reservation_id
         FROM stripe_payment_records
         WHERE stripe_payment_intent_id = $1
-          AND stripe_payment_method_type = 'card_present'
+          AND stripe_payment_method_type IN ('card_present', 'card')
         LIMIT 1
       `,
       [paymentIntentId]
@@ -6960,10 +7027,16 @@ app.post("/api/stripe/terminal/payments/:paymentIntentId/retry", async (req, res
       return res.status(409).json({ message: "This payment cannot be retried in its current state." });
     }
 
-    let updatedReader = await stripe.terminal.readers.processPaymentIntent(reader.id, {
-      payment_intent: paymentIntentId,
-      process_config: { enable_customer_cancellation: true }
-    });
+    let updatedReader = await stripe.terminal.readers.processPaymentIntent(
+      reader.id,
+      {
+        payment_intent: paymentIntentId,
+        process_config:
+          paymentIntent.metadata?.payment_entry_mode === "moto"
+            ? { moto: true }
+            : { enable_customer_cancellation: true }
+      }
+    );
     updatedReader = await presentSimulatedTerminalPayment(updatedReader);
     await pool.query(
       `UPDATE stripe_payment_records SET payment_status = 'processing' WHERE id = $1`,
@@ -7856,7 +7929,7 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
       getRemainingBalancePaymentAmounts(reservation);
 
     if (!toAmountCents(bankAmount)) {
-      return res.status(400).json({ message: "This reservation does not have a remaining balance." });
+      return res.status(400).json({ message: "This reservation does not have any unpaid nights." });
     }
 
     const token = createGuestPaymentLinkToken(reservation.id);
@@ -7902,12 +7975,12 @@ app.post("/api/reservations/:id/payment-intents", async (req, res) => {
     const remainingBalanceCents = toAmountCents(reservation.cardRemainingBalance);
 
     if (!remainingBalanceCents) {
-      return res.status(400).json({ message: "This reservation does not have a remaining balance." });
+      return res.status(400).json({ message: "This reservation does not have any unpaid nights." });
     }
 
     if (amountCents > remainingBalanceCents) {
       return res.status(400).json({
-        message: "Payment amount cannot be greater than the current remaining balance."
+        message: "Payment amount cannot exceed the amount due for unpaid nights."
       });
     }
 
@@ -8095,7 +8168,7 @@ app.post("/api/reservations/:id/record-payment", async (req, res) => {
       selectedRemainingBalance !== undefined &&
       paymentAmount > Number(selectedRemainingBalance)
     ) {
-      return res.status(400).json({ message: "Office payment cannot exceed the remaining balance." });
+      return res.status(400).json({ message: "Office payment cannot exceed the amount due for unpaid nights." });
     }
 
     const client = await pool.connect();

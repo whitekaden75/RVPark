@@ -94,6 +94,100 @@
   padding-inline: 24px !important;
 }
 
+.night-payment-status {
+  display: grid;
+  gap: 2px;
+  padding: 10px 14px;
+  border: 1px solid rgba(34, 101, 79, 0.14);
+  border-radius: 14px;
+  background: rgba(237, 247, 242, 0.78);
+}
+
+.night-payment-status strong {
+  color: #234f40;
+}
+
+.night-payment-status span {
+  color: #627269;
+  font-size: 0.86rem;
+}
+
+.terminal-floating-status {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  z-index: 1600;
+  width: min(560px, calc(100vw - 32px));
+  padding: 10px 14px 0;
+  border: 1px solid rgba(28, 76, 65, 0.2);
+  border-radius: 20px;
+  background: rgba(255, 253, 248, 0.97);
+  box-shadow: 0 18px 55px rgba(18, 45, 38, 0.24);
+  transform: translateX(-50%);
+  backdrop-filter: blur(14px);
+}
+
+.terminal-floating-status.finalizing {
+  border-color: rgba(172, 116, 38, 0.38);
+}
+
+.terminal-floating-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 4px 0;
+}
+
+.terminal-floating-heading > div {
+  display: grid;
+  gap: 1px;
+}
+
+.terminal-floating-heading span {
+  color: #627269;
+  font-size: 0.78rem;
+}
+
+.terminal-floating-dismiss {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: #42544b;
+  background: rgba(34, 101, 79, 0.08);
+  font: inherit;
+  font-size: 1.45rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.terminal-floating-status .terminal-status-panel {
+  margin: 0;
+  padding: 12px 4px 14px;
+  border: 0;
+  background: transparent;
+}
+
+@media (max-width: 640px) {
+  .terminal-floating-status {
+    top: 8px;
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
+  }
+
+  .terminal-floating-status .terminal-reader-heading {
+    display: none;
+  }
+
+  .terminal-floating-status .terminal-payment-progress {
+    padding-top: 8px;
+    border-top: 0;
+  }
+}
+
 /* Today's Arrivals and iPad check-in */
 .checkin-dashboard {
   overflow: hidden;
