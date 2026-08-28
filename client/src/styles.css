@@ -131,6 +131,12 @@
   border-color: rgba(172, 116, 38, 0.38);
 }
 
+.terminal-floating-status.minimized {
+  width: min(440px, calc(100vw - 32px));
+  padding-bottom: 10px;
+  border-radius: 16px;
+}
+
 .terminal-floating-heading {
   display: flex;
   align-items: center;
@@ -139,9 +145,15 @@
   padding: 2px 4px 0;
 }
 
-.terminal-floating-heading > div {
+.terminal-floating-copy {
   display: grid;
   gap: 1px;
+}
+
+.terminal-floating-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .terminal-floating-heading span {
@@ -675,7 +687,24 @@
 }
 
 .checkin-terminal-balance {
-  justify-items: end;
+  position: relative;
+  grid-template-columns: minmax(130px, 0.85fr) repeat(2, minmax(130px, 1fr));
+  gap: 12px 18px;
+  justify-items: stretch;
+}
+
+.checkin-terminal-balance > div {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+}
+
+.checkin-terminal-balance > .checkin-stay-length-metric {
+  grid-column: 1;
+  grid-row: 1 / span 3;
+  align-content: center;
+  padding-right: 18px;
+  border-right: 1px solid rgba(34, 101, 79, 0.18);
 }
 
 .checkin-cash-payment {
@@ -861,7 +890,9 @@
   }
 
   .checkin-terminal-balance {
-    justify-items: start;
+    width: 100%;
+    grid-template-columns: minmax(110px, 0.85fr) repeat(2, minmax(110px, 1fr));
+    justify-items: stretch;
   }
 
   .checkin-terminal-progress > button {
@@ -871,6 +902,14 @@
 }
 
 @media (max-width: 520px) {
+  .checkin-terminal-balance {
+    grid-template-columns: minmax(100px, 0.85fr) minmax(0, 1fr);
+  }
+
+  .checkin-terminal-balance > .checkin-stay-length-metric {
+    grid-row: 1 / span 5;
+  }
+
   .checkin-terminal-submit-actions {
     grid-template-columns: 1fr;
   }

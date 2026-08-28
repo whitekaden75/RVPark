@@ -693,8 +693,14 @@ function getNightPaymentProgress(reservation) {
   };
 }
 
-function NightPaymentStatus({ reservation, className = "" }) {
+function NightPaymentStatus({
+  reservation,
+  className = "",
+  showNightlyRates = false,
+}) {
   const progress = getNightPaymentProgress(reservation);
+  const bankNightlyPrice = reservation?.bankDailyPrice;
+  const cardNightlyPrice = reservation?.cardDailyPrice;
 
   if (!progress || progress.unpaid <= 0) return null;
 
@@ -703,10 +709,21 @@ function NightPaymentStatus({ reservation, className = "" }) {
       <strong>
         {progress.paid} of {progress.total} nights paid
       </strong>
-      <span>
-        {progress.unpaid} {progress.unpaid === 1 ? "night" : "nights"} left to
-        pay
-      </span>
+      {showNightlyRates &&
+      bankNightlyPrice !== null &&
+      bankNightlyPrice !== undefined &&
+      cardNightlyPrice !== null &&
+      cardNightlyPrice !== undefined ? (
+        <span>
+          {formatCurrency(bankNightlyPrice)} cash/check per night •{" "}
+          {formatCurrency(cardNightlyPrice)} card per night
+        </span>
+      ) : (
+        <span>
+          {progress.unpaid} {progress.unpaid === 1 ? "night" : "nights"} left
+          to pay
+        </span>
+      )}
     </div>
   );
 }
@@ -5319,38 +5336,71 @@ function FloatingTerminalPayment({
   onCancel,
   onDismiss,
 }) {
+  const [isMinimized, setIsMinimized] = useState(false);
+
   if (!payment) return null;
 
   const canDismiss = !["in_progress", "finalizing"].includes(payment.status);
+  const compactStatus =
+    payment.status === "succeeded"
+      ? "Payment approved"
+      : payment.status === "finalizing"
+        ? "Saving check-in…"
+        : payment.status === "failed"
+          ? "Payment needs attention"
+          : payment.status === "canceled"
+            ? "Payment canceled"
+            : `Collecting $${payment.amount}`;
 
   return (
     <aside
-      className={`terminal-floating-status ${payment.status || ""}`}
+      className={`terminal-floating-status ${payment.status || ""} ${
+        isMinimized ? "minimized" : ""
+      }`.trim()}
       aria-label="Active card reader transaction"
       aria-live="polite">
       <div className="terminal-floating-heading">
-        <div>
+        <div className="terminal-floating-copy">
           <strong>Card reader transaction</strong>
-          <span>Reservation #{payment.reservationId}</span>
+          <span>
+            Reservation #{payment.reservationId}
+            {isMinimized ? ` • ${compactStatus}` : ""}
+          </span>
         </div>
-        {canDismiss ? (
+        <div className="terminal-floating-controls">
           <button
             type="button"
             className="terminal-floating-dismiss"
-            aria-label="Dismiss terminal status"
-            onClick={onDismiss}>
-            ×
+            aria-label={
+              isMinimized
+                ? "Expand terminal status"
+                : "Minimize terminal status"
+            }
+            aria-expanded={!isMinimized}
+            onClick={() => setIsMinimized((current) => !current)}>
+            {isMinimized ? "↕" : "−"}
           </button>
-        ) : null}
+          {canDismiss ? (
+            <button
+              type="button"
+              className="terminal-floating-dismiss"
+              aria-label="Dismiss terminal status"
+              onClick={onDismiss}>
+              ×
+            </button>
+          ) : null}
+        </div>
       </div>
-      <TerminalPaymentPanel
-        reader={reader}
-        payment={payment}
-        reservationId={payment.reservationId}
-        errorMessage={errorMessage}
-        onRetry={onRetry}
-        onCancel={onCancel}
-      />
+      {!isMinimized ? (
+        <TerminalPaymentPanel
+          reader={reader}
+          payment={payment}
+          reservationId={payment.reservationId}
+          errorMessage={errorMessage}
+          onRetry={onRetry}
+          onCancel={onCancel}
+        />
+      ) : null}
     </aside>
   );
 }
@@ -6076,6 +6126,27 @@ export default function App() {
     setSchedulePaymentErrorMessage("");
     setSchedulePaymentSuccessMessage("");
   }, [activeScheduleReservation]);
+
+  useEffect(() => {
+    if (!activeScheduleReservation) {
+      setActiveSchedulePaymentAmount("");
+      return;
+    }
+
+    const currentCardAmount =
+      activeScheduleReservation.cardRemainingBalance ??
+      activeScheduleReservation.remainingBalance;
+
+    setActiveSchedulePaymentAmount(
+      Number(currentCardAmount || 0) > 0
+        ? Number(currentCardAmount).toFixed(2)
+        : ""
+    );
+  }, [
+    activeScheduleReservation?.id,
+    activeScheduleReservation?.cardRemainingBalance,
+    activeScheduleReservation?.remainingBalance,
+  ]);
 
   useEffect(() => {
     if (!timelineSiteId && sites.length > 0) {
@@ -10248,27 +10319,6 @@ export default function App() {
                       Guest qualifies for the discounted price
                     </label>
                   </div>
-                  <div className="public-discount-panel admin-price-choice-panel">
-                    <span className="small-text">Payment choice</span>
-                    <label className="checkbox-row compact-checkbox">
-                      <input
-                        type="radio"
-                        name="admin-booking-payment-method"
-                        checked={reservationForm.paymentMethod === "bank"}
-                        onChange={() => updateReservationPriceChoice("paymentMethod", "bank")}
-                      />
-                      Cash / check
-                    </label>
-                    <label className="checkbox-row compact-checkbox">
-                      <input
-                        type="radio"
-                        name="admin-booking-payment-method"
-                        checked={reservationForm.paymentMethod === "card"}
-                        onChange={() => updateReservationPriceChoice("paymentMethod", "card")}
-                      />
-                      Card
-                    </label>
-                  </div>
                   {needsManualReservationPricing ? (
                     <>
                       <label>
@@ -10440,9 +10490,6 @@ export default function App() {
                       bankLabel="Cash / check"
                     />
                     <div className="pricing-summary">
-                      <span>
-                        Selected: {formatSelectedPaymentMethod(reservationForm.paymentMethod)}
-                      </span>
                       <span>
                         Stay length: {reservationNightCount || "Not set"} nights
                       </span>
@@ -12786,11 +12833,6 @@ export default function App() {
               </div>
               <div className="pricing-summary">
                 <span>
-                  Payment choice: {formatSelectedPaymentMethod(
-                    activeScheduleReservation.selectedPaymentMethod
-                  )}
-                </span>
-                <span>
                   Discounted price:{" "}
                   {activeScheduleReservation.requestedDiscounts?.length
                     ? "Qualified"
@@ -12819,13 +12861,6 @@ export default function App() {
                   </li>
                 ))}
               </ol>
-              <div className="pricing-summary">
-                <span>
-                  Deposit amount:{" "}
-                  {formatCurrency(activeScheduleReservation.depositAmount)}
-                </span>
-                <NightPaymentStatus reservation={activeScheduleReservation} />
-              </div>
               {activeScheduleReservation.paymentEvents?.length ? (
                 <div className="timeline-card payment-history-card">
                   <h3>Payment history</h3>
@@ -12862,7 +12897,6 @@ export default function App() {
                 <div className="payment-panel">
                   <div className="result-header">
                     <h3>Edit payment info</h3>
-                    <NightPaymentStatus reservation={activeScheduleReservation} />
                   </div>
                   <div className="payment-edit-sections">
                     <div className="timeline-card payment-edit-card">
@@ -12964,7 +12998,6 @@ export default function App() {
                     <div className="timeline-card payment-edit-card">
                       <div className="result-header">
                         <h4>Record cash or check payment</h4>
-                        <NightPaymentStatus reservation={activeScheduleReservation} />
                       </div>
                       <div className="field-grid compact-grid">
                         <label>
@@ -13080,7 +13113,6 @@ export default function App() {
                 <div className="payment-panel">
                   <div className="result-header">
                     <h3>Collect payment on terminal</h3>
-                    <NightPaymentStatus reservation={activeScheduleReservation} />
                   </div>
                   <div className="payment-grid">
                     <label>
@@ -13099,7 +13131,10 @@ export default function App() {
                       />
                     </label>
                     <div className="pricing-summary">
-                      <NightPaymentStatus reservation={activeScheduleReservation} />
+                      <NightPaymentStatus
+                        reservation={activeScheduleReservation}
+                        showNightlyRates
+                      />
                       <span>
                         Status:{" "}
                         {formatReservationStatus(

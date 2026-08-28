@@ -270,6 +270,7 @@ export default function CheckInPage({
   const [isRecordingPayment, setIsRecordingPayment] = useState(false);
   const [officePaymentAmount, setOfficePaymentAmount] = useState("");
   const [checkNumber, setCheckNumber] = useState("");
+  const [isCheckNumberOpen, setIsCheckNumberOpen] = useState(false);
   const [isCashCheckOpen, setIsCashCheckOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -333,6 +334,7 @@ export default function CheckInPage({
       setActiveReservationId(completeReservation.id);
       setForm(createCheckInForm(completeReservation));
       setIsCashCheckOpen(false);
+      setIsCheckNumberOpen(false);
       setCheckNumber("");
       const bankBalance = getCheckInBankBalance(completeReservation);
       setOfficePaymentAmount(bankBalance > 0 ? bankBalance.toFixed(2) : "");
@@ -371,6 +373,7 @@ export default function CheckInPage({
       );
       if (tenderType === "check") {
         setCheckNumber("");
+        setIsCheckNumberOpen(false);
       }
     } catch (error) {
       setErrorMessage(error.message);
@@ -448,8 +451,37 @@ export default function CheckInPage({
     const standardBalance = getCheckInBankBalance(activeReservation);
     const cardBalance = getCheckInCardBalance(activeReservation);
     const nightProgress = getNightPaymentProgress(activeReservation);
-    const hasBalance = nightProgress
-      ? nightProgress.unpaid > 0
+    const totalPayableNights = Number(
+      activeReservation.totalChargeableNights ?? nightProgress?.total
+    );
+    const paidPayableNights = Number(
+      activeReservation.paidChargeableNights ?? nightProgress?.paid
+    );
+    const safePaidPayableNights = Math.min(
+      Math.max(paidPayableNights, 0),
+      totalPayableNights
+    );
+    const paymentNightProgress =
+      Number.isFinite(totalPayableNights) &&
+      totalPayableNights > 0 &&
+      Number.isFinite(paidPayableNights)
+        ? {
+            total: totalPayableNights,
+            paid: safePaidPayableNights,
+            unpaid: Math.max(
+              totalPayableNights - safePaidPayableNights,
+              0
+            ),
+          }
+        : null;
+    const freeNightCount = nightProgress && paymentNightProgress
+      ? Math.max(
+          nightProgress.total - paymentNightProgress.total,
+          0
+        )
+      : 0;
+    const hasBalance = paymentNightProgress
+      ? paymentNightProgress.unpaid > 0
       : standardBalance > 0 || cardBalance > 0;
     const activeTerminalPayment =
       terminalPayment?.reservationId === activeReservation.id
@@ -519,17 +551,53 @@ export default function CheckInPage({
               </div>
             </div>
             <div className="checkin-terminal-balance">
-              <span>Nights paid</span>
-              <strong>
-                {nightProgress
-                  ? `${nightProgress.paid} of ${nightProgress.total}`
-                  : "Not set"}
-              </strong>
-              {nightProgress?.unpaid > 0 ? (
-                <>
-                  <span>Nights left</span>
-                  <strong>{nightProgress.unpaid}</strong>
-                </>
+              <div className="checkin-stay-length-metric">
+                <span>Stay length</span>
+                <strong>
+                  {nightProgress
+                    ? `${nightProgress.total} ${
+                        nightProgress.total === 1 ? "night" : "nights"
+                      }`
+                    : "Not set"}
+                </strong>
+              </div>
+              <div>
+                <span>Nights paid</span>
+                <strong>
+                  {paymentNightProgress
+                    ? `${paymentNightProgress.paid} / ${paymentNightProgress.total}`
+                    : "Not set"}
+                </strong>
+              </div>
+              {paymentNightProgress?.unpaid > 0 ? (
+                <div>
+                  <span>Nights left to pay</span>
+                  <strong>{paymentNightProgress.unpaid}</strong>
+                </div>
+              ) : null}
+              {freeNightCount > 0 ? (
+                <div>
+                  <span>{freeNightCount === 1 ? "Free night" : "Free nights"}</span>
+                  <strong>{freeNightCount} included</strong>
+                </div>
+              ) : null}
+              {activeReservation.bankDailyPrice !== null &&
+              activeReservation.bankDailyPrice !== undefined ? (
+                <div>
+                  <span>Cash/check per night</span>
+                  <strong>
+                    {formatCurrency(activeReservation.bankDailyPrice)}
+                  </strong>
+                </div>
+              ) : null}
+              {activeReservation.cardDailyPrice !== null &&
+              activeReservation.cardDailyPrice !== undefined ? (
+                <div>
+                  <span>Card per night</span>
+                  <strong>
+                    {formatCurrency(activeReservation.cardDailyPrice)}
+                  </strong>
+                </div>
               ) : null}
             </div>
             {activeTerminalPayment ? (
@@ -589,24 +657,31 @@ export default function CheckInPage({
                       }
                     />
                   </label>
-                  <label>
-                    Check number
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength="50"
-                      value={checkNumber}
-                      disabled={isRecordingPayment || terminalBusy}
-                      onChange={(event) => setCheckNumber(event.target.value)}
-                      placeholder="Required for check payments"
-                    />
-                  </label>
+                  {isCheckNumberOpen ? (
+                    <label>
+                      Check number
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength="50"
+                        value={checkNumber}
+                        disabled={isRecordingPayment || terminalBusy}
+                        onChange={(event) => setCheckNumber(event.target.value)}
+                        placeholder="Required for check payments"
+                        autoFocus
+                      />
+                    </label>
+                  ) : null}
                   <div className="button-row">
                     <button
                       type="button"
                       className="ghost-button"
                       disabled={isRecordingPayment || terminalBusy}
-                      onClick={() => recordCashCheckPayment("cash")}>
+                      onClick={() => {
+                        setIsCheckNumberOpen(false);
+                        setCheckNumber("");
+                        recordCashCheckPayment("cash");
+                      }}>
                       {isRecordingPayment ? "Recording…" : "Record cash"}
                     </button>
                     <button
@@ -615,9 +690,16 @@ export default function CheckInPage({
                       disabled={
                         isRecordingPayment ||
                         terminalBusy ||
-                        !checkNumber.trim()
+                        (isCheckNumberOpen && !checkNumber.trim())
                       }
-                      onClick={() => recordCashCheckPayment("check")}>
+                      onClick={() => {
+                        if (!isCheckNumberOpen) {
+                          setIsCheckNumberOpen(true);
+                          return;
+                        }
+
+                        recordCashCheckPayment("check");
+                      }}>
                       {isRecordingPayment ? "Recording…" : "Record check"}
                     </button>
                   </div>
@@ -633,7 +715,9 @@ export default function CheckInPage({
                   className="ghost-button checkin-large-button"
                   aria-expanded={isCashCheckOpen}
                   onClick={() => setIsCashCheckOpen((current) => !current)}>
-                  {isCashCheckOpen ? "Hide cash / check" : "Cash / check"}
+                  {isCashCheckOpen
+                    ? "Hide cash / check"
+                    : `Cash / check ${formatCurrency(standardBalance)}`}
                 </button>
                 <button
                   type="submit"
