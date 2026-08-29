@@ -13109,6 +13109,86 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+                    {activeScheduleReservation.status !== "canceled" &&
+                    hasPaymentDueForReservation(activeScheduleReservation) ? (
+                      <div className="timeline-card payment-edit-card">
+                        <div className="result-header">
+                          <h4>Send card payment to terminal</h4>
+                          <span className="muted">
+                            Enter the amount to collect, then send it to the
+                            office Stripe reader.
+                          </span>
+                        </div>
+                        <div className="field-grid compact-grid">
+                          <label>
+                            Terminal payment amount
+                            <input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={activeSchedulePaymentAmount}
+                              onChange={(event) => {
+                                setActiveSchedulePaymentAmount(
+                                  event.target.value
+                                );
+                                setScheduleCardPayment(null);
+                                setPaymentLinkSuccessMessage("");
+                              }}
+                              onWheel={(event) =>
+                                event.currentTarget.blur()
+                              }
+                            />
+                          </label>
+                          <div className="pricing-summary">
+                            <NightPaymentStatus
+                              reservation={activeScheduleReservation}
+                              showNightlyRates
+                            />
+                            <span>Terminal accepts card payments only.</span>
+                          </div>
+                        </div>
+                        <TerminalPaymentPanel
+                          reader={terminalReader}
+                          payment={terminalPayment}
+                          reservationId={activeScheduleReservation.id}
+                          errorMessage={terminalPaymentError}
+                          onRetry={retryTerminalPayment}
+                          onCancel={cancelTerminalPayment}
+                        />
+                        <div className="button-row">
+                          <button
+                            type="button"
+                            className="primary-button terminal-send-button"
+                            disabled={
+                              terminalReader?.status !== "online" ||
+                              Number(activeSchedulePaymentAmount || 0) <= 0 ||
+                              startingTerminalReservationId ===
+                                activeScheduleReservation.id ||
+                              (terminalPayment?.reservationId ===
+                                activeScheduleReservation.id &&
+                                [
+                                  "in_progress",
+                                  "failed",
+                                  "finalizing",
+                                ].includes(terminalPayment.status))
+                            }
+                            onClick={() =>
+                              startTerminalPayment(
+                                activeScheduleReservation,
+                                activeSchedulePaymentAmount,
+                                "card"
+                              )
+                            }>
+                            {startingTerminalReservationId ===
+                            activeScheduleReservation.id
+                              ? "Sending…"
+                              : `Send ${formatCurrency(
+                                  activeSchedulePaymentAmount
+                                )} to terminal`}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="button-row">
                     <button
@@ -13144,7 +13224,8 @@ export default function App() {
                   ) : null}
                 </div>
               ) : null}
-              {activeScheduleReservation.status !== "canceled" &&
+              {!isEditingSchedulePaymentInfo &&
+              activeScheduleReservation.status !== "canceled" &&
               hasPaymentDueForReservation(activeScheduleReservation) ? (
                 <div className="payment-panel">
                   <div className="result-header">
