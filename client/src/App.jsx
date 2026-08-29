@@ -899,6 +899,23 @@ function getOutstandingBankDeposit(reservation) {
   return getOutstandingDeposit(reservation, "bank");
 }
 
+function getOutstandingCardFirstNight(reservation) {
+  if (!reservation) return 0;
+
+  const firstNightAmount = Number(reservation.cardDailyPrice || 0);
+
+  if (!Number.isFinite(firstNightAmount) || firstNightAmount <= 0) {
+    return 0;
+  }
+
+  return Math.max(
+    Math.round(
+      (firstNightAmount - Number(reservation.partialPaymentCredit || 0)) * 100
+    ) / 100,
+    0
+  );
+}
+
 function formatPricingCategory(value) {
   if (!value) {
     return "unknown";
@@ -8420,17 +8437,22 @@ export default function App() {
     }
   }
 
-  async function recordOfficePayment(reservation) {
+  async function recordOfficePayment(
+    reservation,
+    amountValue,
+    paymentLabel = "Office card payment"
+  ) {
     setErrorMessage("");
     setSuccessMessage("");
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
+    setIsRecordingOfficePayment(true);
 
     try {
-      const amountNumber = Number(activeSchedulePaymentAmount);
+      const amountNumber = Number(amountValue);
 
       if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-        throw new Error("Enter an office payment amount greater than zero.");
+        throw new Error("There is no unpaid amount to record.");
       }
 
       const updatedReservation = await apiRequest(
@@ -8441,6 +8463,7 @@ export default function App() {
             amount: amountNumber.toFixed(2),
             paymentSource: "office_card_reader",
             priceType: "card",
+            note: paymentLabel,
           }),
         }
       );
@@ -8450,6 +8473,10 @@ export default function App() {
           entry.id === updatedReservation.id ? updatedReservation : entry
         )
       );
+
+      if (createdReservation?.id === updatedReservation.id) {
+        setCreatedReservation(updatedReservation);
+      }
 
       if (activeScheduleReservation?.id === updatedReservation.id) {
         setActiveScheduleReservation(updatedReservation);
@@ -8464,11 +8491,24 @@ export default function App() {
           ? Number(updatedReservation.cardRemainingBalance).toFixed(2)
           : ""
       );
-      setSuccessMessage(
-        `Recorded office payment for reservation #${updatedReservation.id}.`
+      const remainingCardDeposit = getOutstandingCardDeposit(
+        updatedReservation
       );
+      setReservationCardPaymentAmount(
+        remainingCardDeposit > 0 ? remainingCardDeposit.toFixed(2) : ""
+      );
+      setSuccessMessage(
+        `${paymentLabel} recorded for reservation #${updatedReservation.id}.`
+      );
+      setPaymentLinkSuccessMessage(
+        `${paymentLabel} recorded for reservation #${updatedReservation.id}.`
+      );
+      return updatedReservation;
     } catch (error) {
       setPaymentLinkErrorMessage(error.message);
+      throw error;
+    } finally {
+      setIsRecordingOfficePayment(false);
     }
   }
 
@@ -10594,6 +10634,55 @@ export default function App() {
                       payment, record the cash or check portion first; the card
                       amount will update automatically.
                     </p>
+                    <div className="timeline-card payment-edit-card">
+                      <div className="result-header">
+                        <h4>Paid in office</h4>
+                        <span className="muted">
+                          Use these after taking a card payment outside the
+                          Terminal. The correct card amount is recorded
+                          automatically.
+                        </span>
+                      </div>
+                      <div className="button-row created-payment-actions">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          disabled={
+                            isRecordingOfficePayment ||
+                            getOutstandingCardDeposit(createdReservation) <= 0
+                          }
+                          onClick={() =>
+                            recordOfficePayment(
+                              createdReservation,
+                              getOutstandingCardDeposit(createdReservation),
+                              "Paid deposit in office"
+                            ).catch(() => {})
+                          }>
+                          {isRecordingOfficePayment
+                            ? "Recording…"
+                            : "Paid deposit"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          disabled={
+                            isRecordingOfficePayment ||
+                            getOutstandingCardFirstNight(createdReservation) <=
+                              0
+                          }
+                          onClick={() =>
+                            recordOfficePayment(
+                              createdReservation,
+                              getOutstandingCardFirstNight(createdReservation),
+                              "Paid first night in office"
+                            ).catch(() => {})
+                          }>
+                          {isRecordingOfficePayment
+                            ? "Recording…"
+                            : "Paid first night"}
+                        </button>
+                      </div>
+                    </div>
                     <div className="payment-grid created-payment-grid">
                       <div className="payment-entry-fields">
                         <label className="payment-amount-field">
