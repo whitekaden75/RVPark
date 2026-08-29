@@ -181,9 +181,9 @@ function createSchedulePaymentForm(reservation = null) {
 
   return {
     depositAmount:
-      reservation?.depositAmount !== null &&
-      reservation?.depositAmount !== undefined
-        ? String(reservation.depositAmount)
+      getRequiredDepositAmount(reservation) !== null &&
+      getRequiredDepositAmount(reservation) !== undefined
+        ? String(getRequiredDepositAmount(reservation))
         : "",
     totalPrice:
       displayedTotalPrice !== null && displayedTotalPrice !== undefined
@@ -218,9 +218,9 @@ function createReservationEditorState(reservation) {
             ? String(reservation.totalPrice)
             : "",
       depositAmount:
-        reservation.depositAmount !== null &&
-        reservation.depositAmount !== undefined
-          ? String(reservation.depositAmount)
+        getRequiredDepositAmount(reservation) !== null &&
+        getRequiredDepositAmount(reservation) !== undefined
+          ? String(getRequiredDepositAmount(reservation))
           : "",
       amountPaid:
         reservation.amountPaid !== null && reservation.amountPaid !== undefined
@@ -832,6 +832,12 @@ function getPublicBookingDeposit(totalPrice, numberOfNights) {
   return Math.min(depositAmount, Number(totalPrice));
 }
 
+function getRequiredDepositAmount(reservation) {
+  if (!reservation) return null;
+
+  return reservation.requiredDepositAmount ?? reservation.depositAmount ?? null;
+}
+
 function getOutstandingDeposit(reservation, priceType = "card") {
   if (!reservation) return 0;
 
@@ -874,8 +880,11 @@ function getOutstandingDeposit(reservation, priceType = "card") {
     Math.round(
       (Number(
         priceType === "card"
-          ? reservation.cardDepositAmount ?? reservation.depositAmount ?? 0
-          : reservation.depositAmount ?? 0
+          ? reservation.requiredCardDepositAmount ??
+              reservation.cardDepositAmount ??
+              reservation.depositAmount ??
+              0
+          : getRequiredDepositAmount(reservation) ?? 0
       ) - Number(reservation.amountPaid || 0)) * 100
     ) / 100,
     0
@@ -1069,7 +1078,7 @@ function buildReservationConfirmationText(reservation, paymentLink) {
   const depositAmount = formatCurrency(
     paymentLink?.reservationId === reservation.id
       ? paymentLink.amount
-      : reservation.depositAmount ?? null
+      : getRequiredDepositAmount(reservation)
   );
 
   return [
@@ -5315,9 +5324,11 @@ function TerminalPaymentPanel({
                 Try another card
               </button>
             ) : null}
-            {activePayment.status === "in_progress" ? (
+            {["in_progress", "failed"].includes(activePayment.status) ? (
               <button type="button" className="ghost-button" onClick={onCancel}>
-                Cancel reader
+                {activePayment.status === "failed"
+                  ? "Cancel payment"
+                  : "Cancel reader"}
               </button>
             ) : null}
           </div>
@@ -5340,7 +5351,7 @@ function FloatingTerminalPayment({
 
   if (!payment) return null;
 
-  const canDismiss = !["in_progress", "finalizing"].includes(payment.status);
+  const canDismiss = ["succeeded", "canceled"].includes(payment.status);
   const compactStatus =
     payment.status === "succeeded"
       ? "Payment approved"
@@ -5568,6 +5579,8 @@ export default function App() {
   const [schedulePaymentSuccessMessage, setSchedulePaymentSuccessMessage] =
     useState("");
   const [terminalReader, setTerminalReader] = useState(null);
+  const [isRefreshingTerminalReader, setIsRefreshingTerminalReader] =
+    useState(false);
   const [terminalPayment, setTerminalPayment] = useState(
     () => readPendingTerminalWorkflow()?.payment || null
   );
@@ -6060,6 +6073,7 @@ export default function App() {
               "The reader could not complete this payment.",
             canRetry: result.canRetry,
           }));
+          timeoutId = window.setTimeout(pollTerminalPayment, 1500);
           return;
         }
 
@@ -7794,9 +7808,9 @@ export default function App() {
         discounts: reservation.requestedDiscounts || [],
         paymentMethod: reservation.selectedPaymentMethod || "bank",
         depositAmount:
-          reservation.depositAmount !== null &&
-          reservation.depositAmount !== undefined
-            ? String(reservation.depositAmount)
+          getRequiredDepositAmount(reservation) !== null &&
+          getRequiredDepositAmount(reservation) !== undefined
+            ? String(getRequiredDepositAmount(reservation))
             : "",
         totalPrice:
           reservation.effectiveBillingMode === "standard"
@@ -8255,6 +8269,22 @@ export default function App() {
       setStartingTerminalReservationId((current) =>
         current === reservation.id ? null : current
       );
+    }
+  }
+
+  async function refreshTerminalReaderStatus() {
+    setIsRefreshingTerminalReader(true);
+    setTerminalPaymentError("");
+
+    try {
+      const result = await apiRequest("/stripe/terminal/status");
+      setTerminalReader(result.reader);
+      return result.reader;
+    } catch (error) {
+      setTerminalPaymentError(error.message);
+      return null;
+    } finally {
+      setIsRefreshingTerminalReader(false);
     }
   }
 
@@ -9706,6 +9736,8 @@ export default function App() {
             onRecordOfficePayment={recordCashCheckPayment}
             onRetryTerminal={retryTerminalPayment}
             onCancelTerminal={cancelTerminalPayment}
+            onRefreshTerminalReader={refreshTerminalReaderStatus}
+            isRefreshingTerminalReader={isRefreshingTerminalReader}
             onActiveReservationChange={setActiveCheckInReservationId}
           />
         ) : null}
@@ -10699,7 +10731,7 @@ export default function App() {
                           terminalReader?.status !== "online" ||
                           (terminalPayment?.reservationId ===
                             createdReservation.id &&
-                            ["in_progress", "finalizing"].includes(
+                            ["in_progress", "failed", "finalizing"].includes(
                               terminalPayment.status
                             ))
                         }
@@ -10720,7 +10752,7 @@ export default function App() {
                               ? "Loading card deposit…"
                           : terminalPayment?.reservationId ===
                                 createdReservation.id &&
-                              ["in_progress", "finalizing"].includes(
+                              ["in_progress", "failed", "finalizing"].includes(
                                 terminalPayment.status
                               )
                             ? "Card deposit sent to terminal"
@@ -10740,7 +10772,7 @@ export default function App() {
                             terminalReader?.status !== "online" ||
                             (terminalPayment?.reservationId ===
                               createdReservation.id &&
-                              ["in_progress", "finalizing"].includes(
+                              ["in_progress", "failed", "finalizing"].includes(
                                 terminalPayment.status
                               ))
                           }
@@ -11670,7 +11702,9 @@ export default function App() {
                           </span>
                           <span>
                             Deposit amount:{" "}
-                            {formatCurrency(reservation.depositAmount)}
+                            {formatCurrency(
+                              getRequiredDepositAmount(reservation)
+                            )}
                           </span>
                           <NightPaymentStatus reservation={reservation} />
                         </div>
@@ -12840,7 +12874,9 @@ export default function App() {
                 </span>
                 <span>
                   Deposit amount:{" "}
-                  {formatCurrency(activeScheduleReservation.depositAmount)}
+                  {formatCurrency(
+                    getRequiredDepositAmount(activeScheduleReservation)
+                  )}
                 </span>
                 <NightPaymentStatus reservation={activeScheduleReservation} />
               </div>
@@ -13161,7 +13197,7 @@ export default function App() {
                         Number(activeSchedulePaymentAmount || 0) <= 0 ||
                         (terminalPayment?.reservationId ===
                           activeScheduleReservation.id &&
-                          ["in_progress", "finalizing"].includes(
+                          ["in_progress", "failed", "finalizing"].includes(
                             terminalPayment.status
                           ))
                       }
@@ -13183,7 +13219,7 @@ export default function App() {
                           Number(activeSchedulePaymentAmount || 0) <= 0 ||
                           (terminalPayment?.reservationId ===
                             activeScheduleReservation.id &&
-                            ["in_progress", "finalizing"].includes(
+                            ["in_progress", "failed", "finalizing"].includes(
                               terminalPayment.status
                             ))
                         }

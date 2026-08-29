@@ -261,6 +261,8 @@ export default function CheckInPage({
   onRecordOfficePayment,
   onRetryTerminal,
   onCancelTerminal,
+  onRefreshTerminalReader,
+  isRefreshingTerminalReader = false,
   onActiveReservationChange,
 }) {
   const [activeReservationId, setActiveReservationId] = useState(null);
@@ -490,7 +492,7 @@ export default function CheckInPage({
     const terminalInProgress = activeTerminalPayment?.status === "in_progress";
     const terminalFinalizing = activeTerminalPayment?.status === "finalizing";
     const terminalFailed = activeTerminalPayment?.status === "failed";
-    const terminalBusy = ["in_progress", "finalizing"].includes(
+    const terminalBusy = ["in_progress", "failed", "finalizing"].includes(
       terminalPayment?.status
     );
     const readerOnline = terminalReader?.status === "online";
@@ -548,6 +550,17 @@ export default function CheckInPage({
                       : "Reader offline"
                     : "Checking reader connection…"}
                 </span>
+                {terminalReader && !readerOnline ? (
+                  <button
+                    type="button"
+                    className="ghost-button checkin-reader-refresh"
+                    disabled={isRefreshingTerminalReader}
+                    onClick={onRefreshTerminalReader}>
+                    {isRefreshingTerminalReader
+                      ? "Checking reader…"
+                      : "Check reader again"}
+                  </button>
+                ) : null}
               </div>
             </div>
             <div className="checkin-terminal-balance">
@@ -615,12 +628,26 @@ export default function CheckInPage({
                 </strong>
                 <span>{activeTerminalPayment.message}</span>
                 {terminalFailed ? (
-                  <button type="button" className="primary-button" onClick={onRetryTerminal}>
-                    Try another card
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={onRetryTerminal}>
+                      Try another card
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={onCancelTerminal}>
+                      Cancel payment
+                    </button>
+                  </>
                 ) : null}
                 {terminalInProgress ? (
-                  <button type="button" className="ghost-button" onClick={onCancelTerminal}>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={onCancelTerminal}>
                     Cancel reader
                   </button>
                 ) : null}

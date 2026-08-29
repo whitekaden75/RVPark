@@ -192,7 +192,8 @@ app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), asyn
   }
 
   try {
-    const createdReservationId = await handleStripeWebhookEvent(event);
+    const { createdReservationId, updatedReservationId } =
+      await handleStripeWebhookEvent(event);
     await updateStripeWebhookEventRecord(eventRecord.id, "processed");
     await Promise.all([
       sendPublicBookingConfirmation(createdReservationId),
@@ -200,6 +201,11 @@ app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), asyn
     ]);
     if (createdReservationId) {
       broadcastAdminDataChange({ reason: "online_booking_created" });
+    } else if (updatedReservationId) {
+      broadcastAdminDataChange({
+        reason: "stripe_payment_recorded",
+        reservationId: updatedReservationId
+      });
     }
     return res.json({ received: true });
   } catch (error) {
@@ -737,7 +743,9 @@ function escapeEmailHtml(value) {
 function buildReservationConfirmationEmail(reservation) {
   const siteStays = Array.isArray(reservation.siteStays) ? reservation.siteStays : [];
   const customerName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
-  const depositAmount = formatEmailCurrency(reservation.depositAmount);
+  const depositAmount = formatEmailCurrency(
+    reservation.requiredDepositAmount ?? reservation.depositAmount
+  );
   const stayDetails = siteStays.length
     ? siteStays.map((stay, index) => ({
         label: siteStays.length > 1 ? `Stay ${index + 1}` : "Stay details",
@@ -1780,6 +1788,22 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
   const cardDailyPrice = usesDailyNightBilling
     ? selectedCardNightlyPrices[paidChargeableNights] ?? 0
     : null;
+  const requiredDepositAmount = usesDailyNightBilling
+    ? roundCurrency(
+        selectedBankNightlyPrices
+          .slice(0, Math.min(depositNights, totalChargeableNights))
+          .reduce((total, price) => total + Number(price || 0), 0)
+      )
+    : toPriceNumber(reservationRow.deposit_amount) ?? 0;
+  const requiredCardDepositAmount = usesDailyNightBilling
+    ? roundCurrency(
+        selectedCardNightlyPrices
+          .slice(0, Math.min(depositNights, totalChargeableNights))
+          .reduce((total, price) => total + Number(price || 0), 0)
+      )
+    : selectedPaymentMethod === "card"
+      ? toPriceNumber(reservationRow.deposit_amount) ?? 0
+      : getCardStayTotal(reservationRow.deposit_amount, depositNights) ?? 0;
   const effectiveTotalPrice =
     usesDailyNightBilling && selectedPaymentMethod === "card"
       ? cardTotalPrice
@@ -1868,10 +1892,9 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
 
   return {
     depositAmount: toPriceNumber(reservationRow.deposit_amount) ?? 0,
-    cardDepositAmount:
-      selectedPaymentMethod === "card"
-        ? toPriceNumber(reservationRow.deposit_amount) ?? 0
-        : getCardStayTotal(reservationRow.deposit_amount, depositNights) ?? 0,
+    requiredDepositAmount,
+    cardDepositAmount: requiredCardDepositAmount,
+    requiredCardDepositAmount,
     totalPrice: toPriceNumber(reservationRow.total_price),
     monthlyRentPrice: toPriceNumber(reservationRow.monthly_rent_price),
     electricMeterReading: toMeterNumber(reservationRow.electric_meter_reading),
@@ -2746,6 +2769,7 @@ async function handleStripeWebhookEvent(event) {
   const eventCreatedAt = getStripeEventTimestamp(event);
   const client = await pool.connect();
   let createdReservationId = null;
+  let updatedReservationId = null;
 
   try {
     await client.query("BEGIN");
@@ -2820,6 +2844,7 @@ async function handleStripeWebhookEvent(event) {
               eventType: event.type,
               eventCreatedAt
             });
+            updatedReservationId = paymentRecord.reservation_id;
           } else {
             await applyStripePaymentStateUpdate(client, paymentRecord, {
               paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : null,
@@ -2956,6 +2981,7 @@ async function handleStripeWebhookEvent(event) {
               eventType: event.type,
               eventCreatedAt
             });
+            updatedReservationId = paymentRecord.reservation_id;
           } else {
             await applyStripePaymentStateUpdate(client, paymentRecord, {
               paymentIntentId: paymentIntent.id,
@@ -3017,7 +3043,7 @@ async function handleStripeWebhookEvent(event) {
     client.release();
   }
 
-  return createdReservationId;
+  return { createdReservationId, updatedReservationId };
 }
 
 async function syncOpenStripePayments() {
@@ -4408,7 +4434,9 @@ function sanitizeGuestReservation(reservation) {
     slide_passenger_side: Boolean(reservation.slide_passenger_side),
     rig_length_feet: reservation.rig_length_feet,
     depositAmount: reservation.depositAmount,
+    requiredDepositAmount: reservation.requiredDepositAmount,
     cardDepositAmount: reservation.cardDepositAmount,
+    requiredCardDepositAmount: reservation.requiredCardDepositAmount,
     totalPrice: reservation.totalPrice,
     effectiveTotalPrice: reservation.effectiveTotalPrice,
     bankTotalPrice: reservation.bankTotalPrice,

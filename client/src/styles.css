@@ -681,6 +681,13 @@
   gap: 3px;
 }
 
+.checkin-reader-refresh {
+  width: fit-content;
+  margin-top: 6px;
+  padding: 7px 11px;
+  font-size: 0.78rem;
+}
+
 .checkin-terminal-section span {
   color: #64766a;
   font-size: 0.84rem;

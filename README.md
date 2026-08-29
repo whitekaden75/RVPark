@@ -102,7 +102,7 @@ With simulator mode enabled, the server automatically presents Stripe's default 
 
 Phone orders use Stripe Terminal MOTO and are disabled by default. Ask Stripe Support to approve MOTO for the account before setting `STRIPE_MOTO_ENABLED=true`. Prefer a secure guest payment link whenever the caller can open one; manually entered MOTO payments have higher fraud and dispute risk.
 
-Enable both Cards and ACH Direct Debit (`us_bank_account`) in the Stripe Dashboard. The webhook endpoint must receive `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, and `checkout.session.expired` events. ACH payments can remain processing after the guest returns to the site, so the reservation is created only after `checkout.session.async_payment_succeeded`.
+Enable both Cards and ACH Direct Debit (`us_bank_account`) in the Stripe Dashboard. The webhook endpoint must receive `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `payment_intent.succeeded`, `payment_intent.payment_failed`, and `charge.refunded` events. The PaymentIntent events provide the server-side backup that records successful Stripe Terminal payments on the matching reservation even if the check-in browser closes or misses the reader response. ACH payments can remain processing after the guest returns to the site, so the reservation is created only after `checkout.session.async_payment_succeeded`.
 
 ## Local Setup
 
