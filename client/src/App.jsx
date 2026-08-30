@@ -899,23 +899,6 @@ function getOutstandingBankDeposit(reservation) {
   return getOutstandingDeposit(reservation, "bank");
 }
 
-function getOutstandingCardFirstNight(reservation) {
-  if (!reservation) return 0;
-
-  const firstNightAmount = Number(reservation.cardDailyPrice || 0);
-
-  if (!Number.isFinite(firstNightAmount) || firstNightAmount <= 0) {
-    return 0;
-  }
-
-  return Math.max(
-    Math.round(
-      (firstNightAmount - Number(reservation.partialPaymentCredit || 0)) * 100
-    ) / 100,
-    0
-  );
-}
-
 function formatPricingCategory(value) {
   if (!value) {
     return "unknown";
@@ -5539,6 +5522,8 @@ export default function App() {
   const [availabilityRestriction, setAvailabilityRestriction] = useState("");
   const [isSearchingAvailability, setIsSearchingAvailability] = useState(false);
   const [createdReservation, setCreatedReservation] = useState(null);
+  const [isCreatedPaymentPanelMinimized, setIsCreatedPaymentPanelMinimized] =
+    useState(false);
   const [editingReservationId, setEditingReservationId] = useState(null);
   const [activePage, setActivePage] = useState(() => {
     if (typeof window === "undefined") {
@@ -7733,6 +7718,7 @@ export default function App() {
         setAdminSaveNotice(`Reservation #${created.id} was saved.`);
       } else {
         setCreatedReservation(created);
+        setIsCreatedPaymentPanelMinimized(false);
         setReservationCardPaymentAmount(
           createdTerminalCardDepositAmount > 0
             ? createdTerminalCardDepositAmount.toFixed(2)
@@ -8462,7 +8448,7 @@ export default function App() {
           body: JSON.stringify({
             amount: amountNumber.toFixed(2),
             paymentSource: "office_card_reader",
-            priceType: "card",
+            priceType: "bank",
             note: paymentLabel,
           }),
         }
@@ -8510,6 +8496,32 @@ export default function App() {
     } finally {
       setIsRecordingOfficePayment(false);
     }
+  }
+
+  async function recordCreatedDepositInOffice() {
+    if (!createdReservation) {
+      return;
+    }
+
+    const amount = getOutstandingBankDeposit(createdReservation);
+    const depositNights =
+      Number(createdReservation.totals?.numberOfNights) > 7 ? 2 : 1;
+    const shouldRecord = window.confirm(
+      `Record the ${depositNights}-night deposit of ${formatCurrency(
+        amount
+      )} as paid in office?`
+    );
+
+    if (!shouldRecord) {
+      return;
+    }
+
+    await recordOfficePayment(
+      createdReservation,
+      amount,
+      "Paid deposit in office"
+    );
+    setIsCreatedPaymentPanelMinimized(true);
   }
 
   async function recordCashCheckPayment(
@@ -10619,15 +10631,36 @@ export default function App() {
                 {createdReservation && !editingReservationId ? (
                   <div className="payment-panel">
                     <div className="result-header">
-                      <h3>Collect deposit on terminal</h3>
+                      <h3>
+                        {isCreatedPaymentPanelMinimized
+                          ? "Deposit payment recorded"
+                          : "Collect deposit on terminal"}
+                      </h3>
                       <span className="balance-pill">
                         Card deposit{" "}
                         {formatCurrency(
                           createdReservation.cardDepositAmount ??
-                            createdReservation.depositAmount
+                          createdReservation.depositAmount
                         )}
                       </span>
                     </div>
+                    {isCreatedPaymentPanelMinimized ? (
+                      <div className="button-row created-payment-actions">
+                        <span className="muted">
+                          Reservation #{createdReservation.id} deposit was
+                          recorded as paid in office.
+                        </span>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() =>
+                            setIsCreatedPaymentPanelMinimized(false)
+                          }>
+                          Show payment options
+                        </button>
+                      </div>
+                    ) : (
+                      <>
                     <p className="muted">
                       Reservation #{createdReservation.id}. The card deposit
                       price is sent to the office Stripe Terminal. For a split
@@ -10638,8 +10671,8 @@ export default function App() {
                       <div className="result-header">
                         <h4>Paid in office</h4>
                         <span className="muted">
-                          Use these after taking a card payment outside the
-                          Terminal. The correct card amount is recorded
+                          Use this after taking a payment in the office. The
+                          normal cash/check deposit amount is recorded
                           automatically.
                         </span>
                       </div>
@@ -10649,37 +10682,14 @@ export default function App() {
                           className="ghost-button"
                           disabled={
                             isRecordingOfficePayment ||
-                            getOutstandingCardDeposit(createdReservation) <= 0
+                            getOutstandingBankDeposit(createdReservation) <= 0
                           }
                           onClick={() =>
-                            recordOfficePayment(
-                              createdReservation,
-                              getOutstandingCardDeposit(createdReservation),
-                              "Paid deposit in office"
-                            ).catch(() => {})
+                            recordCreatedDepositInOffice().catch(() => {})
                           }>
                           {isRecordingOfficePayment
                             ? "Recording…"
                             : "Paid deposit"}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          disabled={
-                            isRecordingOfficePayment ||
-                            getOutstandingCardFirstNight(createdReservation) <=
-                              0
-                          }
-                          onClick={() =>
-                            recordOfficePayment(
-                              createdReservation,
-                              getOutstandingCardFirstNight(createdReservation),
-                              "Paid first night in office"
-                            ).catch(() => {})
-                          }>
-                          {isRecordingOfficePayment
-                            ? "Recording…"
-                            : "Paid first night"}
                         </button>
                       </div>
                     </div>
@@ -10958,6 +10968,8 @@ export default function App() {
                         />
                       </Elements>
                     ) : null}
+                      </>
+                    )}
                   </div>
                 ) : null}
                 {createdReservation && !editingReservationId ? (
