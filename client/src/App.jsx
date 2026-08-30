@@ -5713,22 +5713,12 @@ export default function App() {
 
     async function refreshLiveAdminData() {
       try {
-        const [reservationData, siteData, customerData] = await Promise.all([
-          apiRequest("/reservations"),
-          apiRequest("/sites"),
-          apiRequest("/customers"),
-        ]);
+        await refreshSharedAdminData();
 
         if (isClosed) {
           return;
         }
 
-        setReservations(ensureArray(reservationData, "Reservations"));
-        setSites(ensureArray(siteData, "Sites"));
-        setCustomers(ensureArray(customerData, "Customers"));
-        setHasLoadedReservations(true);
-        setHasLoadedSites(true);
-        setHasLoadedCustomers(true);
         setDirectMatches([]);
         setFlexibleMatches([]);
         setSwitchPlan(null);
@@ -5736,7 +5726,7 @@ export default function App() {
         setAdminSaveNotice("Booking calendar updated from another device.");
       } catch (error) {
         if (!isClosed) {
-          setErrorMessage(error.message);
+          console.warn("Live admin refresh failed; a retry is scheduled.", error);
         }
       }
     }
@@ -5928,6 +5918,20 @@ export default function App() {
       setActiveScheduleReservation(refreshedReservation);
     }
   }, [activeScheduleReservation, reservations]);
+
+  useEffect(() => {
+    if (!createdReservation || editingReservationId) {
+      return;
+    }
+
+    const refreshedReservation = reservations.find(
+      (reservation) => reservation.id === createdReservation.id
+    );
+
+    if (refreshedReservation && refreshedReservation !== createdReservation) {
+      setCreatedReservation(refreshedReservation);
+    }
+  }, [createdReservation, editingReservationId, reservations]);
 
   useEffect(() => {
     if (
@@ -6252,16 +6256,12 @@ export default function App() {
 
   useEffect(() => {
     function handleVisibilityOrFocus() {
-      if (
-        document.visibilityState === "hidden" ||
-        !isUnlocked ||
-        !hasLoadedSites
-      ) {
+      if (document.visibilityState === "hidden" || !isUnlocked) {
         return;
       }
 
-      refreshSites().catch((error) => {
-        setErrorMessage(error.message);
+      refreshSharedAdminData().catch((error) => {
+        console.warn("Admin data refresh on focus failed; it will retry.", error);
       });
     }
 
@@ -6272,7 +6272,25 @@ export default function App() {
       window.removeEventListener("focus", handleVisibilityOrFocus);
       document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
     };
-  }, [hasLoadedSites, isUnlocked]);
+  }, [isUnlocked]);
+
+  useEffect(() => {
+    if (!isUnlocked) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
+      refreshSharedAdminData().catch((error) => {
+        console.warn("Periodic admin data refresh failed; it will retry.", error);
+      });
+    }, 30000);
+
+    return () => window.clearInterval(intervalId);
+  }, [isUnlocked]);
 
   useEffect(() => {
     if (reservationForm.reservationTerm !== "yearly") {
@@ -6818,7 +6836,7 @@ export default function App() {
       return sites;
     }
 
-    if (!force && sitesRequestRef.current) {
+    if (sitesRequestRef.current) {
       return sitesRequestRef.current;
     }
 
@@ -6847,7 +6865,7 @@ export default function App() {
       return customers;
     }
 
-    if (!force && customersRequestRef.current) {
+    if (customersRequestRef.current) {
       return customersRequestRef.current;
     }
 
@@ -6876,7 +6894,7 @@ export default function App() {
       return reservations;
     }
 
-    if (!force && reservationsRequestRef.current) {
+    if (reservationsRequestRef.current) {
       return reservationsRequestRef.current;
     }
 
@@ -6916,6 +6934,20 @@ export default function App() {
     return {
       reservations: reservationData,
       sites: siteData,
+    };
+  }
+
+  async function refreshSharedAdminData() {
+    const [reservationData, siteData, customerData] = await Promise.all([
+      ensureReservationsLoaded({ force: true }),
+      ensureSitesLoaded({ force: true }),
+      ensureCustomersLoaded({ force: true }),
+    ]);
+
+    return {
+      reservations: reservationData,
+      sites: siteData,
+      customers: customerData,
     };
   }
 
@@ -11814,10 +11846,8 @@ export default function App() {
                               : "None requested"}
                           </span>
                           <span>
-                            Deposit amount:{" "}
-                            {formatCurrency(
-                              getRequiredDepositAmount(reservation)
-                            )}
+                            Total paid:{" "}
+                            {formatCurrency(reservation.amountPaid || 0)}
                           </span>
                           <NightPaymentStatus reservation={reservation} />
                         </div>
@@ -12984,12 +13014,6 @@ export default function App() {
                   {activeScheduleReservation.requestedDiscounts?.length
                     ? "Qualified"
                     : "Not qualified"}
-                </span>
-                <span>
-                  Deposit amount:{" "}
-                  {formatCurrency(
-                    getRequiredDepositAmount(activeScheduleReservation)
-                  )}
                 </span>
                 <span>
                   Total paid:{" "}
