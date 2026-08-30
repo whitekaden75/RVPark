@@ -8863,6 +8863,18 @@ export default function App() {
         resetReservationForm();
       }
 
+      if (terminalPayment?.reservationId === reservation.id) {
+        pendingTerminalCheckInRef.current = null;
+        setTerminalPayment((current) => ({
+          ...current,
+          status: "canceled",
+          message:
+            "Terminal payment canceled because the reservation was deleted.",
+          canRetry: false,
+        }));
+        setTerminalPaymentError("");
+      }
+
       await refreshReservationAndSiteData();
       setSuccessMessage(`Deleted reservation #${reservation.id}.`);
     } catch (error) {
@@ -12978,6 +12990,10 @@ export default function App() {
                   {formatCurrency(
                     getRequiredDepositAmount(activeScheduleReservation)
                   )}
+                </span>
+                <span>
+                  Total paid:{" "}
+                  {formatCurrency(activeScheduleReservation.amountPaid || 0)}
                 </span>
                 <NightPaymentStatus reservation={activeScheduleReservation} />
               </div>

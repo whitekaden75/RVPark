@@ -24,6 +24,14 @@ function getArrivalStay(reservation, date) {
   );
 }
 
+function getInitialStay(reservation) {
+  return [...(reservation.siteStays || [])].sort((left, right) =>
+    String(left.arrival_date || "").localeCompare(
+      String(right.arrival_date || "")
+    )
+  )[0];
+}
+
 function getDefaultRvType(reservation) {
   if (reservation.motorhome_class_a) return "Motor home — Class A";
   if (reservation.motorhome_class_c) return "Motor home — Class C";
@@ -282,9 +290,7 @@ export default function CheckInPage({
         .filter(
           (reservation) =>
             reservation.status !== "canceled" &&
-            (reservation.siteStays || []).some(
-              (stay) => stay.arrival_date === today
-            )
+            getInitialStay(reservation)?.arrival_date === today
         )
         .filter((reservation) => {
           const query = search.trim().toLowerCase();

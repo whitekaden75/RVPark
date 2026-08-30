@@ -1753,7 +1753,7 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
   const cardTotalPrice = usesDailyNightBilling
     ? roundCurrency(selectedCardDailyTotal)
     : getCardStayTotal(baseEffectiveTotalPrice, totals?.chargeableNights);
-  const paymentProgress = usesDailyNightBilling
+  const calculatedPaymentProgress = usesDailyNightBilling
     ? calculatePaidChargeableNights({
         amountPaid,
         paymentEvents,
@@ -1762,6 +1762,16 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
         totalChargeableNights
       })
     : null;
+  const normalStayPriceIsFullyPaid =
+    usesDailyNightBilling &&
+    Number.isFinite(Number(selectedDailyTotal)) &&
+    amountPaid + 0.001 >= Number(selectedDailyTotal);
+  const paymentProgress = normalStayPriceIsFullyPaid
+    ? {
+        paidNights: totalChargeableNights,
+        partialPaymentCredit: 0
+      }
+    : calculatedPaymentProgress;
   const paidChargeableNights = paymentProgress?.paidNights ?? null;
   const partialPaymentCredit = paymentProgress?.partialPaymentCredit ?? 0;
   const unpaidChargeableNights = usesDailyNightBilling
@@ -2114,6 +2124,36 @@ function serializeTerminalReader(reader) {
         }
       : null
   };
+}
+
+async function cancelStripeTerminalPayment(paymentIntentId, readerOverride = null) {
+  const reader = readerOverride || (await resolveStripeTerminalReader());
+  const serializedReader = serializeTerminalReader(reader);
+
+  if (
+    reader.action?.status === "in_progress" &&
+    serializedReader.action?.paymentIntentId === paymentIntentId
+  ) {
+    await stripe.terminal.readers.cancelAction(reader.id);
+  }
+
+  let paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+  if (!["succeeded", "canceled"].includes(paymentIntent.status)) {
+    try {
+      paymentIntent = await stripe.paymentIntents.cancel(paymentIntentId);
+    } catch (error) {
+      // A card can finish at the same moment the office cancels the reader.
+      // Re-read the intent so callers receive the final Stripe state instead
+      // of leaving the local workflow stuck on an out-of-date error.
+      if (error.code !== "payment_intent_unexpected_state") {
+        throw error;
+      }
+      paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    }
+  }
+
+  return { reader, paymentIntent };
 }
 
 function serializeReservationCheckIn(row, { includeSignature = true } = {}) {
@@ -7089,34 +7129,50 @@ app.post("/api/stripe/terminal/payments/:paymentIntentId/cancel", async (req, re
   const paymentIntentId = String(req.params.paymentIntentId || "");
 
   try {
-    const recordResult = await pool.query(
-      `SELECT id FROM stripe_payment_records WHERE stripe_payment_intent_id = $1 LIMIT 1`,
-      [paymentIntentId]
-    );
+    const [recordResult, reader, paymentIntent] = await Promise.all([
+      pool.query(
+        `SELECT id FROM stripe_payment_records WHERE stripe_payment_intent_id = $1 LIMIT 1`,
+        [paymentIntentId]
+      ),
+      resolveStripeTerminalReader(),
+      stripe.paymentIntents.retrieve(paymentIntentId)
+    ]);
+    const serializedReader = serializeTerminalReader(reader);
+    const readerActionMatches =
+      serializedReader.action?.paymentIntentId === paymentIntentId;
+    const belongsToReader =
+      paymentIntent.metadata?.terminal_reader_id === reader.id;
 
-    if (recordResult.rowCount === 0) {
+    // Reservation deletion can cascade-delete the local payment record while
+    // Stripe's reader action is still active. The intent metadata and current
+    // reader action let an authenticated admin safely release that orphan.
+    if (recordResult.rowCount === 0 && !readerActionMatches && !belongsToReader) {
       return res.status(404).json({ message: "Terminal payment not found." });
     }
 
-    const reader = await resolveStripeTerminalReader();
-    const serializedReader = serializeTerminalReader(reader);
-
-    if (
-      reader.action?.status === "in_progress" &&
-      serializedReader.action?.paymentIntentId === paymentIntentId
-    ) {
-      await stripe.terminal.readers.cancelAction(reader.id);
-    }
-
-    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-    if (["requires_payment_method", "requires_confirmation"].includes(paymentIntent.status)) {
-      await stripe.paymentIntents.cancel(paymentIntentId);
-    }
-
-    await pool.query(
-      `UPDATE stripe_payment_records SET payment_status = 'canceled' WHERE id = $1`,
-      [recordResult.rows[0].id]
+    const canceledPayment = await cancelStripeTerminalPayment(
+      paymentIntentId,
+      reader
     );
+
+    if (recordResult.rowCount > 0) {
+      await pool.query(
+        `UPDATE stripe_payment_records SET payment_status = $2 WHERE id = $1`,
+        [
+          recordResult.rows[0].id,
+          canceledPayment.paymentIntent.status === "succeeded"
+            ? "paid"
+            : "canceled"
+        ]
+      );
+    }
+
+    if (canceledPayment.paymentIntent.status === "succeeded") {
+      await syncOpenStripePayments();
+      return res.status(409).json({
+        message: "The card payment finished before it could be canceled. The payment was recorded."
+      });
+    }
 
     return res.json({ canceled: true });
   } catch (error) {
@@ -8332,6 +8388,48 @@ app.delete("/api/reservations/:id", async (req, res) => {
 
   if (!reservationId) {
     return res.status(400).json({ message: "Reservation ID is required." });
+  }
+
+  try {
+    const activeTerminalPayments = await pool.query(
+      `
+        SELECT stripe_payment_intent_id
+        FROM stripe_payment_records
+        WHERE reservation_id = $1
+          AND stripe_payment_method_type IN ('card_present', 'card')
+          AND stripe_checkout_session_id IS NULL
+          AND payment_status = 'processing'
+          AND stripe_payment_intent_id IS NOT NULL
+      `,
+      [reservationId]
+    );
+
+    for (const paymentRecord of activeTerminalPayments.rows) {
+      const canceledPayment = await cancelStripeTerminalPayment(
+        paymentRecord.stripe_payment_intent_id
+      );
+
+      if (canceledPayment.paymentIntent.status === "succeeded") {
+        await syncOpenStripePayments();
+        return res.status(409).json({
+          message:
+            "This reservation has a card payment that just completed. Review the payment before deleting the reservation."
+        });
+      }
+
+      await pool.query(
+        `
+          UPDATE stripe_payment_records
+          SET payment_status = 'canceled'
+          WHERE stripe_payment_intent_id = $1
+        `,
+        [paymentRecord.stripe_payment_intent_id]
+      );
+    }
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      message: `The reservation was not deleted because its Terminal payment could not be canceled: ${error.message}`
+    });
   }
 
   const client = await pool.connect();
