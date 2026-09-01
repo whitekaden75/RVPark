@@ -1900,6 +1900,40 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
     );
   }
 
+  const cardPaymentOptions = usesDailyNightBilling
+    ? Array.from({ length: unpaidStayNights }, (_, index) => {
+        const nights = index + 1;
+        const targetStayNights = paidStayNights + nights;
+        let targetChargeableNights = paidChargeableNights;
+
+        while (
+          targetChargeableNights < totalChargeableNights &&
+          Number(
+            totals?.coveredStayNightsByPaidNightCount?.[
+              targetChargeableNights
+            ] ?? 0
+          ) < targetStayNights
+        ) {
+          targetChargeableNights += 1;
+        }
+
+        const amount = roundCurrency(
+          Math.max(
+            selectedCardNightlyPrices
+              .slice(paidChargeableNights, targetChargeableNights)
+              .reduce((total, price) => total + Number(price || 0), 0) -
+              partialPaymentCredit,
+            0
+          )
+        );
+
+        return {
+          nights,
+          amount: Math.min(amount, Number(cardRemainingBalance || 0))
+        };
+      })
+    : [];
+
   return {
     depositAmount: toPriceNumber(reservationRow.deposit_amount) ?? 0,
     requiredDepositAmount,
@@ -1928,6 +1962,7 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
     remainingBalance,
     bankRemainingBalance,
     cardRemainingBalance,
+    cardPaymentOptions,
     selectedPaymentMethod,
     requestedDiscounts: normalizeRequestedDiscounts(
       reservationRow.requested_discounts
@@ -4493,6 +4528,7 @@ function sanitizeGuestReservation(reservation) {
     remainingBalance: reservation.remainingBalance,
     bankRemainingBalance: reservation.bankRemainingBalance,
     cardRemainingBalance: reservation.cardRemainingBalance,
+    cardPaymentOptions: reservation.cardPaymentOptions || [],
     selectedPaymentMethod: reservation.selectedPaymentMethod,
     siteStays: reservation.siteStays.map((segment) => ({
       id: segment.id,

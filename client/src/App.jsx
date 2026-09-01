@@ -5557,6 +5557,10 @@ export default function App() {
   const [reservationCheckNumber, setReservationCheckNumber] = useState("");
   const [activeSchedulePaymentAmount, setActiveSchedulePaymentAmount] =
     useState("");
+  const [activeSchedulePaymentNights, setActiveSchedulePaymentNights] =
+    useState("");
+  const [activeSchedulePaymentMethod, setActiveSchedulePaymentMethod] =
+    useState("");
   const [activeScheduleCashCheckPaymentAmount, setActiveScheduleCashCheckPaymentAmount] =
     useState("");
   const [activeScheduleCheckNumber, setActiveScheduleCheckNumber] = useState("");
@@ -6128,6 +6132,7 @@ export default function App() {
       setSchedulePaymentSuccessMessage("");
       setActiveScheduleCashCheckPaymentAmount("");
       setActiveScheduleCheckNumber("");
+      setActiveSchedulePaymentMethod("");
       return;
     }
 
@@ -6143,6 +6148,7 @@ export default function App() {
         : ""
     );
     setActiveScheduleCheckNumber("");
+    setActiveSchedulePaymentMethod("");
     setSchedulePaymentErrorMessage("");
     setSchedulePaymentSuccessMessage("");
   }, [activeScheduleReservation]);
@@ -6150,13 +6156,24 @@ export default function App() {
   useEffect(() => {
     if (!activeScheduleReservation) {
       setActiveSchedulePaymentAmount("");
+      setActiveSchedulePaymentNights("");
       return;
     }
 
+    const cardPaymentOptions = Array.isArray(
+      activeScheduleReservation.cardPaymentOptions
+    )
+      ? activeScheduleReservation.cardPaymentOptions
+      : [];
+    const fullStayOption = cardPaymentOptions.at(-1);
     const currentCardAmount =
+      fullStayOption?.amount ??
       activeScheduleReservation.cardRemainingBalance ??
       activeScheduleReservation.remainingBalance;
 
+    setActiveSchedulePaymentNights(
+      fullStayOption?.nights ? String(fullStayOption.nights) : ""
+    );
     setActiveSchedulePaymentAmount(
       Number(currentCardAmount || 0) > 0
         ? Number(currentCardAmount).toFixed(2)
@@ -6166,6 +6183,7 @@ export default function App() {
     activeScheduleReservation?.id,
     activeScheduleReservation?.cardRemainingBalance,
     activeScheduleReservation?.remainingBalance,
+    activeScheduleReservation?.cardPaymentOptions,
   ]);
 
   useEffect(() => {
@@ -12964,12 +12982,15 @@ export default function App() {
                   <button
                     type="button"
                     className="ghost-button"
-                    onClick={() =>
-                      setIsEditingSchedulePaymentInfo((current) => !current)
-                    }>
+                    onClick={() => {
+                      if (!isEditingSchedulePaymentInfo) {
+                        setActiveSchedulePaymentMethod("");
+                      }
+                      setIsEditingSchedulePaymentInfo((current) => !current);
+                    }}>
                     {isEditingSchedulePaymentInfo
-                      ? "Hide payment info"
-                      : "Edit payment info"}
+                      ? "Hide payments"
+                      : "Manage payments"}
                   </button>
                   <button
                     type="button"
@@ -13071,17 +13092,399 @@ export default function App() {
                 </div>
               ) : null}
               {isEditingSchedulePaymentInfo ? (
-                <div className="payment-panel">
-                  <div className="result-header">
-                    <h3>Edit payment info</h3>
+                <div className="payment-panel payment-center">
+                  <div className="payment-center-heading">
+                    <div>
+                      <span className="payment-center-eyebrow">Payment center</span>
+                      <h3>Collect or record a payment</h3>
+                      <p className="muted">
+                        Choose how the guest is paying. Card and cash prices are
+                        shown separately so the correct amount is always clear.
+                      </p>
+                    </div>
+                    <div className="payment-balance-hero">
+                      <span>Card balance due</span>
+                      <strong>
+                        {formatCurrency(
+                          activeScheduleReservation.cardRemainingBalance || 0
+                        )}
+                      </strong>
+                      <small>
+                        {formatCurrency(
+                          activeScheduleReservation.bankRemainingBalance ??
+                            activeScheduleReservation.remainingBalance ??
+                            0
+                        )}{" "}
+                        if paying by cash or check
+                      </small>
+                    </div>
+                  </div>
+                  <div className="payment-center-progress">
+                    <NightPaymentStatus
+                      reservation={activeScheduleReservation}
+                      showNightlyRates
+                    />
+                    <span>
+                      Paid so far: {formatCurrency(activeScheduleReservation.amountPaid || 0)}
+                    </span>
                   </div>
                   <div className="payment-edit-sections">
-                    <div className="timeline-card payment-edit-card">
+                    <div
+                      className="payment-choice-grid"
+                      aria-label="Choose payment method">
+                      <button
+                        type="button"
+                        className={`payment-choice ${
+                          activeSchedulePaymentMethod === "card"
+                            ? "selected"
+                            : ""
+                        }`}
+                        aria-expanded={
+                          activeSchedulePaymentMethod === "card"
+                        }
+                        disabled={
+                          activeScheduleReservation.status === "canceled" ||
+                          !hasPaymentDueForReservation(
+                            activeScheduleReservation
+                          )
+                        }
+                        onClick={() =>
+                          setActiveSchedulePaymentMethod((current) =>
+                            current === "card" ? "" : "card"
+                          )
+                        }>
+                        <span className="payment-choice-icon" aria-hidden="true">
+                          $
+                        </span>
+                        <span className="payment-choice-copy">
+                          <strong>Card</strong>
+                          <small>In person or over the phone</small>
+                        </span>
+                        <span className="payment-choice-total">
+                          {formatCurrency(
+                            activeScheduleReservation.cardRemainingBalance || 0
+                          )}
+                          <small>due</small>
+                        </span>
+                        <span className="payment-choice-chevron" aria-hidden="true">
+                          ›
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`payment-choice ${
+                          activeSchedulePaymentMethod === "cash_check"
+                            ? "selected"
+                            : ""
+                        }`}
+                        aria-expanded={
+                          activeSchedulePaymentMethod === "cash_check"
+                        }
+                        disabled={
+                          activeScheduleReservation.status === "canceled" ||
+                          !hasPaymentDueForReservation(
+                            activeScheduleReservation
+                          )
+                        }
+                        onClick={() =>
+                          setActiveSchedulePaymentMethod((current) =>
+                            current === "cash_check" ? "" : "cash_check"
+                          )
+                        }>
+                        <span
+                          className="payment-choice-icon payment-choice-icon-cash"
+                          aria-hidden="true">
+                          ✓
+                        </span>
+                        <span className="payment-choice-copy">
+                          <strong>Cash or check</strong>
+                          <small>Record payment received</small>
+                        </span>
+                        <span className="payment-choice-total">
+                          {formatCurrency(
+                            activeScheduleReservation.bankRemainingBalance ??
+                              activeScheduleReservation.remainingBalance ??
+                              0
+                          )}
+                          <small>due</small>
+                        </span>
+                        <span className="payment-choice-chevron" aria-hidden="true">
+                          ›
+                        </span>
+                      </button>
+                    </div>
+                    {activeScheduleReservation.status !== "canceled" &&
+                    hasPaymentDueForReservation(activeScheduleReservation) &&
+                    activeSchedulePaymentMethod === "card" ? (
+                      <div className="timeline-card payment-edit-card payment-method-card payment-method-card-primary">
+                        <div className="payment-method-heading">
+                          <span className="payment-method-icon" aria-hidden="true">
+                            $
+                          </span>
+                          <div>
+                            <h4>Pay by card</h4>
+                            <span className="muted">
+                              Use the reader for a guest in front of you or for
+                              an approved phone payment.
+                            </span>
+                          </div>
+                        </div>
+                        <div className="payment-action-layout">
+                          {activeScheduleReservation.cardPaymentOptions
+                            ?.length ? (
+                            <label className="payment-days-field">
+                              Days to charge
+                              <select
+                                value={activeSchedulePaymentNights}
+                                onChange={(event) => {
+                                  const selectedNights = event.target.value;
+                                  const selectedOption =
+                                    activeScheduleReservation.cardPaymentOptions.find(
+                                      (option) =>
+                                        String(option.nights) === selectedNights
+                                    );
+
+                                  setActiveSchedulePaymentNights(
+                                    selectedNights
+                                  );
+                                  setActiveSchedulePaymentAmount(
+                                    selectedOption
+                                      ? Number(selectedOption.amount).toFixed(2)
+                                      : ""
+                                  );
+                                  setScheduleCardPayment(null);
+                                  setPaymentLinkSuccessMessage("");
+                                }}>
+                                {activeScheduleReservation.cardPaymentOptions.map(
+                                  (option) => (
+                                    <option
+                                      key={option.nights}
+                                      value={option.nights}>
+                                      {option.nights}{" "}
+                                      {option.nights === 1 ? "day" : "days"}
+                                    </option>
+                                  )
+                                )}
+                              </select>
+                            </label>
+                          ) : (
+                            <label className="payment-amount-field">
+                              Custom payment total
+                              <div className="currency-input">
+                                <span aria-hidden="true">$</span>
+                                <input
+                                  type="number"
+                                  min="0.01"
+                                  step="0.01"
+                                  value={activeSchedulePaymentAmount}
+                                  onChange={(event) => {
+                                    setActiveSchedulePaymentAmount(
+                                      event.target.value
+                                    );
+                                    setScheduleCardPayment(null);
+                                    setPaymentLinkSuccessMessage("");
+                                  }}
+                                  onWheel={(event) => event.currentTarget.blur()}
+                                />
+                              </div>
+                            </label>
+                          )}
+                          <div className="payment-total-preview">
+                            <span>Total to charge</span>
+                            <strong>
+                              {formatCurrency(activeSchedulePaymentAmount)}
+                            </strong>
+                            {activeSchedulePaymentNights ? (
+                              <small>
+                                Covers {activeSchedulePaymentNights}{" "}
+                                {Number(activeSchedulePaymentNights) === 1
+                                  ? "day"
+                                  : "days"}
+                              </small>
+                            ) : null}
+                          </div>
+                        </div>
+                        <TerminalPaymentPanel
+                          reader={terminalReader}
+                          payment={terminalPayment}
+                          reservationId={activeScheduleReservation.id}
+                          errorMessage={terminalPaymentError}
+                          onRetry={retryTerminalPayment}
+                          onCancel={cancelTerminalPayment}
+                        />
+                        <div className="payment-primary-actions">
+                          <button
+                            type="button"
+                            className="primary-button terminal-send-button"
+                            disabled={
+                              terminalReader?.status !== "online" ||
+                              Number(activeSchedulePaymentAmount || 0) <= 0 ||
+                              startingTerminalReservationId ===
+                                activeScheduleReservation.id ||
+                              (terminalPayment?.reservationId ===
+                                activeScheduleReservation.id &&
+                                ["in_progress", "failed", "finalizing"].includes(
+                                  terminalPayment.status
+                                ))
+                            }
+                            onClick={() =>
+                              startTerminalPayment(
+                                activeScheduleReservation,
+                                activeSchedulePaymentAmount,
+                                "card"
+                              )
+                            }>
+                            {startingTerminalReservationId ===
+                            activeScheduleReservation.id
+                              ? "Sending to reader…"
+                              : `Charge ${formatCurrency(
+                                  activeSchedulePaymentAmount
+                                )} in person`}
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button phone-payment-button"
+                            disabled={
+                              !terminalReader?.motoEnabled ||
+                              terminalReader?.status !== "online" ||
+                              Number(activeSchedulePaymentAmount || 0) <= 0 ||
+                              startingTerminalReservationId ===
+                                activeScheduleReservation.id ||
+                              (terminalPayment?.reservationId ===
+                                activeScheduleReservation.id &&
+                                ["in_progress", "failed", "finalizing"].includes(
+                                  terminalPayment.status
+                                ))
+                            }
+                            onClick={() =>
+                              startTerminalPayment(
+                                activeScheduleReservation,
+                                activeSchedulePaymentAmount,
+                                "card",
+                                { moto: true }
+                              )
+                            }>
+                            Take payment over phone
+                          </button>
+                        </div>
+                        <p className="payment-method-help">
+                          {terminalReader?.motoEnabled
+                            ? "For phone payments, enter the card details securely on the Stripe reader."
+                            : "Phone payments will become available here when MOTO is enabled on the server."}
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {activeSchedulePaymentMethod === "cash_check" ? (
+                    <div className="timeline-card payment-edit-card payment-method-card">
+                      <div className="payment-method-heading">
+                        <span className="payment-method-icon payment-method-icon-cash" aria-hidden="true">
+                          ✓
+                        </span>
+                        <div>
+                          <h4>Cash or check</h4>
+                          <span className="muted">
+                            Record money already received. This does not charge
+                            a card.
+                          </span>
+                        </div>
+                      </div>
+                      <div className="payment-action-layout payment-action-layout-cash">
+                        <label className="payment-amount-field">
+                          Amount received
+                          <div className="currency-input">
+                            <span aria-hidden="true">$</span>
+                            <input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={activeScheduleCashCheckPaymentAmount}
+                              disabled={isRecordingOfficePayment}
+                              onChange={(event) =>
+                                setActiveScheduleCashCheckPaymentAmount(
+                                  event.target.value
+                                )
+                              }
+                              onWheel={(event) => event.currentTarget.blur()}
+                            />
+                          </div>
+                        </label>
+                        <label>
+                          Check number <span className="optional-label">check only</span>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            maxLength="50"
+                            value={activeScheduleCheckNumber}
+                            disabled={isRecordingOfficePayment}
+                            onChange={(event) =>
+                              setActiveScheduleCheckNumber(event.target.value)
+                            }
+                            placeholder="Enter for check"
+                          />
+                        </label>
+                      </div>
+                      <div className="payment-primary-actions">
+                        <button
+                          type="button"
+                          className="primary-button"
+                          disabled={
+                            isRecordingOfficePayment ||
+                            Number(activeScheduleCashCheckPaymentAmount || 0) <= 0
+                          }
+                          onClick={() =>
+                            recordCashCheckPayment(
+                              activeScheduleReservation,
+                              activeScheduleCashCheckPaymentAmount,
+                              "cash"
+                            ).catch(() => {})
+                          }>
+                          {isRecordingOfficePayment
+                            ? "Recording…"
+                            : `Record ${formatCurrency(
+                                activeScheduleCashCheckPaymentAmount
+                              )} cash`}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          disabled={
+                            isRecordingOfficePayment ||
+                            Number(activeScheduleCashCheckPaymentAmount || 0) <= 0 ||
+                            !activeScheduleCheckNumber.trim()
+                          }
+                          onClick={() =>
+                            recordCashCheckPayment(
+                              activeScheduleReservation,
+                              activeScheduleCashCheckPaymentAmount,
+                              "check",
+                              activeScheduleCheckNumber
+                            ).catch(() => {})
+                          }>
+                          {isRecordingOfficePayment
+                            ? "Recording…"
+                            : `Record ${formatCurrency(
+                                activeScheduleCashCheckPaymentAmount
+                              )} check`}
+                        </button>
+                      </div>
+                    </div>
+                    ) : null}
+
+                    <details className="payment-adjustments">
+                      <summary>
+                        <span>
+                          <strong>Adjust pricing or paid amount</strong>
+                          <small>For corrections and special cases</small>
+                        </span>
+                        <span aria-hidden="true">⌄</span>
+                      </summary>
+                      <div className="timeline-card payment-edit-card payment-adjustments-body">
                       <div className="result-header">
                         <h4>Reservation amounts</h4>
                         <span className="muted">
-                          Paid nights come from the nightly rates and payment
-                          history.
+                          These settings change the reservation totals. They do
+                          not collect money.
                         </span>
                       </div>
                       <label className="checkbox-row compact-checkbox payment-discount-checkbox">
@@ -13171,187 +13574,31 @@ export default function App() {
                           />
                         </label>
                       </div>
-                    </div>
-                    <div className="timeline-card payment-edit-card">
-                      <div className="result-header">
-                        <h4>Record cash or check payment</h4>
-                      </div>
-                      <div className="field-grid compact-grid">
-                        <label>
-                          Payment amount
-                          <input
-                            type="number"
-                            min="0.01"
-                            step="0.01"
-                            value={activeScheduleCashCheckPaymentAmount}
-                            disabled={isRecordingOfficePayment}
-                            onChange={(event) =>
-                              setActiveScheduleCashCheckPaymentAmount(
-                                event.target.value
-                              )
-                            }
-                            onWheel={(event) => event.currentTarget.blur()}
-                          />
-                        </label>
-                        <label>
-                          Check number
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            maxLength="50"
-                            value={activeScheduleCheckNumber}
-                            disabled={isRecordingOfficePayment}
-                            onChange={(event) =>
-                              setActiveScheduleCheckNumber(event.target.value)
-                            }
-                            placeholder="Required for check payments"
-                          />
-                        </label>
-                      </div>
-                      <div className="button-row">
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          disabled={
-                            isRecordingOfficePayment ||
-                            Number(activeScheduleCashCheckPaymentAmount || 0) <= 0
-                          }
-                          onClick={() =>
-                            recordCashCheckPayment(
-                              activeScheduleReservation,
-                              activeScheduleCashCheckPaymentAmount,
-                              "cash"
-                            ).catch(() => {})
-                          }>
-                          {isRecordingOfficePayment
-                            ? "Recording…"
-                            : "Record cash"}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          disabled={
-                            isRecordingOfficePayment ||
-                            Number(activeScheduleCashCheckPaymentAmount || 0) <=
-                              0 ||
-                            !activeScheduleCheckNumber.trim()
-                          }
-                          onClick={() =>
-                            recordCashCheckPayment(
-                              activeScheduleReservation,
-                              activeScheduleCashCheckPaymentAmount,
-                              "check",
-                              activeScheduleCheckNumber
-                            ).catch(() => {})
-                          }>
-                          {isRecordingOfficePayment
-                            ? "Recording…"
-                            : "Record check"}
-                        </button>
-                      </div>
-                    </div>
-                    {activeScheduleReservation.status !== "canceled" &&
-                    hasPaymentDueForReservation(activeScheduleReservation) ? (
-                      <div className="timeline-card payment-edit-card">
-                        <div className="result-header">
-                          <h4>Send card payment to terminal</h4>
-                          <span className="muted">
-                            Enter the amount to collect, then send it to the
-                            office Stripe reader.
-                          </span>
-                        </div>
-                        <div className="field-grid compact-grid">
-                          <label>
-                            Terminal payment amount
-                            <input
-                              type="number"
-                              min="0.01"
-                              step="0.01"
-                              value={activeSchedulePaymentAmount}
-                              onChange={(event) => {
-                                setActiveSchedulePaymentAmount(
-                                  event.target.value
-                                );
-                                setScheduleCardPayment(null);
-                                setPaymentLinkSuccessMessage("");
-                              }}
-                              onWheel={(event) =>
-                                event.currentTarget.blur()
-                              }
-                            />
-                          </label>
-                          <div className="pricing-summary">
-                            <NightPaymentStatus
-                              reservation={activeScheduleReservation}
-                              showNightlyRates
-                            />
-                            <span>Terminal accepts card payments only.</span>
-                          </div>
-                        </div>
-                        <TerminalPaymentPanel
-                          reader={terminalReader}
-                          payment={terminalPayment}
-                          reservationId={activeScheduleReservation.id}
-                          errorMessage={terminalPaymentError}
-                          onRetry={retryTerminalPayment}
-                          onCancel={cancelTerminalPayment}
-                        />
-                        <div className="button-row">
+                        <div className="payment-adjustments-actions">
                           <button
                             type="button"
-                            className="primary-button terminal-send-button"
-                            disabled={
-                              terminalReader?.status !== "online" ||
-                              Number(activeSchedulePaymentAmount || 0) <= 0 ||
-                              startingTerminalReservationId ===
-                                activeScheduleReservation.id ||
-                              (terminalPayment?.reservationId ===
-                                activeScheduleReservation.id &&
-                                [
-                                  "in_progress",
-                                  "failed",
-                                  "finalizing",
-                                ].includes(terminalPayment.status))
-                            }
+                            className="ghost-button"
                             onClick={() =>
-                              startTerminalPayment(
-                                activeScheduleReservation,
-                                activeSchedulePaymentAmount,
-                                "card"
+                              setSchedulePaymentForm(
+                                createSchedulePaymentForm(
+                                  activeScheduleReservation
+                                )
                               )
                             }>
-                            {startingTerminalReservationId ===
-                            activeScheduleReservation.id
-                              ? "Sending…"
-                              : `Send ${formatCurrency(
-                                  activeSchedulePaymentAmount
-                                )} to terminal`}
+                            Reset changes
+                          </button>
+                          <button
+                            type="button"
+                            className="primary-button"
+                            disabled={isSavingAdminEdit}
+                            onClick={saveSchedulePaymentInfo}>
+                            {isSavingAdminEdit
+                              ? "Saving changes…"
+                              : "Save pricing changes"}
                           </button>
                         </div>
                       </div>
-                    ) : null}
-                  </div>
-                  <div className="button-row">
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => {
-                        setSchedulePaymentForm(
-                          createSchedulePaymentForm(activeScheduleReservation)
-                        );
-                        setSchedulePaymentErrorMessage("");
-                        setSchedulePaymentSuccessMessage("");
-                        setIsEditingSchedulePaymentInfo(false);
-                      }}>
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="primary-button"
-                      disabled={isSavingAdminEdit}
-                      onClick={saveSchedulePaymentInfo}>
-                      {isSavingAdminEdit ? "Saving..." : "Save payment info"}
-                    </button>
+                    </details>
                   </div>
                   {schedulePaymentErrorMessage ? (
                     <div className="message error">
@@ -13361,6 +13608,16 @@ export default function App() {
                   {schedulePaymentSuccessMessage ? (
                     <div className="message success">
                       {schedulePaymentSuccessMessage}
+                    </div>
+                  ) : null}
+                  {paymentLinkErrorMessage ? (
+                    <div className="message error">
+                      {paymentLinkErrorMessage}
+                    </div>
+                  ) : null}
+                  {paymentLinkSuccessMessage ? (
+                    <div className="message success">
+                      {paymentLinkSuccessMessage}
                     </div>
                   ) : null}
                 </div>
