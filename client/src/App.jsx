@@ -154,6 +154,7 @@ function createEmptyReservation(defaultSite = null) {
     billingMode: "standard",
     discounts: [],
     paymentMethod: "bank",
+    waiveDeposit: false,
     depositAmount: "",
     totalPrice: "",
     monthlyRentPrice: "",
@@ -210,6 +211,10 @@ function createReservationEditorState(reservation) {
       bookedDate: reservation.booked_date,
       status: reservation.status || "active",
       reservationTerm: reservation.reservation_term || "standard",
+      billingMode:
+        reservation.effectiveBillingMode ||
+        reservation.billing_mode ||
+        "standard",
       totalPrice:
         reservation.effectiveBillingMode === "standard"
           ? ""
@@ -226,6 +231,18 @@ function createReservationEditorState(reservation) {
         reservation.amountPaid !== null && reservation.amountPaid !== undefined
           ? String(reservation.amountPaid)
           : "",
+      monthlyRentPrice:
+        reservation.monthlyRentPrice !== null &&
+        reservation.monthlyRentPrice !== undefined
+          ? String(reservation.monthlyRentPrice)
+          : "",
+      electricMeterReading:
+        reservation.electricMeterReading !== null &&
+        reservation.electricMeterReading !== undefined
+          ? String(reservation.electricMeterReading)
+          : "",
+      paymentMethod: reservation.selectedPaymentMethod || "bank",
+      discounts: reservation.requestedDiscounts || [],
       rvKind: reservation.rv_kind,
       motorhomeClassA: Boolean(reservation.motorhome_class_a),
       motorhomeClassC: Boolean(reservation.motorhome_class_c),
@@ -437,6 +454,26 @@ function nightsBetween(arrivalDate, leaveDate) {
   const start = new Date(`${arrivalDate}T00:00:00Z`);
   const end = new Date(`${leaveDate}T00:00:00Z`);
   return Math.round((end - start) / 86400000);
+}
+
+function getReservationStayNights(reservation) {
+  return (reservation?.siteStays || []).reduce((total, stay) => {
+    const stayNights = Number(
+      stay.numberOfNights ?? nightsBetween(stay.arrival_date, stay.leave_date)
+    );
+    return total + (Number.isFinite(stayNights) && stayNights > 0 ? stayNights : 0);
+  }, 0);
+}
+
+function isMonthlyReservation(reservation) {
+  if (!reservation || reservation.status === "canceled") return false;
+
+  return (
+    reservation.effectiveBillingMode === "monthly" ||
+    reservation.billing_mode === "monthly" ||
+    (reservation.reservation_term !== "yearly" &&
+      getReservationStayNights(reservation) >= 28)
+  );
 }
 
 function formatDateInput(date) {
@@ -840,6 +877,7 @@ function getRequiredDepositAmount(reservation) {
 
 function getOutstandingDeposit(reservation, priceType = "card") {
   if (!reservation) return 0;
+  if (Number(getRequiredDepositAmount(reservation) || 0) <= 0) return 0;
 
   const depositNights = Number(reservation.totals?.numberOfNights) > 7 ? 2 : 1;
   const paidNights = Math.min(
@@ -5423,6 +5461,7 @@ export default function App() {
     { key: "reservation", label: "Reservations" },
     { key: "schedule", label: "Schedule" },
     { key: "history", label: "History" },
+    { key: "monthly", label: "Monthly" },
     { key: "yearly", label: "Yearly" },
     { key: "messages", label: "Text Messages" },
     { key: "sites", label: "Sites" },
@@ -5564,6 +5603,7 @@ export default function App() {
   const [activeScheduleCashCheckPaymentAmount, setActiveScheduleCashCheckPaymentAmount] =
     useState("");
   const [activeScheduleCheckNumber, setActiveScheduleCheckNumber] = useState("");
+  const [monthlyChargeAmounts, setMonthlyChargeAmounts] = useState({});
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] =
@@ -5876,6 +5916,7 @@ export default function App() {
           activePage === "checkin" ||
           activePage === "schedule" ||
           activePage === "history" ||
+          activePage === "monthly" ||
           activePage === "yearly"
         ) {
           await Promise.all([
@@ -5940,7 +5981,7 @@ export default function App() {
   useEffect(() => {
     if (
       !isUnlocked ||
-      !["reservation", "schedule", "checkin"].includes(activePage)
+      !["reservation", "schedule", "checkin", "monthly"].includes(activePage)
     ) {
       return undefined;
     }
@@ -6504,10 +6545,8 @@ export default function App() {
       ) / 100
     : null;
   const needsManualReservationPricing =
-    reservationForm.reservationTerm === "yearly" ||
-    (reservationForm.siteStays.some(
-      (segment) => segment.arrivalDate && segment.leaveDate
-    ) && reservationPricingPreview.length !== reservationForm.siteStays.length);
+    reservationForm.billingMode === "manual_total" ||
+    reservationForm.reservationTerm === "yearly";
   const firstAutoPricedSegment = reservationPricingPreview[0] || null;
   const autoPricedReservationTotal =
     reservationForm.paymentMethod === "card"
@@ -6537,7 +6576,10 @@ export default function App() {
       ? selectedCardDepositAmount
       : selectedBankDepositAmount;
   useEffect(() => {
-    if (needsManualReservationPricing) {
+    if (
+      needsManualReservationPricing ||
+      reservationForm.billingMode === "monthly"
+    ) {
       return;
     }
 
@@ -6570,6 +6612,7 @@ export default function App() {
     isReservationTotalOverridden,
     editingReservationId,
     needsManualReservationPricing,
+    reservationForm.billingMode,
   ]);
   const visibleCustomers = customers.filter((customer) => {
     const searchValue = customerSearch.trim().toLowerCase();
@@ -6618,6 +6661,13 @@ export default function App() {
     .sort((left, right) =>
       (left.booked_date || "").localeCompare(right.booked_date || "")
     );
+  const monthlyReservations = reservations
+    .filter(isMonthlyReservation)
+    .sort((left, right) => {
+      const leftDate = left.siteStays?.[0]?.arrival_date || "";
+      const rightDate = right.siteStays?.[0]?.arrival_date || "";
+      return leftDate.localeCompare(rightDate);
+    });
   const activeReservations = reservations.filter(
     (reservation) => reservation.status !== "canceled"
   );
@@ -6828,6 +6878,7 @@ export default function App() {
   const isReservationPageLoading = isLoadingSites || isLoadingCustomers;
   const isSchedulePageLoading = isLoadingSites || isLoadingReservations;
   const isHistoryPageLoading = isLoadingReservations;
+  const isMonthlyPageLoading = isLoadingReservations;
   const isYearlyPageLoading = isLoadingReservations;
   const isSitesPageLoading = isLoadingSites;
 
@@ -7058,6 +7109,12 @@ export default function App() {
     if (sectionKey === "history") {
       setSelectedHistoryDate(todayDate);
       setHistoryMonthCursor(startOfMonth(todayDate));
+      return;
+    }
+
+    if (sectionKey === "monthly") {
+      setMonthlyChargeAmounts({});
+      setTerminalPaymentError("");
       return;
     }
 
@@ -7658,22 +7715,10 @@ export default function App() {
       let customerId = reservationForm.customerId
         ? Number(reservationForm.customerId)
         : null;
-      const depositAmountNumber = Number(
-        reservationForm.depositAmount || autoPricedDepositAmount
-      );
       const isCreatingReservation = !editingReservationId;
 
       if (isCreatingReservation) {
         setIsPreparingCreatedTerminalPayment(true);
-      }
-
-      if (
-        isCreatingReservation &&
-        (!Number.isFinite(depositAmountNumber) || depositAmountNumber <= 0)
-      ) {
-        throw new Error(
-          "A deposit amount is required to create a reservation."
-        );
       }
 
       if (!customerId) {
@@ -7724,15 +7769,19 @@ export default function App() {
 
       const payload = {
         ...reservationForm,
-        billingMode: needsManualReservationPricing
-          ? "manual_total"
-          : "standard",
-        depositAmount: needsManualReservationPricing
-          ? reservationForm.depositAmount
-          : autoPricedDepositAmount ?? reservationForm.depositAmount,
-        totalPrice: needsManualReservationPricing
-          ? reservationForm.totalPrice
-          : autoPricedReservationTotal ?? reservationForm.totalPrice,
+        billingMode:
+          reservationForm.reservationTerm === "yearly"
+            ? "manual_total"
+            : reservationForm.billingMode,
+        depositAmount: reservationForm.waiveDeposit
+          ? 0
+          : needsManualReservationPricing || reservationForm.billingMode === "monthly"
+            ? reservationForm.depositAmount || 0
+            : autoPricedDepositAmount ?? reservationForm.depositAmount ?? 0,
+        totalPrice:
+          needsManualReservationPricing
+            ? reservationForm.totalPrice
+            : null,
         motorhomeClassA:
           reservationForm.rvKind === "motor home"
             ? reservationForm.motorhomeClassA
@@ -7860,6 +7909,7 @@ export default function App() {
           "standard",
         discounts: reservation.requestedDiscounts || [],
         paymentMethod: reservation.selectedPaymentMethod || "bank",
+        waiveDeposit: Number(getRequiredDepositAmount(reservation) || 0) <= 0,
         depositAmount:
           getRequiredDepositAmount(reservation) !== null &&
           getRequiredDepositAmount(reservation) !== undefined
@@ -8276,7 +8326,7 @@ export default function App() {
     reservation,
     amountValue,
     priceTypeOverride = "",
-    { moto = false } = {}
+    { moto = false, customCharge = false } = {}
   ) {
     setTerminalPaymentError("");
     setPaymentLinkErrorMessage("");
@@ -8298,6 +8348,7 @@ export default function App() {
             amount: amount.toFixed(2),
             priceType: priceTypeOverride || "card",
             moto,
+            customCharge,
           }),
         }
       );
@@ -9291,9 +9342,13 @@ export default function App() {
         billingMode:
           reservationEditor.reservation.reservationTerm === "yearly"
             ? "manual_total"
-            : "standard",
+            : reservationEditor.reservation.billingMode,
         totalPrice: reservationEditor.reservation.totalPrice,
         depositAmount: reservationEditor.reservation.depositAmount,
+        monthlyRentPrice: reservationEditor.reservation.monthlyRentPrice,
+        electricMeterReading: reservationEditor.reservation.electricMeterReading,
+        paymentMethod: reservationEditor.reservation.paymentMethod,
+        discounts: reservationEditor.reservation.discounts,
         rvKind: reservationEditor.reservation.rvKind,
         motorhomeClassA:
           reservationEditor.reservation.rvKind === "motor home"
@@ -9545,6 +9600,10 @@ export default function App() {
         activeCheckInReservationId === terminalPayment.reservationId) ||
       (activePage === "schedule" &&
         activeScheduleReservation?.id === terminalPayment.reservationId) ||
+      (activePage === "monthly" &&
+        monthlyReservations.some(
+          (reservation) => reservation.id === terminalPayment.reservationId
+        )) ||
       (activePage === "reservation" &&
         createdReservation?.id === terminalPayment.reservationId)
     : false;
@@ -10439,16 +10498,35 @@ export default function App() {
                     Reservation term
                     <select
                       value={reservationForm.reservationTerm}
-                      onChange={(event) =>
-                        updateReservationField(
-                          "reservationTerm",
-                          event.target.value
-                        )
-                      }>
+                      onChange={(event) => {
+                        const reservationTerm = event.target.value;
+                        setReservationForm((current) => ({
+                          ...current,
+                          reservationTerm,
+                          billingMode:
+                            reservationTerm === "yearly"
+                              ? "manual_total"
+                              : current.billingMode,
+                        }));
+                      }}>
                       <option value="standard">Standard</option>
                       <option value="yearly">Yearly</option>
                     </select>
                   </label>
+                  {reservationForm.reservationTerm !== "yearly" ? (
+                    <label>
+                      Billing type
+                      <select
+                        value={reservationForm.billingMode}
+                        onChange={(event) =>
+                          updateReservationField("billingMode", event.target.value)
+                        }>
+                        <option value="standard">Nightly</option>
+                        <option value="monthly">Monthly (28+ nights)</option>
+                        <option value="manual_total">Custom stay total</option>
+                      </select>
+                    </label>
+                  ) : null}
                   <div className="public-discount-panel admin-price-choice-panel">
                     <span className="small-text">Discount</span>
                     <label className="checkbox-row compact-checkbox">
@@ -10481,22 +10559,55 @@ export default function App() {
                           }}
                         />
                       </label>
-                      <label>
-                        Manual deposit
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          placeholder="0.00"
-                          value={reservationForm.depositAmount}
-                          onChange={(event) => {
-                            setIsReservationDepositOverridden(true);
-                            updateReservationField("depositAmount", event.target.value);
-                          }}
-                          onWheel={(event) => event.currentTarget.blur()}
-                        />
-                      </label>
                     </>
+                  ) : null}
+                  {reservationForm.billingMode === "monthly" ? (
+                    <label>
+                      Monthly rate
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={reservationForm.monthlyRentPrice}
+                        onChange={(event) =>
+                          updateReservationField("monthlyRentPrice", event.target.value)
+                        }
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                  ) : null}
+                  <div className="public-discount-panel admin-price-choice-panel">
+                    <span className="small-text">Deposit</span>
+                    <label className="checkbox-row compact-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={reservationForm.waiveDeposit}
+                        onChange={(event) =>
+                          updateReservationField("waiveDeposit", event.target.checked)
+                        }
+                      />
+                      Book without requiring a deposit
+                    </label>
+                  </div>
+                  {(needsManualReservationPricing ||
+                    reservationForm.billingMode === "monthly") &&
+                  !reservationForm.waiveDeposit ? (
+                    <label>
+                      Deposit amount (optional)
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={reservationForm.depositAmount}
+                        onChange={(event) => {
+                          setIsReservationDepositOverridden(true);
+                          updateReservationField("depositAmount", event.target.value);
+                        }}
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
                   ) : null}
                   <div
                     ref={reservationRigSectionRef}
@@ -10640,7 +10751,10 @@ export default function App() {
                         Stay length: {reservationNightCount || "Not set"} nights
                       </span>
                       <span>
-                        Deposit due: {formatCurrency(reservationForm.depositAmount || null)}
+                        Deposit due:{" "}
+                        {reservationForm.waiveDeposit
+                          ? "Waived"
+                          : formatCurrency(reservationForm.depositAmount || null)}
                       </span>
                     </div>
                   </div>
@@ -10690,7 +10804,9 @@ export default function App() {
                     {paymentLinkSuccessMessage}
                   </div>
                 ) : null}
-                {createdReservation && !editingReservationId ? (
+                {createdReservation &&
+                !editingReservationId &&
+                Number(getRequiredDepositAmount(createdReservation) || 0) > 0 ? (
                   <div className="payment-panel">
                     <div className="result-header">
                       <h3>
@@ -11907,6 +12023,175 @@ export default function App() {
                 )}
               </div>
             </>
+          </Paper>
+        ) : null}
+
+        {activePage === "monthly" ? (
+          <Paper component="section" className="card" elevation={0}>
+            <div className="page-section-header">
+              <h2>Monthly Guests</h2>
+              <div className="section-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => clearSection("monthly")}>
+                  Clear charge amounts
+                </button>
+              </div>
+            </div>
+            <div className="section-heading">
+              <p>
+                Active stays of 28 nights or longer appear here. Enter any
+                charge amount and send it directly to the office Terminal.
+              </p>
+              <div className="button-row monthly-terminal-status">
+                <span
+                  className={`status-badge ${
+                    terminalReader?.status === "online" ? "active" : "pending"
+                  }`}>
+                  Terminal: {terminalReader?.status || "unavailable"}
+                </span>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={isRefreshingTerminalReader}
+                  onClick={refreshTerminalReaderStatus}>
+                  {isRefreshingTerminalReader ? "Refreshing..." : "Refresh Terminal"}
+                </button>
+              </div>
+              {isMonthlyPageLoading ? (
+                <p className="muted">Loading monthly guests...</p>
+              ) : null}
+            </div>
+            {terminalPaymentError ? (
+              <div className="message error">{terminalPaymentError}</div>
+            ) : null}
+            {isMonthlyPageLoading && !hasLoadedReservations ? (
+              <p className="muted">Loading monthly guests...</p>
+            ) : monthlyReservations.length ? (
+              <div className="schedule-list monthly-reservation-list">
+                {monthlyReservations.map((reservation) => {
+                  const chargeAmount =
+                    monthlyChargeAmounts[reservation.id] ??
+                    (Number(reservation.monthlyRentPrice || 0) > 0
+                      ? Number(reservation.monthlyRentPrice).toFixed(2)
+                      : "");
+                  const terminalIsBusyForReservation =
+                    terminalPayment?.reservationId === reservation.id &&
+                    ["in_progress", "finalizing"].includes(
+                      terminalPayment.status
+                    );
+
+                  return (
+                    <article
+                      key={reservation.id}
+                      className="timeline-card history-reservation-card monthly-reservation-card">
+                      <div className="result-header">
+                        <div>
+                          <h3>
+                            {reservation.first_name} {reservation.last_name}
+                          </h3>
+                          <p className="muted">
+                            Reservation #{reservation.id} • Site{" "}
+                            {reservation.siteStays?.[0]?.site_number || "Not set"}
+                          </p>
+                        </div>
+                        <CardActionMenu
+                          menuId={`monthly-${reservation.id}`}
+                          openMenuId={openCardActionMenuId}
+                          onToggle={toggleCardActionMenu}
+                          onClose={closeCardActionMenu}
+                          actions={[
+                            {
+                              label: "View booking",
+                              onClick: () => openScheduleReservation(reservation),
+                            },
+                            {
+                              label: "Edit reservation",
+                              onClick: () =>
+                                startEditingReservation(reservation.id, "dates"),
+                            },
+                          ]}
+                        />
+                      </div>
+                      <div className="pricing-summary">
+                        <span>
+                          Stay: {getReservationStayNights(reservation)} nights
+                        </span>
+                        <span>
+                          {formatDisplayDate(
+                            reservation.siteStays?.[0]?.arrival_date
+                          )}{" "}
+                          to{" "}
+                          {formatLeaveDate(
+                            reservation.siteStays?.at(-1)?.leave_date
+                          )}
+                        </span>
+                        <span>
+                          Monthly rate: {formatCurrency(reservation.monthlyRentPrice)}
+                        </span>
+                        <span>Total paid: {formatCurrency(reservation.amountPaid || 0)}</span>
+                      </div>
+                      <div className="monthly-charge-controls">
+                        <label className="payment-amount-field">
+                          Custom Terminal charge
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            placeholder="0.00"
+                            value={chargeAmount}
+                            onChange={(event) =>
+                              setMonthlyChargeAmounts((current) => ({
+                                ...current,
+                                [reservation.id]: event.target.value,
+                              }))
+                            }
+                            onWheel={(event) => event.currentTarget.blur()}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="primary-button terminal-send-button"
+                          disabled={
+                            terminalReader?.status !== "online" ||
+                            Number(chargeAmount || 0) <= 0 ||
+                            startingTerminalReservationId === reservation.id ||
+                            terminalIsBusyForReservation ||
+                            ["in_progress", "finalizing"].includes(
+                              terminalPayment?.status
+                            )
+                          }
+                          onClick={() =>
+                            startTerminalPayment(
+                              reservation,
+                              chargeAmount,
+                              "card",
+                              { customCharge: true }
+                            )
+                          }>
+                          {startingTerminalReservationId === reservation.id
+                            ? "Sending..."
+                            : `Send ${formatCurrency(chargeAmount || 0)} to Terminal`}
+                        </button>
+                      </div>
+                      {terminalPayment?.reservationId === reservation.id ? (
+                        <TerminalPaymentPanel
+                          reader={terminalReader}
+                          payment={terminalPayment}
+                          reservationId={reservation.id}
+                          errorMessage={terminalPaymentError}
+                          onRetry={retryTerminalPayment}
+                          onCancel={cancelTerminalPayment}
+                        />
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="muted">No active monthly guests.</p>
+            )}
           </Paper>
         ) : null}
 

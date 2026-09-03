@@ -1917,6 +1917,29 @@ select option {
   padding: 16px;
 }
 
+.monthly-reservation-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 16px;
+}
+
+.monthly-reservation-card {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+.monthly-reservation-card .pricing-summary {
+  margin: 0;
+}
+
+.monthly-charge-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
 .payment-panel {
   border: 1px solid rgba(36, 74, 49, 0.16);
   box-shadow: 0 16px 34px rgba(36, 74, 49, 0.08);
@@ -6159,6 +6182,15 @@ select option {
 
   .admin-shell .pricing-summary {
     grid-template-columns: 1fr;
+  }
+
+  .admin-shell .monthly-charge-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-shell .monthly-charge-controls .primary-button {
+    width: 100%;
+    justify-content: center;
   }
 
   .admin-shell .result-list,

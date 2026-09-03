@@ -1798,22 +1798,24 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
   const cardDailyPrice = usesDailyNightBilling
     ? selectedCardNightlyPrices[paidChargeableNights] ?? 0
     : null;
-  const requiredDepositAmount = usesDailyNightBilling
+  const storedDepositAmount = toPriceNumber(reservationRow.deposit_amount) ?? 0;
+  const depositWasWaived = storedDepositAmount <= 0;
+  const requiredDepositAmount = usesDailyNightBilling && !depositWasWaived
     ? roundCurrency(
         selectedBankNightlyPrices
           .slice(0, Math.min(depositNights, totalChargeableNights))
           .reduce((total, price) => total + Number(price || 0), 0)
       )
-    : toPriceNumber(reservationRow.deposit_amount) ?? 0;
-  const requiredCardDepositAmount = usesDailyNightBilling
+    : storedDepositAmount;
+  const requiredCardDepositAmount = usesDailyNightBilling && !depositWasWaived
     ? roundCurrency(
         selectedCardNightlyPrices
           .slice(0, Math.min(depositNights, totalChargeableNights))
           .reduce((total, price) => total + Number(price || 0), 0)
       )
     : selectedPaymentMethod === "card"
-      ? toPriceNumber(reservationRow.deposit_amount) ?? 0
-      : getCardStayTotal(reservationRow.deposit_amount, depositNights) ?? 0;
+      ? storedDepositAmount
+      : getCardStayTotal(storedDepositAmount, depositNights) ?? 0;
   const effectiveTotalPrice =
     usesDailyNightBilling && selectedPaymentMethod === "card"
       ? cardTotalPrice
@@ -6893,6 +6895,7 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
   const amountCents = toAmountCents(req.body?.amount);
   const priceType = "card";
   const isMoto = Boolean(req.body?.moto);
+  const customCharge = Boolean(req.body?.customCharge);
 
   if (!reservationId || !amountCents) {
     return res.status(400).json({ message: "Reservation and payment amount are required." });
@@ -6916,17 +6919,29 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
       return res.status(400).json({ message: "Canceled reservations cannot accept payments." });
     }
 
+    const isMonthlyStay =
+      reservation.effectiveBillingMode === "monthly" ||
+      reservation.billing_mode === "monthly" ||
+      (reservation.reservation_term !== "yearly" &&
+        Number(reservation.totals?.numberOfNights || 0) >= 28);
+
+    if (customCharge && !isMonthlyStay) {
+      return res.status(400).json({
+        message: "Custom Terminal charges are available for monthly stays only."
+      });
+    }
+
     const maximumAmountCents = toAmountCents(
       priceType === "card"
         ? reservation.cardRemainingBalance
         : reservation.bankRemainingBalance ?? reservation.remainingBalance
     );
 
-    if (!maximumAmountCents) {
+    if (!customCharge && !maximumAmountCents) {
       return res.status(400).json({ message: "This reservation does not have any unpaid nights." });
     }
 
-    if (amountCents > maximumAmountCents) {
+    if (!customCharge && amountCents > maximumAmountCents) {
       return res.status(400).json({
         message: `Payment cannot exceed the ${priceType} amount due for unpaid nights.`
       });
@@ -6952,12 +6967,15 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
       payment_method_types: [isMoto ? "card" : "card_present"],
       capture_method: "automatic",
       receipt_email: reservation.email || undefined,
-      description: `Riverpark RV Resort reservation #${reservation.id}`,
+      description: customCharge
+        ? `Riverpark RV Resort monthly charge for reservation #${reservation.id}`
+        : `Riverpark RV Resort reservation #${reservation.id}`,
       metadata: {
         reservation_id: String(reservation.id),
         payment_amount_cents: String(amountCents),
         payment_price_type: priceType,
         payment_entry_mode: isMoto ? "moto" : "card_present",
+        custom_monthly_charge: customCharge ? "true" : "false",
         terminal_reader_id: reader.id,
         activate_reservation_on_payment: reservation.status === "pending" ? "true" : "false"
       }
