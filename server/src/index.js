@@ -3123,7 +3123,10 @@ async function handleStripeWebhookEvent(event) {
   return { createdReservationId, updatedReservationId };
 }
 
-async function syncOpenStripePayments() {
+async function syncOpenStripePayments({
+  reservationId = null,
+  terminalOnly = false
+} = {}) {
   if (!stripe) {
     return {
       checkedCount: 0,
@@ -3144,9 +3147,17 @@ async function syncOpenStripePayments() {
         payment_status
       FROM stripe_payment_records
       WHERE payment_status NOT IN ('paid', 'canceled')
+        AND ($1::bigint IS NULL OR reservation_id = $1)
+        AND (
+          NOT $2::boolean OR (
+            stripe_checkout_session_id IS NULL
+            AND payment_status IN ('processing', 'unpaid')
+          )
+        )
       ORDER BY created_at ASC
       LIMIT 100
-    `
+    `,
+    [reservationId, terminalOnly]
   );
 
   const summary = {
@@ -6908,8 +6919,14 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
   }
 
   try {
-    await syncOpenStripePayments();
-    const reservation = await fetchReservationDetails(pool, reservationId);
+    // Reconcile only this reservation's direct PaymentIntents. Scanning every
+    // unfinished Checkout Session here can delay the reader handoff by many
+    // Stripe API round trips.
+    await syncOpenStripePayments({ reservationId, terminalOnly: true });
+    const [reservation, reader] = await Promise.all([
+      fetchReservationDetails(pool, reservationId),
+      resolveStripeTerminalReader()
+    ]);
 
     if (!reservation) {
       return res.status(404).json({ message: "Reservation not found." });
@@ -6946,8 +6963,6 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
         message: `Payment cannot exceed the ${priceType} amount due for unpaid nights.`
       });
     }
-
-    const reader = await resolveStripeTerminalReader();
 
     if (reader.status !== "online") {
       return res.status(409).json({
@@ -7033,11 +7048,61 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
         });
       }
 
-      await Promise.allSettled([
-        stripe.paymentIntents.cancel(paymentIntent.id),
-        pool.query(
-          `UPDATE stripe_payment_records SET payment_status = 'canceled' WHERE stripe_payment_intent_id = $1`,
+      const [refreshedPaymentIntent, refreshedReader] = await Promise.all([
+        stripe.paymentIntents.retrieve(paymentIntent.id).catch(() => paymentIntent),
+        stripe.terminal.readers.retrieve(reader.id).catch(() => reader)
+      ]);
+      const serializedReader = serializeTerminalReader(refreshedReader);
+      const readerActionMatches =
+        serializedReader.action?.paymentIntentId === paymentIntent.id;
+      const failureCode = readerActionMatches
+        ? serializedReader.action?.failureCode || error.code || "terminal_handoff_failed"
+        : error.code || "terminal_handoff_failed";
+      const failureMessage = readerActionMatches
+        ? serializedReader.action?.failureMessage || error.message
+        : error.message;
+      const canRetry = refreshedPaymentIntent.status === "requires_payment_method";
+
+      console.warn("Stripe Terminal handoff failed", {
+        reservationId: reservation.id,
+        paymentIntentId: paymentIntent.id,
+        readerId: reader.id,
+        readerStatus: refreshedReader.status || "unknown",
+        paymentIntentStatus: refreshedPaymentIntent.status,
+        failureCode,
+        failureMessage
+      });
+
+      if (canRetry) {
+        await pool.query(
+          `UPDATE stripe_payment_records SET payment_status = 'failed' WHERE stripe_payment_intent_id = $1`,
           [paymentIntent.id]
+        );
+
+        return res.status(202).json({
+          reservationId: reservation.id,
+          paymentIntentId: paymentIntent.id,
+          amount: (amountCents / 100).toFixed(2),
+          priceType,
+          moto: isMoto,
+          status: "failed",
+          canRetry: true,
+          failureCode,
+          reader: serializedReader,
+          message: failureMessage || "The reader did not accept the payment request. Try sending it again."
+        });
+      }
+
+      await Promise.allSettled([
+        ["succeeded", "canceled"].includes(refreshedPaymentIntent.status)
+          ? Promise.resolve(refreshedPaymentIntent)
+          : stripe.paymentIntents.cancel(paymentIntent.id),
+        pool.query(
+          `UPDATE stripe_payment_records SET payment_status = $2 WHERE stripe_payment_intent_id = $1`,
+          [
+            paymentIntent.id,
+            refreshedPaymentIntent.status === "succeeded" ? "paid" : "canceled"
+          ]
         )
       ]);
       throw error;

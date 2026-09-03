@@ -5355,11 +5355,18 @@ function TerminalPaymentPanel({
                     : `Collecting $${activePayment.amount}`}
             </strong>
             <span>{activePayment.message}</span>
+            {activePayment.failureCode ? (
+              <span className="terminal-failure-code">
+                Stripe code: {activePayment.failureCode}
+              </span>
+            ) : null}
           </div>
           <div className="button-row terminal-payment-actions">
             {activePayment.canRetry ? (
               <button type="button" className="primary-button" onClick={onRetry}>
-                Try another card
+                {activePayment.failureCode === "card_declined"
+                  ? "Try another card"
+                  : "Send to reader again"}
               </button>
             ) : null}
             {["in_progress", "failed"].includes(activePayment.status) ? (
@@ -6013,7 +6020,7 @@ export default function App() {
     if (
       !isUnlocked ||
       !paymentIntentId ||
-      ["succeeded", "canceled"].includes(terminalPayment.status)
+      ["succeeded", "canceled", "failed"].includes(terminalPayment.status)
     ) {
       return undefined;
     }
@@ -6119,12 +6126,12 @@ export default function App() {
           setTerminalPayment((current) => ({
             ...current,
             status: "failed",
+            failureCode: result.failureCode || "terminal_action_failed",
             message:
               result.failureMessage ||
               "The reader could not complete this payment.",
             canRetry: result.canRetry,
           }));
-          timeoutId = window.setTimeout(pollTerminalPayment, 1500);
           return;
         }
 
@@ -8360,9 +8367,10 @@ export default function App() {
         amount: result.amount,
         priceType: result.priceType,
         moto: Boolean(result.moto ?? moto),
-        status: "in_progress",
+        status: result.status || "in_progress",
         message: result.message,
-        canRetry: false,
+        failureCode: result.failureCode || "",
+        canRetry: Boolean(result.canRetry),
       });
       return result;
     } catch (error) {
@@ -8429,6 +8437,7 @@ export default function App() {
         ...current,
         status: "in_progress",
         message: result.message,
+        failureCode: "",
         canRetry: false,
       }));
     } catch (error) {
