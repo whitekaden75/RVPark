@@ -1400,6 +1400,18 @@ function normalizeReservationPaymentMethod(value) {
   return value === "card" ? "card" : "bank";
 }
 
+const reservationPricingCategories = [
+  "off_river_small_rig",
+  "off_river_big_rig",
+  "normal_river",
+  "prime_river"
+];
+
+function normalizeReservationPricingCategory(value) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
 function normalizeRequestedDiscounts(value) {
   if (!Array.isArray(value)) {
     return [];
@@ -3313,8 +3325,13 @@ async function syncOpenStripePayments({
   return summary;
 }
 
-function getPricingForSiteAndNights(site, numberOfNights, pricingLookup) {
-  const pricingCategory = getPricingCategory(site);
+function getPricingForSiteAndNights(
+  site,
+  numberOfNights,
+  pricingLookup,
+  pricingCategoryOverride = null
+) {
+  const pricingCategory = pricingCategoryOverride || getPricingCategory(site);
   const baseRule = pricingLookup.get(pricingCategory) || null;
   const chargeableNights = calculateChargeableNights(numberOfNights);
 
@@ -4018,6 +4035,7 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.amount_paid,
         r.notes,
         r.payment_method,
+        r.pricing_category_override,
         r.requested_discounts,
         r.created_at,
         c.first_name,
@@ -4146,7 +4164,8 @@ async function fetchReservationDetails(queryable, reservationId) {
         ...getPricingForSiteAndNights(
           segment,
           nightsBetween(segment.arrival_date, segment.leave_date),
-          pricingLookup
+          pricingLookup,
+          reservationRow.pricing_category_override
         ),
         isOpenEnded: false
       };
@@ -4161,6 +4180,7 @@ async function fetchReservationDetails(queryable, reservationId) {
 
   return {
     ...reservationRow,
+    pricingCategoryOverride: reservationRow.pricing_category_override || null,
     totals,
     ...billing,
     paymentEvents: paymentEventsResult.rows.map((row) => ({
@@ -4203,7 +4223,8 @@ function buildReservationDetailsFromParts(
         ...getPricingForSiteAndNights(
           segment,
           nightsBetween(segment.arrival_date, segment.leave_date),
-          pricingLookup
+          pricingLookup,
+          reservationRow.pricing_category_override
         ),
         isOpenEnded: false
       };
@@ -4214,6 +4235,7 @@ function buildReservationDetailsFromParts(
 
   return {
     ...reservationRow,
+    pricingCategoryOverride: reservationRow.pricing_category_override || null,
     totals,
     ...billing,
     paymentEvents: paymentEventRows.map((row) => ({
@@ -4256,6 +4278,7 @@ async function fetchReservationList(queryable) {
         r.amount_paid,
         r.notes,
         r.payment_method,
+        r.pricing_category_override,
         r.requested_discounts,
         r.created_at,
         c.first_name,
@@ -7709,6 +7732,7 @@ app.put("/api/reservations/:id", async (req, res) => {
     electricMeterReading,
     notes,
     paymentMethod,
+    pricingCategory,
     discounts,
     siteStays,
     status
@@ -7736,6 +7760,7 @@ app.put("/api/reservations/:id", async (req, res) => {
   const parsedMonthlyRentPrice = toPriceNumber(monthlyRentPrice);
   const parsedElectricMeterReading = toMeterNumber(electricMeterReading);
   let reservationPaymentMethod = normalizeReservationPaymentMethod(paymentMethod);
+  let reservationPricingCategory = normalizeReservationPricingCategory(pricingCategory);
   let requestedDiscounts = normalizeRequestedDiscounts(discounts);
   const archivedSegments = normalizedSegments.map((segment) => ({
     siteId: Number(segment.siteId),
@@ -7750,6 +7775,13 @@ app.put("/api/reservations/:id", async (req, res) => {
   if (reservationBillingMode === "monthly" && parsedMonthlyRentPrice === null) {
     return res.status(400).json({ message: "Monthly rent price is required for monthly billing." });
   }
+
+  if (
+    reservationPricingCategory &&
+    !reservationPricingCategories.includes(reservationPricingCategory)
+  ) {
+    return res.status(400).json({ message: "Pricing category is invalid." });
+  }
   const client = await pool.connect();
 
   try {
@@ -7757,7 +7789,13 @@ app.put("/api/reservations/:id", async (req, res) => {
 
     const currentReservationResult = await client.query(
       `
-        SELECT status, canceled_at, deposit_amount, payment_method, requested_discounts
+        SELECT
+          status,
+          canceled_at,
+          deposit_amount,
+          payment_method,
+          pricing_category_override,
+          requested_discounts
         FROM reservations
         WHERE id = $1
         FOR UPDATE
@@ -7774,6 +7812,11 @@ app.put("/api/reservations/:id", async (req, res) => {
       reservationPaymentMethod = normalizeReservationPaymentMethod(
         currentReservationResult.rows[0].payment_method
       );
+    }
+
+    if (pricingCategory === undefined) {
+      reservationPricingCategory =
+        currentReservationResult.rows[0].pricing_category_override || null;
     }
 
     if (discounts === undefined) {
@@ -7826,7 +7869,8 @@ app.put("/api/reservations/:id", async (req, res) => {
           amount_paid = $20,
           notes = $21,
           payment_method = $22,
-          requested_discounts = $23
+          requested_discounts = $23,
+          pricing_category_override = $24
         WHERE id = $1
         RETURNING id
       `,
@@ -7855,7 +7899,8 @@ app.put("/api/reservations/:id", async (req, res) => {
         toPriceNumber(amountPaid) ?? 0,
         notes || "",
         reservationPaymentMethod,
-        requestedDiscounts
+        requestedDiscounts,
+        reservationPricingCategory
       ]
     );
 

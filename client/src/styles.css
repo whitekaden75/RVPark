@@ -2371,14 +2371,15 @@ select option {
   margin: 0;
 }
 
-.payment-type-control,
-.payment-type-editor {
+.payment-pricing-category-control,
+.payment-pricing-category-editor {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
-.payment-type-control {
+.payment-pricing-category-control {
   justify-content: flex-end;
   flex-wrap: wrap;
   margin-top: 10px;
@@ -2386,8 +2387,8 @@ select option {
   font-size: 0.88rem;
 }
 
-.payment-type-editor select {
-  min-width: 130px;
+.payment-pricing-category-editor select {
+  min-width: 190px;
   padding: 7px 30px 7px 10px;
 }
 
