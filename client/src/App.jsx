@@ -181,6 +181,7 @@ function createSchedulePaymentForm(reservation = null) {
       : reservation?.effectiveTotalPrice ?? reservation?.totalPrice;
 
   return {
+    paymentMethod: reservation?.selectedPaymentMethod || "bank",
     depositAmount:
       getRequiredDepositAmount(reservation) !== null &&
       getRequiredDepositAmount(reservation) !== undefined
@@ -5620,6 +5621,8 @@ export default function App() {
   const [openCardActionMenuId, setOpenCardActionMenuId] = useState("");
   const [isEditingSchedulePaymentInfo, setIsEditingSchedulePaymentInfo] =
     useState(false);
+  const [isEditingSchedulePaymentType, setIsEditingSchedulePaymentType] =
+    useState(false);
   const [activeSiteEditorId, setActiveSiteEditorId] = useState(null);
   const [siteEditorForm, setSiteEditorForm] = useState(null);
   const [siteEditorErrorMessage, setSiteEditorErrorMessage] = useState("");
@@ -6175,6 +6178,7 @@ export default function App() {
   useEffect(() => {
     if (!activeScheduleReservation) {
       setIsEditingSchedulePaymentInfo(false);
+      setIsEditingSchedulePaymentType(false);
       setSchedulePaymentForm(createSchedulePaymentForm());
       setSchedulePaymentErrorMessage("");
       setSchedulePaymentSuccessMessage("");
@@ -6197,6 +6201,7 @@ export default function App() {
     );
     setActiveScheduleCheckNumber("");
     setActiveSchedulePaymentMethod("");
+    setIsEditingSchedulePaymentType(false);
     setSchedulePaymentErrorMessage("");
     setSchedulePaymentSuccessMessage("");
   }, [activeScheduleReservation]);
@@ -8878,7 +8883,7 @@ export default function App() {
             amountPaid: schedulePaymentForm.amountPaid,
             notes: activeScheduleReservation.notes || "",
             paymentMethod:
-              activeScheduleReservation.selectedPaymentMethod || "bank",
+              schedulePaymentForm.paymentMethod || "bank",
             discounts: schedulePaymentForm.discountQualified
               ? activeScheduleReservation.requestedDiscounts?.length
                 ? activeScheduleReservation.requestedDiscounts
@@ -8907,6 +8912,7 @@ export default function App() {
       );
       setActiveScheduleReservation(updatedReservation);
       setSchedulePaymentForm(createSchedulePaymentForm(updatedReservation));
+      setIsEditingSchedulePaymentType(false);
 
       if (createdReservation?.id === updatedReservation.id) {
         setCreatedReservation(updatedReservation);
@@ -9907,7 +9913,7 @@ export default function App() {
           <CheckInPage
             reservations={reservations}
             today={getParkDateFromTimestamp(new Date())}
-            isLoading={isLoadingReservations || !hasLoadedReservations}
+            isLoading={!hasLoadedReservations}
             onSubmit={submitReservationCheckIn}
             onOpenReservation={openScheduleReservation}
             onLoadReservation={loadCompleteCheckInReservation}
@@ -13421,6 +13427,58 @@ export default function App() {
                     <span>
                       Paid so far: {formatCurrency(activeScheduleReservation.amountPaid || 0)}
                     </span>
+                  </div>
+                  <div className="payment-type-control">
+                    <span>
+                      Payment type: {formatSelectedPaymentMethod(
+                        activeScheduleReservation.selectedPaymentMethod
+                      )}
+                    </span>
+                    {isEditingSchedulePaymentType ? (
+                      <div className="payment-type-editor">
+                        <select
+                          aria-label="Payment type"
+                          value={schedulePaymentForm.paymentMethod}
+                          disabled={isSavingAdminEdit}
+                          onChange={(event) =>
+                            updateSchedulePaymentField(
+                              "paymentMethod",
+                              event.target.value
+                            )
+                          }>
+                          <option value="bank">Cash / check</option>
+                          <option value="card">Card</option>
+                        </select>
+                        <button
+                          type="button"
+                          className="primary-button compact-button"
+                          disabled={isSavingAdminEdit}
+                          onClick={saveSchedulePaymentInfo}>
+                          {isSavingAdminEdit ? "Saving…" : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button compact-button"
+                          disabled={isSavingAdminEdit}
+                          onClick={() => {
+                            updateSchedulePaymentField(
+                              "paymentMethod",
+                              activeScheduleReservation.selectedPaymentMethod ||
+                                "bank"
+                            );
+                            setIsEditingSchedulePaymentType(false);
+                          }}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="ghost-button compact-button"
+                        onClick={() => setIsEditingSchedulePaymentType(true)}>
+                        Edit payment type
+                      </button>
+                    )}
                   </div>
                   <div className="payment-edit-sections">
                     <div
