@@ -269,6 +269,8 @@ export default function CheckInPage({
   onRecordOfficePayment,
   onRetryTerminal,
   onCancelTerminal,
+  onCancelAllTerminal,
+  isCancelingAllTerminal = false,
   onRefreshTerminalReader,
   isRefreshingTerminalReader = false,
   onActiveReservationChange,
@@ -647,15 +649,31 @@ export default function CheckInPage({
                       onClick={onCancelTerminal}>
                       Cancel payment
                     </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      disabled={isCancelingAllTerminal}
+                      onClick={onCancelAllTerminal}>
+                      {isCancelingAllTerminal ? "Canceling all..." : "Cancel all"}
+                    </button>
                   </>
                 ) : null}
                 {terminalInProgress ? (
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={onCancelTerminal}>
-                    Cancel reader
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={onCancelTerminal}>
+                      Cancel reader
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      disabled={isCancelingAllTerminal}
+                      onClick={onCancelAllTerminal}>
+                      {isCancelingAllTerminal ? "Canceling all..." : "Cancel all"}
+                    </button>
+                  </>
                 ) : null}
               </div>
             ) : null}

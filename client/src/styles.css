@@ -1940,11 +1940,26 @@ select option {
   margin: 0;
 }
 
+.monthly-search-field {
+  display: grid;
+  gap: 7px;
+  width: min(100%, 460px);
+  margin-bottom: 20px;
+}
+
 .monthly-charge-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-items: end;
+}
+
+.monthly-charge-actions {
+  align-items: stretch;
+}
+
+.monthly-charge-actions > button {
+  flex: 1 1 180px;
 }
 
 .payment-panel {

@@ -6920,6 +6920,117 @@ app.get("/api/stripe/terminal/status", async (_req, res) => {
   }
 });
 
+app.post("/api/stripe/terminal/payments/cancel-all", async (_req, res) => {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  try {
+    let reader = await resolveStripeTerminalReader();
+    const serializedReader = serializeTerminalReader(reader);
+    const paymentIntentIds = new Set();
+
+    if (serializedReader.action?.paymentIntentId) {
+      paymentIntentIds.add(serializedReader.action.paymentIntentId);
+    }
+
+    const activePaymentResult = await pool.query(
+      `
+        SELECT stripe_payment_intent_id
+        FROM stripe_payment_records
+        WHERE stripe_payment_method_type IN ('card_present', 'card')
+          AND stripe_checkout_session_id IS NULL
+          AND payment_status IN ('processing', 'failed')
+          AND stripe_payment_intent_id IS NOT NULL
+      `
+    );
+
+    for (const paymentRecord of activePaymentResult.rows) {
+      paymentIntentIds.add(paymentRecord.stripe_payment_intent_id);
+    }
+
+    // Cancel the reader action first so a stale action cannot keep the physical
+    // Terminal busy while its PaymentIntent is being reconciled.
+    if (reader.action?.status === "in_progress") {
+      try {
+        await stripe.terminal.readers.cancelAction(reader.id);
+      } catch (error) {
+        // The payment may finish between retrieving the reader and canceling
+        // its action. Only fail if Stripe still reports an active action.
+        reader = await stripe.terminal.readers.retrieve(reader.id);
+        if (reader.action?.status === "in_progress") {
+          throw error;
+        }
+      }
+      reader = await stripe.terminal.readers.retrieve(reader.id);
+    }
+
+    let canceledCount = 0;
+    let completedCount = 0;
+    let terminalPaymentCount = 0;
+
+    for (const paymentIntentId of paymentIntentIds) {
+      let paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+      const belongsToTerminal =
+        paymentIntentId === serializedReader.action?.paymentIntentId ||
+        paymentIntent.metadata?.terminal_reader_id === reader.id;
+
+      // A normal web card PaymentIntent can also be locally marked as
+      // processing. Only touch intents explicitly assigned to this reader.
+      if (!belongsToTerminal) {
+        continue;
+      }
+
+      terminalPaymentCount += 1;
+
+      if (!["succeeded", "canceled"].includes(paymentIntent.status)) {
+        try {
+          paymentIntent = await stripe.paymentIntents.cancel(paymentIntentId);
+        } catch (error) {
+          if (error.code !== "payment_intent_unexpected_state") {
+            throw error;
+          }
+          paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+        }
+      }
+
+      if (paymentIntent.status === "succeeded") {
+        completedCount += 1;
+      } else {
+        await pool.query(
+          `
+            UPDATE stripe_payment_records
+            SET payment_status = 'canceled'
+            WHERE stripe_payment_intent_id = $1
+          `,
+          [paymentIntentId]
+        );
+        canceledCount += 1;
+      }
+    }
+
+    if (completedCount > 0) {
+      await syncOpenStripePayments();
+    }
+
+    reader = await stripe.terminal.readers.retrieve(reader.id);
+
+    return res.json({
+      canceledCount,
+      completedCount,
+      reader: serializeTerminalReader(reader),
+      message:
+        completedCount > 0
+          ? `Terminal cleared. ${completedCount} completed payment${completedCount === 1 ? " was" : "s were"} kept and recorded.`
+          : terminalPaymentCount > 0
+            ? "All pending Terminal payments were canceled and the reader was cleared."
+            : "The Terminal had no pending payments and is ready."
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+});
+
 app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
   if (!ensureStripeConfigured(res)) {
     return;

@@ -5309,6 +5309,8 @@ function TerminalPaymentPanel({
   errorMessage,
   onRetry,
   onCancel,
+  onCancelAll,
+  isCancelingAll = false,
 }) {
   const activePayment = payment?.reservationId === reservationId ? payment : null;
   const readerOnline = reader?.status === "online";
@@ -5377,6 +5379,15 @@ function TerminalPaymentPanel({
                   : "Cancel reader"}
               </button>
             ) : null}
+            {["in_progress", "failed"].includes(activePayment.status) ? (
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={isCancelingAll}
+                onClick={onCancelAll}>
+                {isCancelingAll ? "Canceling all..." : "Cancel all"}
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -5391,6 +5402,8 @@ function FloatingTerminalPayment({
   errorMessage,
   onRetry,
   onCancel,
+  onCancelAll,
+  isCancelingAll,
   onDismiss,
 }) {
   const [isMinimized, setIsMinimized] = useState(false);
@@ -5456,6 +5469,8 @@ function FloatingTerminalPayment({
           errorMessage={errorMessage}
           onRetry={onRetry}
           onCancel={onCancel}
+          onCancelAll={onCancelAll}
+          isCancelingAll={isCancelingAll}
         />
       ) : null}
     </aside>
@@ -5612,6 +5627,7 @@ export default function App() {
     useState("");
   const [activeScheduleCheckNumber, setActiveScheduleCheckNumber] = useState("");
   const [monthlyChargeAmounts, setMonthlyChargeAmounts] = useState({});
+  const [monthlySearch, setMonthlySearch] = useState("");
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] =
@@ -5641,6 +5657,8 @@ export default function App() {
     () => readPendingTerminalWorkflow()?.payment || null
   );
   const [terminalPaymentError, setTerminalPaymentError] = useState("");
+  const [isCancelingAllTerminalPayments, setIsCancelingAllTerminalPayments] =
+    useState(false);
   const [activeCheckInReservationId, setActiveCheckInReservationId] =
     useState(null);
   const [startingTerminalReservationId, setStartingTerminalReservationId] =
@@ -6680,6 +6698,36 @@ export default function App() {
       const rightDate = right.siteStays?.[0]?.arrival_date || "";
       return leftDate.localeCompare(rightDate);
     });
+  const monthlySearchValue = monthlySearch.trim().toLowerCase();
+  const monthlySearchDigits = monthlySearch.replaceAll(/\D/g, "");
+  const filteredMonthlyReservations = monthlyReservations.filter(
+    (reservation) => {
+      if (!monthlySearchValue) {
+        return true;
+      }
+
+      const guestName = `${reservation.first_name || ""} ${
+        reservation.last_name || ""
+      }`.toLowerCase();
+      const phoneDigits = String(reservation.phone_number || "").replaceAll(
+        /\D/g,
+        ""
+      );
+      const siteNumbers = (reservation.siteStays || []).map((stay) =>
+        String(stay.site_number || "").toLowerCase()
+      );
+
+      return (
+        guestName.includes(monthlySearchValue) ||
+        (monthlySearchDigits && phoneDigits.includes(monthlySearchDigits)) ||
+        siteNumbers.some(
+          (siteNumber) =>
+            siteNumber.includes(monthlySearchValue) ||
+            `site ${siteNumber}`.includes(monthlySearchValue)
+        )
+      );
+    }
+  );
   const activeReservations = reservations.filter(
     (reservation) => reservation.status !== "canceled"
   );
@@ -7126,6 +7174,7 @@ export default function App() {
 
     if (sectionKey === "monthly") {
       setMonthlyChargeAmounts({});
+      setMonthlySearch("");
       setTerminalPaymentError("");
       return;
     }
@@ -8471,6 +8520,32 @@ export default function App() {
     }
   }
 
+  async function cancelAllTerminalPayments() {
+    const shouldCancel = window.confirm(
+      "Cancel every pending Terminal payment and clear the reader? Payments that already succeeded will be kept and recorded."
+    );
+
+    if (!shouldCancel) return;
+
+    try {
+      setIsCancelingAllTerminalPayments(true);
+      setTerminalPaymentError("");
+      const result = await apiRequest("/stripe/terminal/payments/cancel-all", {
+        method: "POST",
+      });
+
+      pendingTerminalCheckInRef.current = null;
+      setTerminalReader(result.reader);
+      setTerminalPayment(null);
+      setSuccessMessage(result.message);
+      await ensureReservationsLoaded({ force: true });
+    } catch (error) {
+      setTerminalPaymentError(error.message);
+    } finally {
+      setIsCancelingAllTerminalPayments(false);
+    }
+  }
+
   async function submitReservationCheckIn(reservation, form, paymentDetails = {}) {
     const result = await apiRequest(`/reservations/${reservation.id}/check-in`, {
       method: "POST",
@@ -9631,6 +9706,8 @@ export default function App() {
         errorMessage={terminalPaymentError}
         onRetry={retryTerminalPayment}
         onCancel={cancelTerminalPayment}
+        onCancelAll={cancelAllTerminalPayments}
+        isCancelingAll={isCancelingAllTerminalPayments}
         onDismiss={() => setTerminalPayment(null)}
       />
     ) : null;
@@ -9925,6 +10002,8 @@ export default function App() {
             onRecordOfficePayment={recordCashCheckPayment}
             onRetryTerminal={retryTerminalPayment}
             onCancelTerminal={cancelTerminalPayment}
+            onCancelAllTerminal={cancelAllTerminalPayments}
+            isCancelingAllTerminal={isCancelingAllTerminalPayments}
             onRefreshTerminalReader={refreshTerminalReaderStatus}
             isRefreshingTerminalReader={isRefreshingTerminalReader}
             onActiveReservationChange={setActiveCheckInReservationId}
@@ -11011,6 +11090,8 @@ export default function App() {
                       errorMessage={terminalPaymentError}
                       onRetry={retryTerminalPayment}
                       onCancel={cancelTerminalPayment}
+                      onCancelAll={cancelAllTerminalPayments}
+                      isCancelingAll={isCancelingAllTerminalPayments}
                     />
                     <div className="button-row created-payment-actions">
                       <button
@@ -12079,14 +12160,23 @@ export default function App() {
                 <p className="muted">Loading monthly guests...</p>
               ) : null}
             </div>
+            <label className="monthly-search-field">
+              Search monthly guests
+              <input
+                type="search"
+                value={monthlySearch}
+                onChange={(event) => setMonthlySearch(event.target.value)}
+                placeholder="Name, phone number, or site"
+              />
+            </label>
             {terminalPaymentError ? (
               <div className="message error">{terminalPaymentError}</div>
             ) : null}
             {isMonthlyPageLoading && !hasLoadedReservations ? (
               <p className="muted">Loading monthly guests...</p>
-            ) : monthlyReservations.length ? (
+            ) : filteredMonthlyReservations.length ? (
               <div className="schedule-list monthly-reservation-list">
-                {monthlyReservations.map((reservation) => {
+                {filteredMonthlyReservations.map((reservation) => {
                   const chargeAmount =
                     monthlyChargeAmounts[reservation.id] ??
                     (Number(reservation.monthlyRentPrice || 0) > 0
@@ -12110,6 +12200,9 @@ export default function App() {
                           <p className="muted">
                             Reservation #{reservation.id} • Site{" "}
                             {reservation.siteStays?.[0]?.site_number || "Not set"}
+                            {" • "}
+                            {formatPhoneNumber(reservation.phone_number || "") ||
+                              "No phone"}
                           </p>
                         </div>
                         <CardActionMenu
@@ -12166,30 +12259,55 @@ export default function App() {
                             onWheel={(event) => event.currentTarget.blur()}
                           />
                         </label>
-                        <button
-                          type="button"
-                          className="primary-button terminal-send-button"
-                          disabled={
-                            terminalReader?.status !== "online" ||
-                            Number(chargeAmount || 0) <= 0 ||
-                            startingTerminalReservationId === reservation.id ||
-                            terminalIsBusyForReservation ||
-                            ["in_progress", "finalizing"].includes(
-                              terminalPayment?.status
-                            )
-                          }
-                          onClick={() =>
-                            startTerminalPayment(
-                              reservation,
-                              chargeAmount,
-                              "card",
-                              { customCharge: true }
-                            )
-                          }>
-                          {startingTerminalReservationId === reservation.id
-                            ? "Sending..."
-                            : `Send ${formatCurrency(chargeAmount || 0)} to Terminal`}
-                        </button>
+                        <div className="button-row monthly-charge-actions">
+                          <button
+                            type="button"
+                            className="primary-button terminal-send-button"
+                            disabled={
+                              terminalReader?.status !== "online" ||
+                              Number(chargeAmount || 0) <= 0 ||
+                              startingTerminalReservationId === reservation.id ||
+                              terminalIsBusyForReservation ||
+                              ["in_progress", "finalizing"].includes(
+                                terminalPayment?.status
+                              )
+                            }
+                            onClick={() =>
+                              startTerminalPayment(
+                                reservation,
+                                chargeAmount,
+                                "card",
+                                { customCharge: true }
+                              )
+                            }>
+                            {startingTerminalReservationId === reservation.id
+                              ? "Sending..."
+                              : `Send ${formatCurrency(chargeAmount || 0)} to Terminal`}
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button phone-payment-button"
+                            disabled={
+                              !terminalReader?.motoEnabled ||
+                              terminalReader?.status !== "online" ||
+                              Number(chargeAmount || 0) <= 0 ||
+                              startingTerminalReservationId === reservation.id ||
+                              terminalIsBusyForReservation ||
+                              ["in_progress", "finalizing"].includes(
+                                terminalPayment?.status
+                              )
+                            }
+                            onClick={() =>
+                              startTerminalPayment(
+                                reservation,
+                                chargeAmount,
+                                "card",
+                                { moto: true, customCharge: true }
+                              )
+                            }>
+                            Take payment over phone
+                          </button>
+                        </div>
                       </div>
                       {terminalPayment?.reservationId === reservation.id ? (
                         <TerminalPaymentPanel
@@ -12199,6 +12317,8 @@ export default function App() {
                           errorMessage={terminalPaymentError}
                           onRetry={retryTerminalPayment}
                           onCancel={cancelTerminalPayment}
+                          onCancelAll={cancelAllTerminalPayments}
+                          isCancelingAll={isCancelingAllTerminalPayments}
                         />
                       ) : null}
                     </article>
@@ -12206,7 +12326,11 @@ export default function App() {
                 })}
               </div>
             ) : (
-              <p className="muted">No active monthly guests.</p>
+              <p className="muted">
+                {monthlyReservations.length
+                  ? "No monthly guests match that search."
+                  : "No active monthly guests."}
+              </p>
             )}
           </Paper>
         ) : null}
@@ -13673,6 +13797,8 @@ export default function App() {
                           errorMessage={terminalPaymentError}
                           onRetry={retryTerminalPayment}
                           onCancel={cancelTerminalPayment}
+                          onCancelAll={cancelAllTerminalPayments}
+                          isCancelingAll={isCancelingAllTerminalPayments}
                         />
                         <div className="payment-primary-actions">
                           <button
@@ -14028,6 +14154,8 @@ export default function App() {
                     errorMessage={terminalPaymentError}
                     onRetry={retryTerminalPayment}
                     onCancel={cancelTerminalPayment}
+                    onCancelAll={cancelAllTerminalPayments}
+                    isCancelingAll={isCancelingAllTerminalPayments}
                   />
                   <div className="button-row">
                     <button
