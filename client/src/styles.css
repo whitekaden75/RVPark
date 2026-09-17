@@ -7417,8 +7417,24 @@ select option {
 
 .after-hours-site-price {
   display: grid;
-  gap: 3px;
+  gap: 8px;
   margin-top: auto;
+}
+
+.after-hours-site-price > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.after-hours-site-price > div.discount {
+  padding-top: 8px;
+  border-top: 1px solid rgba(23, 55, 47, 0.12);
+}
+
+.after-hours-site-price > div.discount strong {
+  color: #9d4e22;
 }
 
 .after-hours-site-price strong {
@@ -7494,6 +7510,27 @@ select option {
   font-family: Georgia, "Times New Roman", serif;
   font-size: 1.35rem;
   font-weight: 400;
+}
+
+.after-hours-discount-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid rgba(23, 55, 47, 0.14);
+  border-radius: 14px;
+  background: #fff8ef;
+}
+
+.after-hours-discount-panel p {
+  margin: 0;
+  color: #607168;
+  line-height: 1.5;
+}
+
+.after-hours-discount-panel .checkbox-row {
+  color: #344f46;
+  font-weight: 700;
 }
 
 .after-hours-empty {

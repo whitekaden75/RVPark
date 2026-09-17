@@ -2560,6 +2560,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
     towVehicleType: "",
     slideDriverSide: false,
     slidePassengerSide: false,
+    discounts: [],
     termsAccepted: false,
     cashEnvelopeAccepted: false,
   });
@@ -2598,13 +2599,18 @@ function AfterHoursDriveUpPage({ accessToken }) {
   const selectedSiteFits = Boolean(
     selectedSite && setupLength > 0 && setupLength <= Number(selectedSite.sizeFeet)
   );
+  const usesDiscountPrice = form.discounts.length > 0;
   const formIsComplete = Boolean(
     contactIsComplete &&
       rigIsComplete &&
       selectedSiteFits &&
       form.termsAccepted
   );
-  const cashTotal = selectedSite?.normalPrice ?? selectedSite?.discountPrice;
+  const cashTotal = selectedSite
+    ? usesDiscountPrice
+      ? selectedSite.discountPrice ?? selectedSite.normalPrice
+      : selectedSite.normalPrice ?? selectedSite.discountPrice
+    : null;
   const cardTotal = getCardStayTotal(
     cashTotal,
     calculateChargeableNights(Number(numberOfNights))
@@ -2716,7 +2722,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
       accessToken,
       afterHoursAccessToken: accessToken,
       paymentMethodStorageAccepted: form.termsAccepted,
-      discounts: [],
+      discounts: form.discounts,
       siteId: selectedSite.id,
       arrivalDate: today,
       leaveDate,
@@ -2881,8 +2887,14 @@ function AfterHoursDriveUpPage({ accessToken }) {
                     </span>
                   </div>
                   <div className="after-hours-site-price">
-                    <span>Tonight’s cash price</span>
-                    <strong>{formatCurrency(site.normalPrice ?? site.discountPrice)}</strong>
+                    <div>
+                      <span>Tonight’s standard cash price</span>
+                      <strong>{formatCurrency(site.normalPrice)}</strong>
+                    </div>
+                    <div className="discount">
+                      <span>Eligible discounted cash price</span>
+                      <strong>{formatCurrency(site.discountPrice)}</strong>
+                    </div>
                   </div>
                   <button
                     type="button"
@@ -2942,18 +2954,42 @@ function AfterHoursDriveUpPage({ accessToken }) {
             <div className="after-hours-stay-price">
               <div>
                 <span>
-                  Cash total · {numberOfNights} {numberOfNights === 1 ? "night" : "nights"}
+                  {usesDiscountPrice ? "Discounted cash total" : "Cash total"} · {numberOfNights}{" "}
+                  {numberOfNights === 1 ? "night" : "nights"}
                 </span>
                 <strong>
                   {isRefreshingSelectedSite ? "Updating…" : formatCurrency(cashTotal)}
                 </strong>
               </div>
               <div>
-                <span>Card total</span>
+                <span>{usesDiscountPrice ? "Discounted card total" : "Card total"}</span>
                 <strong>
                   {isRefreshingSelectedSite ? "Updating…" : formatCurrency(cardTotal)}
                 </strong>
               </div>
+            </div>
+          </div>
+          <div className="after-hours-discount-panel">
+            <strong>Discounts</strong>
+            <p>Select any that apply and we’ll use the discounted stay price.</p>
+            <div className="public-discount-options">
+              {publicDiscountOptions.map((discount) => (
+                <label key={discount} className="checkbox-row compact-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={form.discounts.includes(discount)}
+                    onChange={(event) =>
+                      updateForm(
+                        "discounts",
+                        event.target.checked
+                          ? [...form.discounts, discount]
+                          : form.discounts.filter((value) => value !== discount)
+                      )
+                    }
+                  />
+                  {discount}
+                </label>
+              ))}
             </div>
           </div>
           {errorMessage ? <div className="public-search-message error">{errorMessage}</div> : null}

@@ -5519,6 +5519,7 @@ app.post("/api/guest/after-hours/reservations", async (req, res) => {
     : null;
   const towVehicleType = String(req.body.towVehicleType || "");
   const numberOfNights = nightsBetween(arrivalDate, leaveDate);
+  const discounts = normalizeRequestedDiscounts(req.body.discounts);
 
   if (!firstName || !lastName || phoneNumber.length !== 10) {
     return res.status(400).json({ message: "Name and a valid phone number are required." });
@@ -5651,8 +5652,12 @@ app.post("/api/guest/after-hours/reservations", async (req, res) => {
     const pricingLookup = buildPricingRuleLookup(await loadPricingRules());
     const stayPricing = getPricingForSiteAndNights(site, numberOfNights, pricingLookup);
     const depositPricing = getPricingForSiteAndNights(site, 1, pricingLookup);
-    const cashTotal = stayPricing.normalPrice ?? stayPricing.discountPrice;
-    const oneNightDeposit = depositPricing.normalPrice ?? depositPricing.discountPrice;
+    const cashTotal = discounts.length
+      ? stayPricing.discountPrice ?? stayPricing.normalPrice
+      : stayPricing.normalPrice ?? stayPricing.discountPrice;
+    const oneNightDeposit = discounts.length
+      ? depositPricing.discountPrice ?? depositPricing.normalPrice
+      : depositPricing.normalPrice ?? depositPricing.discountPrice;
 
     if (cashTotal === null || oneNightDeposit === null) {
       await client.query("ROLLBACK");
@@ -5698,6 +5703,7 @@ app.post("/api/guest/after-hours/reservations", async (req, res) => {
       `Displayed usable site length: ${displayedSiteLength} ft.`,
       motorhomeWithTow ? `Tow vehicle length: ${towVehicleLengthFeet} ft.` : "",
       towVehicleType ? `Tow vehicle type: ${towVehicleType.replaceAll("_", " ")}.` : "",
+      discounts.length ? `Requested discounts: ${discounts.join(", ")}.` : "",
       "Guest accepted the cash-envelope instructions and reservation terms."
     ].filter(Boolean).join(" ");
     const reservationResult = await client.query(
@@ -5719,7 +5725,8 @@ app.post("/api/guest/after-hours/reservations", async (req, res) => {
           rig_length_feet,
           amount_paid,
           notes,
-          payment_method
+          payment_method,
+          requested_discounts
         )
         VALUES (
           $1,
@@ -5738,7 +5745,8 @@ app.post("/api/guest/after-hours/reservations", async (req, res) => {
           $9,
           0,
           $10,
-          'bank'
+          'bank',
+          $11
         )
         RETURNING id
       `,
@@ -5755,7 +5763,8 @@ app.post("/api/guest/after-hours/reservations", async (req, res) => {
         Boolean(req.body.slideDriverSide),
         Boolean(req.body.slidePassengerSide),
         rigLengthFeet,
-        notes
+        notes,
+        discounts
       ]
     );
     const reservationId = reservationResult.rows[0].id;
