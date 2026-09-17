@@ -2542,6 +2542,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
   const [sites, setSites] = useState([]);
   const [selectedSite, setSelectedSite] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshingSelectedSite, setIsRefreshingSelectedSite] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [confirmation, setConfirmation] = useState(null);
@@ -2609,6 +2610,12 @@ function AfterHoursDriveUpPage({ accessToken }) {
     depositBase,
     Number(numberOfNights) > 7 ? 2 : 1
   );
+  const afterHoursMaximumLeaveDate = addDays(today, 14);
+  const selectedSiteMaximumLeaveDate =
+    selectedSite?.availableUntil &&
+    selectedSite.availableUntil < afterHoursMaximumLeaveDate
+      ? selectedSite.availableUntil
+      : afterHoursMaximumLeaveDate;
 
   async function loadAvailableSites(event) {
     event?.preventDefault();
@@ -2656,10 +2663,9 @@ function AfterHoursDriveUpPage({ accessToken }) {
   }
 
   function chooseSite(site) {
-    if (!rigIsComplete || setupLength > Number(site.sizeFeet)) {
-      return;
-    }
+    if (String(selectedSite?.id) === String(site.id)) return;
 
+    setLeaveDate(addDays(today, 1));
     setSelectedSite(site);
     setErrorMessage("");
     window.requestAnimationFrame(() => {
@@ -2668,6 +2674,41 @@ function AfterHoursDriveUpPage({ accessToken }) {
         block: "start",
       });
     });
+  }
+
+  async function updateSelectedSiteDates(nextLeaveDate) {
+    const previousLeaveDate = leaveDate;
+    setLeaveDate(nextLeaveDate);
+    setIsRefreshingSelectedSite(true);
+    setErrorMessage("");
+
+    try {
+      const result = await guestApiRequest("/guest/after-hours/availability", {
+        method: "POST",
+        body: JSON.stringify({
+          accessToken,
+          arrivalDate: today,
+          leaveDate: nextLeaveDate,
+        }),
+      });
+      const matchingSite = ensureArray(
+        result.sites,
+        "After-hours availability"
+      ).find((site) => String(site.id) === String(selectedSite.id));
+
+      if (!matchingSite) {
+        throw new Error(
+          `Site ${selectedSite.siteNumber} is not available through that departure date.`
+        );
+      }
+
+      setSelectedSite(matchingSite);
+    } catch (error) {
+      setLeaveDate(previousLeaveDate);
+      setErrorMessage(error.message);
+    } finally {
+      setIsRefreshingSelectedSite(false);
+    }
   }
 
   function buildReservationPayload() {
@@ -2798,132 +2839,10 @@ function AfterHoursDriveUpPage({ accessToken }) {
         <div className="after-hours-step-heading">
           <span>1</span>
           <div>
-            <h2>How long are you staying?</h2>
-            <p>After-hours reservations begin tonight.</p>
-          </div>
-        </div>
-        <form className="after-hours-date-row" onSubmit={loadAvailableSites}>
-          <label>
-            Arrival
-            <input type="date" value={today} disabled />
-          </label>
-          <label>
-            Departure
-            <input
-              type="date"
-              min={addDays(today, 1)}
-              max={addDays(today, 14)}
-              value={leaveDate}
-              onChange={(event) => setLeaveDate(event.target.value)}
-            />
-          </label>
-          <button type="submit" className="public-search-button" disabled={isLoading}>
-            {isLoading ? "Checking sites..." : "Update available sites"}
-          </button>
-        </form>
-      </section>
-
-      <section className="after-hours-panel">
-        <div className="after-hours-step-heading">
-          <span>2</span>
-          <div>
-            <h2>Tell us about your setup.</h2>
-            <p>We’ll make sure the site has enough usable length.</p>
-          </div>
-        </div>
-        <div className="after-hours-form-grid">
-          <label>
-            RV type
-            <select
-              value={form.rvKind}
-              onChange={(event) => updateForm("rvKind", event.target.value)}>
-              <option value="">Choose type</option>
-              {rvKinds.map((kind) => (
-                <option key={kind} value={kind}>{kind}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            RV length in feet
-            <input
-              type="number"
-              min="1"
-              max="60"
-              inputMode="numeric"
-              value={form.rigLengthFeet}
-              onChange={(event) => updateForm("rigLengthFeet", event.target.value)}
-            />
-          </label>
-          {requiresTowVehicleType ? (
-            <label>
-              Tow vehicle
-              <select
-                value={form.towVehicleType}
-                onChange={(event) => updateForm("towVehicleType", event.target.value)}>
-                <option value="">Choose vehicle</option>
-                {form.rvKind !== "5th wheel" ? <option value="suv">SUV</option> : null}
-                <option value="truck_short_bed">Short-bed truck</option>
-                <option value="truck_long_bed">Long-bed truck</option>
-                <option value="dually">Dually</option>
-              </select>
-            </label>
-          ) : null}
-          {form.rvKind === "motor home" ? (
-            <>
-              <label className="after-hours-checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={form.motorhomeWithTow}
-                  onChange={(event) => updateForm("motorhomeWithTow", event.target.checked)}
-                />
-                I am towing a vehicle
-              </label>
-              {form.motorhomeWithTow ? (
-                <label>
-                  Tow vehicle length in feet
-                  <input
-                    type="number"
-                    min="1"
-                    max="30"
-                    value={form.towVehicleLengthFeet}
-                    onChange={(event) => updateForm("towVehicleLengthFeet", event.target.value)}
-                  />
-                </label>
-              ) : null}
-            </>
-          ) : null}
-          <label className="after-hours-checkbox-field">
-            <input
-              type="checkbox"
-              checked={form.slideDriverSide}
-              onChange={(event) => updateForm("slideDriverSide", event.target.checked)}
-            />
-            Driver-side slide
-          </label>
-          <label className="after-hours-checkbox-field">
-            <input
-              type="checkbox"
-              checked={form.slidePassengerSide}
-              onChange={(event) => updateForm("slidePassengerSide", event.target.checked)}
-            />
-            Passenger-side slide
-          </label>
-        </div>
-        {rigIsComplete ? (
-          <p className="after-hours-setup-length">
-            Your setup needs about <strong>{setupLength} feet</strong> of usable
-            site length.
-          </p>
-        ) : null}
-      </section>
-
-      <section className="after-hours-panel">
-        <div className="after-hours-step-heading">
-          <span>3</span>
-          <div>
-            <h2>Choose an available site.</h2>
+            <h2>Choose a site available tonight.</h2>
             <p>
-              Each displayed length is the site’s recorded length minus 3 feet.
+              See each site’s usable length and how long it stays open before
+              entering your information.
             </p>
           </div>
         </div>
@@ -2933,15 +2852,12 @@ function AfterHoursDriveUpPage({ accessToken }) {
         ) : sites.length ? (
           <div className="after-hours-site-grid">
             {sites.map((site) => {
-              const fits = rigIsComplete && setupLength <= Number(site.sizeFeet);
-              const isSelected = selectedSite?.id === site.id;
+              const isSelected = String(selectedSite?.id) === String(site.id);
 
               return (
                 <article
                   key={site.id}
-                  className={`after-hours-site-card ${isSelected ? "selected" : ""} ${
-                    rigIsComplete && !fits ? "does-not-fit" : ""
-                  }`.trim()}>
+                  className={`after-hours-site-card ${isSelected ? "selected" : ""}`.trim()}>
                   <div>
                     <span className="eyebrow">Available tonight</span>
                     <h3>Site {site.siteNumber}</h3>
@@ -2951,21 +2867,28 @@ function AfterHoursDriveUpPage({ accessToken }) {
                     <strong>{site.sizeFeet} ft</strong>
                     <span>usable length</span>
                   </div>
+                  <div className="after-hours-site-window">
+                    <strong>
+                      {site.openEnded
+                        ? "Open for 14+ nights"
+                        : `Open for ${site.availableDays} ${
+                            Number(site.availableDays) === 1 ? "night" : "nights"
+                          }`}
+                    </strong>
+                    <span>
+                      {site.openEnded
+                        ? "No upcoming reservation"
+                        : `Depart by ${formatDisplayDate(site.availableUntil)}`}
+                    </span>
+                  </div>
                   <div className="after-hours-site-price">
-                    <span>Cash total for {numberOfNights} {numberOfNights === 1 ? "night" : "nights"}</span>
+                    <span>Tonight’s cash price</span>
                     <strong>{formatCurrency(site.normalPrice ?? site.discountPrice)}</strong>
                   </div>
                   <button
                     type="button"
-                    disabled={!fits}
                     onClick={() => chooseSite(site)}>
-                    {!rigIsComplete
-                      ? "Enter RV details first"
-                      : !fits
-                        ? "Too short for your setup"
-                        : isSelected
-                          ? "Selected"
-                          : "Choose this site"}
+                    {isSelected ? "Selected" : "Choose this site"}
                   </button>
                 </article>
               );
@@ -2973,14 +2896,158 @@ function AfterHoursDriveUpPage({ accessToken }) {
           </div>
         ) : (
           <div className="after-hours-empty">
-            <strong>No sites are available for those dates.</strong>
+            <strong>No sites are available tonight.</strong>
             <a href="tel:+15412951269">Call or text 541-295-1269 for help.</a>
           </div>
         )}
       </section>
 
       {selectedSite ? (
+        <>
         <section className="after-hours-panel" id="after-hours-guest-details">
+          <div className="after-hours-step-heading">
+            <span>2</span>
+            <div>
+              <h2>How long will you stay?</h2>
+              <p>
+                Site {selectedSite.siteNumber} is open
+                {selectedSite.openEnded
+                  ? " for at least 14 nights."
+                  : ` through ${formatDisplayDate(selectedSite.availableUntil)}.`}
+              </p>
+            </div>
+          </div>
+          <div className="after-hours-selected-site-summary">
+            <strong>Site {selectedSite.siteNumber}</strong>
+            <span>{selectedSite.sizeFeet} ft usable length</span>
+            <button type="button" onClick={() => setSelectedSite(null)}>
+              Choose a different site
+            </button>
+          </div>
+          <div className="after-hours-date-row">
+            <label>
+              Arrival
+              <input type="date" value={today} disabled />
+            </label>
+            <label>
+              Departure
+              <input
+                type="date"
+                min={addDays(today, 1)}
+                max={selectedSiteMaximumLeaveDate}
+                value={leaveDate}
+                disabled={isRefreshingSelectedSite}
+                onChange={(event) => updateSelectedSiteDates(event.target.value)}
+              />
+            </label>
+            <div className="after-hours-stay-price">
+              <span>
+                Cash total · {numberOfNights} {numberOfNights === 1 ? "night" : "nights"}
+              </span>
+              <strong>
+                {isRefreshingSelectedSite ? "Updating…" : formatCurrency(cashTotal)}
+              </strong>
+            </div>
+          </div>
+          {errorMessage ? <div className="public-search-message error">{errorMessage}</div> : null}
+        </section>
+
+        <section className="after-hours-panel">
+          <div className="after-hours-step-heading">
+            <span>3</span>
+            <div>
+              <h2>Tell us about your setup.</h2>
+              <p>We’ll make sure Site {selectedSite.siteNumber} has enough usable length.</p>
+            </div>
+          </div>
+          <div className="after-hours-form-grid">
+            <label>
+              RV type
+              <select
+                value={form.rvKind}
+                onChange={(event) => updateForm("rvKind", event.target.value)}>
+                <option value="">Choose type</option>
+                {rvKinds.map((kind) => (
+                  <option key={kind} value={kind}>{kind}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              RV length in feet
+              <input
+                type="number"
+                min="1"
+                max="60"
+                inputMode="numeric"
+                value={form.rigLengthFeet}
+                onChange={(event) => updateForm("rigLengthFeet", event.target.value)}
+              />
+            </label>
+            {requiresTowVehicleType ? (
+              <label>
+                Tow vehicle
+                <select
+                  value={form.towVehicleType}
+                  onChange={(event) => updateForm("towVehicleType", event.target.value)}>
+                  <option value="">Choose vehicle</option>
+                  {form.rvKind !== "5th wheel" ? <option value="suv">SUV</option> : null}
+                  <option value="truck_short_bed">Short-bed truck</option>
+                  <option value="truck_long_bed">Long-bed truck</option>
+                  <option value="dually">Dually</option>
+                </select>
+              </label>
+            ) : null}
+            {form.rvKind === "motor home" ? (
+              <>
+                <label className="after-hours-checkbox-field">
+                  <input
+                    type="checkbox"
+                    checked={form.motorhomeWithTow}
+                    onChange={(event) => updateForm("motorhomeWithTow", event.target.checked)}
+                  />
+                  I am towing a vehicle
+                </label>
+                {form.motorhomeWithTow ? (
+                  <label>
+                    Tow vehicle length in feet
+                    <input
+                      type="number"
+                      min="1"
+                      max="30"
+                      value={form.towVehicleLengthFeet}
+                      onChange={(event) => updateForm("towVehicleLengthFeet", event.target.value)}
+                    />
+                  </label>
+                ) : null}
+              </>
+            ) : null}
+            <label className="after-hours-checkbox-field">
+              <input
+                type="checkbox"
+                checked={form.slideDriverSide}
+                onChange={(event) => updateForm("slideDriverSide", event.target.checked)}
+              />
+              Driver-side slide
+            </label>
+            <label className="after-hours-checkbox-field">
+              <input
+                type="checkbox"
+                checked={form.slidePassengerSide}
+                onChange={(event) => updateForm("slidePassengerSide", event.target.checked)}
+              />
+              Passenger-side slide
+            </label>
+          </div>
+          {rigIsComplete ? (
+            <p className={`after-hours-setup-length ${selectedSiteFits ? "" : "does-not-fit"}`.trim()}>
+              Your setup needs about <strong>{setupLength} feet</strong> of usable
+              site length. Site {selectedSite.siteNumber} has {selectedSite.sizeFeet} feet.
+              {!selectedSiteFits ? " Please choose a longer site." : ""}
+            </p>
+          ) : null}
+        </section>
+
+        <section className="after-hours-panel">
           <div className="after-hours-step-heading">
             <span>4</span>
             <div>
@@ -3062,7 +3129,12 @@ function AfterHoursDriveUpPage({ accessToken }) {
               <button
                 type="button"
                 className="public-search-button"
-                disabled={isSubmitting || !formIsComplete || !form.cashEnvelopeAccepted}
+                disabled={
+                  isSubmitting ||
+                  isRefreshingSelectedSite ||
+                  !formIsComplete ||
+                  !form.cashEnvelopeAccepted
+                }
                 onClick={reserveWithCash}>
                 {isSubmitting ? "Reserving..." : "Reserve with cash envelope"}
               </button>
@@ -3078,7 +3150,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
               <button
                 type="button"
                 className="public-search-button"
-                disabled={isSubmitting || !formIsComplete}
+                disabled={isSubmitting || isRefreshingSelectedSite || !formIsComplete}
                 onClick={payByCard}>
                 {isSubmitting ? "Opening payment..." : "Pay deposit by card"}
               </button>
@@ -3092,6 +3164,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
           ) : null}
           {errorMessage ? <div className="public-search-message error">{errorMessage}</div> : null}
         </section>
+        </>
       ) : null}
 
       <footer className="after-hours-footer">

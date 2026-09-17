@@ -7294,6 +7294,24 @@ select option {
   color: #53665d;
 }
 
+.after-hours-page .public-search-button {
+  min-height: 50px;
+  border-radius: 999px;
+  background: #17372f;
+  color: #ffffff !important;
+  opacity: 1;
+}
+
+.after-hours-page .public-search-button:hover {
+  background: #245447;
+}
+
+.after-hours-page .public-search-button:disabled {
+  background: #63756d;
+  color: #ffffff !important;
+  opacity: 1;
+}
+
 .after-hours-checkbox-field,
 .after-hours-agreement {
   display: flex !important;
@@ -7326,6 +7344,11 @@ select option {
   border-radius: 12px;
   background: #e7efe8;
   color: #294c40;
+}
+
+.after-hours-setup-length.does-not-fit {
+  background: #fbe7e1;
+  color: #8b321f;
 }
 
 .after-hours-site-grid {
@@ -7372,9 +7395,24 @@ select option {
 }
 
 .after-hours-site-size span,
-.after-hours-site-price span {
+.after-hours-site-price span,
+.after-hours-site-window span,
+.after-hours-stay-price span {
   color: #697970;
   font-size: 0.82rem;
+}
+
+.after-hours-site-window {
+  display: grid;
+  gap: 3px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: #e7efe8;
+  color: #294c40;
+}
+
+.after-hours-site-window strong {
+  font-size: 0.95rem;
 }
 
 .after-hours-site-price {
@@ -7401,6 +7439,50 @@ select option {
   background: #c8cec9;
   color: #5f6a64;
   cursor: not-allowed;
+}
+
+.after-hours-selected-site-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 13px 15px;
+  border-radius: 14px;
+  background: #e7efe8;
+}
+
+.after-hours-selected-site-summary span {
+  color: #53685e;
+}
+
+.after-hours-selected-site-summary button {
+  margin-left: auto;
+  padding: 8px 12px;
+  border: 1px solid rgba(23, 55, 47, 0.2);
+  border-radius: 999px;
+  background: transparent;
+  color: #17372f;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.after-hours-stay-price {
+  display: grid;
+  min-width: 160px;
+  gap: 4px;
+  align-self: stretch;
+  align-content: center;
+  padding: 8px 15px;
+  border-radius: 12px;
+  background: #f4efe5;
+}
+
+.after-hours-stay-price strong {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.35rem;
+  font-weight: 400;
 }
 
 .after-hours-empty {
@@ -7590,5 +7672,14 @@ select option {
 
   .after-hours-date-row .public-search-button {
     width: 100%;
+  }
+
+  .after-hours-selected-site-summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .after-hours-selected-site-summary button {
+    margin-left: 0;
   }
 }

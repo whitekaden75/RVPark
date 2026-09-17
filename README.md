@@ -166,7 +166,7 @@ The From address must use a SendGrid-verified Single Sender or an authenticated 
 Set `AFTER_HOURS_ACCESS_TOKEN` on the backend to a long, random value. The only URL for the drive-up page is:
 
 ```text
-https://RiverparkRVResort.com/?after_hours=YOUR_AFTER_HOURS_ACCESS_TOKEN
+https://www.RiverparkRVResort.com/?after_hours=YOUR_AFTER_HOURS_ACCESS_TOKEN
 ```
 
 Use that complete URL as the QR-code destination. The normal website does not link to this page, and both after-hours API endpoints verify the same server-side token. Treat the QR URL like a private link; changing `AFTER_HOURS_ACCESS_TOKEN` immediately invalidates the old QR code.

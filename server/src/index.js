@@ -53,6 +53,7 @@ const guestVerificationRequests = new Map();
 const guestVerificationAttempts = new Map();
 const publicBookingTermsVersion = "2026-08-15";
 const checkInRulesVersion = "2026-08-24";
+const afterHoursExcludedSiteNumbers = new Set(["25T"]);
 const checkInRulesText = [
   "This property is privately owned. Management reserves the right to refuse service to anyone and is not responsible for accidents, injuries, or loss of money or valuables of any kind.",
   "I agree to read and comply with all campground rules and regulations provided by the office and/or posted on the park map or brochure.",
@@ -395,6 +396,12 @@ function ensureAfterHoursAccess(req, res) {
   }
 
   return true;
+}
+
+function isAfterHoursExcludedSite(siteNumber) {
+  return afterHoursExcludedSiteNumbers.has(
+    String(siteNumber || "").trim().toUpperCase()
+  );
 }
 
 async function findAdminUserByUsername(username) {
@@ -5478,7 +5485,8 @@ app.post("/api/guest/after-hours/availability", async (req, res) => {
       sites: result.directMatches
         .filter(
           (site) =>
-            site.normalPrice !== null || site.discountPrice !== null
+            !isAfterHoursExcludedSite(site.siteNumber) &&
+            (site.normalPrice !== null || site.discountPrice !== null)
         )
         .map((site) => ({
           ...site,
@@ -5601,6 +5609,14 @@ app.post("/api/guest/after-hours/reservations", async (req, res) => {
     }
 
     const site = siteResult.rows[0];
+
+    if (isAfterHoursExcludedSite(site.site_number)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "That site is not available for after-hours drive-up reservations."
+      });
+    }
+
     const displayedSiteLength = Math.max(0, Number(site.size_feet || 0) - 3);
 
     if (requiredLengthFeet > displayedSiteLength) {
@@ -5679,7 +5695,7 @@ app.post("/api/guest/after-hours/reservations", async (req, res) => {
     const notes = [
       "AFTER-HOURS DRIVE-UP — cash envelope payment awaiting office verification.",
       `Expected envelope amount: ${formatEmailCurrency(expectedCashAmount)}.`,
-      `Displayed usable site length: ${displayedSiteLength} ft (stored site length minus 3 ft).`,
+      `Displayed usable site length: ${displayedSiteLength} ft.`,
       motorhomeWithTow ? `Tow vehicle length: ${towVehicleLengthFeet} ft.` : "",
       towVehicleType ? `Tow vehicle type: ${towVehicleType.replaceAll("_", " ")}.` : "",
       "Guest accepted the cash-envelope instructions and reservation terms."
@@ -5942,6 +5958,14 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
     }
 
     const site = siteResult.rows[0];
+
+    if (isAfterHoursDriveUp && isAfterHoursExcludedSite(site.site_number)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "That site is not available for after-hours drive-up reservations."
+      });
+    }
+
     const towVehicleAdditionalFeet = {
       suv: 10,
       truck_short_bed: 15,
