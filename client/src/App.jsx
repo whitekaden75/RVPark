@@ -2605,10 +2605,9 @@ function AfterHoursDriveUpPage({ accessToken }) {
       form.termsAccepted
   );
   const cashTotal = selectedSite?.normalPrice ?? selectedSite?.discountPrice;
-  const depositBase = getPublicBookingDeposit(cashTotal, numberOfNights);
-  const cardDeposit = getCardStayTotal(
-    depositBase,
-    Number(numberOfNights) > 7 ? 2 : 1
+  const cardTotal = getCardStayTotal(
+    cashTotal,
+    calculateChargeableNights(Number(numberOfNights))
   );
   const afterHoursMaximumLeaveDate = addDays(today, 14);
   const selectedSiteMaximumLeaveDate =
@@ -2941,12 +2940,20 @@ function AfterHoursDriveUpPage({ accessToken }) {
               />
             </label>
             <div className="after-hours-stay-price">
-              <span>
-                Cash total · {numberOfNights} {numberOfNights === 1 ? "night" : "nights"}
-              </span>
-              <strong>
-                {isRefreshingSelectedSite ? "Updating…" : formatCurrency(cashTotal)}
-              </strong>
+              <div>
+                <span>
+                  Cash total · {numberOfNights} {numberOfNights === 1 ? "night" : "nights"}
+                </span>
+                <strong>
+                  {isRefreshingSelectedSite ? "Updating…" : formatCurrency(cashTotal)}
+                </strong>
+              </div>
+              <div>
+                <span>Card total</span>
+                <strong>
+                  {isRefreshingSelectedSite ? "Updating…" : formatCurrency(cardTotal)}
+                </strong>
+              </div>
             </div>
           </div>
           {errorMessage ? <div className="public-search-message error">{errorMessage}</div> : null}
@@ -3142,9 +3149,9 @@ function AfterHoursDriveUpPage({ accessToken }) {
             <article className="after-hours-payment-card card">
               <span className="eyebrow">Pay online</span>
               <h3>Credit card</h3>
-              <strong>{formatCurrency(cardDeposit)}</strong>
+              <strong>{formatCurrency(cardTotal)}</strong>
               <p>
-                Pay the required card deposit securely now. Your reservation is
+                Pay the full stay total securely now. Your reservation is
                 created after Stripe confirms payment.
               </p>
               <button
@@ -3152,7 +3159,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
                 className="public-search-button"
                 disabled={isSubmitting || isRefreshingSelectedSite || !formIsComplete}
                 onClick={payByCard}>
-                {isSubmitting ? "Opening payment..." : "Pay deposit by card"}
+                {isSubmitting ? "Opening payment..." : "Pay total by card"}
               </button>
             </article>
           </div>

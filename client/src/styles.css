@@ -7470,13 +7470,24 @@ select option {
 
 .after-hours-stay-price {
   display: grid;
-  min-width: 160px;
-  gap: 4px;
+  grid-template-columns: repeat(2, minmax(110px, 1fr));
+  min-width: 280px;
+  gap: 14px;
   align-self: stretch;
   align-content: center;
   padding: 8px 15px;
   border-radius: 12px;
   background: #f4efe5;
+}
+
+.after-hours-stay-price > div {
+  display: grid;
+  gap: 4px;
+}
+
+.after-hours-stay-price > div + div {
+  padding-left: 14px;
+  border-left: 1px solid rgba(23, 55, 47, 0.16);
 }
 
 .after-hours-stay-price strong {

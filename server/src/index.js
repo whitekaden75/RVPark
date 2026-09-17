@@ -53,7 +53,7 @@ const guestVerificationRequests = new Map();
 const guestVerificationAttempts = new Map();
 const publicBookingTermsVersion = "2026-08-15";
 const checkInRulesVersion = "2026-08-24";
-const afterHoursExcludedSiteNumbers = new Set(["25T"]);
+const afterHoursExcludedSiteNumbers = new Set(["25T", "27T"]);
 const checkInRulesText = [
   "This property is privately owned. Management reserves the right to refuse service to anyone and is not responsible for accidents, injuries, or loss of money or valuables of any kind.",
   "I agree to read and comply with all campground rules and regulations provided by the office and/or posted on the park map or brochure.",
@@ -6034,12 +6034,14 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       roundCurrency(oneNightDeposit * requiredDepositNights),
       totalPrice
     );
-    const checkoutAmount = paymentMethodType === "card"
-      ? getCardStayTotal(baseDepositAmount, requiredDepositNights)
-      : baseDepositAmount;
     const selectedTotalPrice = paymentMethodType === "card"
       ? getCardStayTotal(totalPrice, calculateChargeableNights(numberOfNights))
       : totalPrice;
+    const checkoutAmount = isAfterHoursDriveUp
+      ? selectedTotalPrice
+      : paymentMethodType === "card"
+        ? getCardStayTotal(baseDepositAmount, requiredDepositNights)
+        : baseDepositAmount;
     const amountCents = toAmountCents(checkoutAmount);
     const checkoutToken = randomBytes(24).toString("hex");
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
@@ -6108,7 +6110,9 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
             currency: "usd",
             unit_amount: amountCents,
             product_data: {
-              name: `Riverpark RV Resort deposit — Site ${site.site_number}`,
+              name: isAfterHoursDriveUp
+                ? `Riverpark RV Resort stay — Site ${site.site_number}`
+                : `Riverpark RV Resort deposit — Site ${site.site_number}`,
               description: `${formatDisplayDate(arrivalDate)} to ${formatDisplayDate(leaveDate)}`
             }
           }
@@ -6159,10 +6163,9 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       checkoutUrl: session.url,
       paymentMethod: paymentMethodType === "card" ? "card" : "bank",
       depositAmount: baseDepositAmount,
-      cardDepositAmount: getCardStayTotal(
-        baseDepositAmount,
-        requiredDepositNights
-      ),
+      cardDepositAmount: isAfterHoursDriveUp
+        ? checkoutAmount
+        : getCardStayTotal(baseDepositAmount, requiredDepositNights),
       expiresAt: expiresAt.toISOString()
     });
   } catch (error) {
