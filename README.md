@@ -32,6 +32,7 @@ React + Node.js app for managing RV park registrations with:
 - `sql/2026-08-01_add_public_booking_checkouts.sql` stores short-lived public booking details until Stripe confirms a card or ACH bank deposit
 - `sql/2026-08-15_add_reservation_price_choices.sql` stores each booking's requested discounts and selected payment method
 - `sql/2026-08-24_add_reservation_check_ins.sql` stores signed iPad check-in forms and arrival timestamps
+- `add-stay-level-check-ins.sql` allows a separate signed check-in for each return visit on one reservation
 
 ## Database Setup
 
@@ -77,6 +78,8 @@ Run [sql/2026-08-15_add_reservation_price_choices.sql](/Users/kadenwhite/Desktop
 
 Run [sql/2026-08-24_add_reservation_check_ins.sql](/Users/kadenwhite/Desktop/RVPark/sql/2026-08-24_add_reservation_check_ins.sql) before deploying the **Check In** admin page. It stores the guest count, RV details, accepted rules version, signature image, and check-in timestamp with the reservation.
 
+Run [add-stay-level-check-ins.sql](/Users/kadenwhite/Desktop/RVPark/add-stay-level-check-ins.sql) before deploying the return-visit check-in update. It assigns existing check-ins to their reservation’s earliest stay and changes check-in uniqueness from the whole reservation to each individual site-stay segment.
+
 ### Nightly payment progress
 
 Standard reservations derive payment amounts from the current nightly rates and payment history instead of displaying a running dollar balance throughout the site. The UI reports paid stay nights and nights left to pay, then hides that progress once every stay night is covered. Exact dollar amounts remain available only inside payment collection screens.
@@ -116,6 +119,7 @@ Required values:
 - `PORT`
 - `CLIENT_ORIGIN`
 - `ADMIN_SESSION_SECRET`
+- `AFTER_HOURS_ACCESS_TOKEN` (secret value used in the QR-only drive-up URL)
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
 - `STRIPE_TERMINAL_READER_ID` (optional when the account has exactly one physical reader)
@@ -157,6 +161,18 @@ Redeploy both services, sign in to Admin on each phone, and press **Enable booki
 
 The From address must use a SendGrid-verified Single Sender or an authenticated domain. After changing these backend variables, redeploy the server.
 
+### QR-only after-hours drive-up page
+
+Set `AFTER_HOURS_ACCESS_TOKEN` on the backend to a long, random value. The only URL for the drive-up page is:
+
+```text
+https://RiverparkRVResort.com/?after_hours=YOUR_AFTER_HOURS_ACCESS_TOKEN
+```
+
+Use that complete URL as the QR-code destination. The normal website does not link to this page, and both after-hours API endpoints verify the same server-side token. Treat the QR URL like a private link; changing `AFTER_HOURS_ACCESS_TOKEN` immediately invalidates the old QR code.
+
+The page only creates reservations beginning on the current Pacific-Time date. It shows live site availability, displays every site length as the stored length minus three feet, supports the existing secure card-deposit checkout, and adds a cash-envelope option. Cash-envelope reservations remain pending with no payment recorded until the office verifies the envelope and records the cash from Admin.
+
 ### 2. Frontend
 
 Create `client/.env` from [client/.env.example](/Users/kadenwhite/Desktop/RVPark/client/.env.example).
@@ -188,6 +204,7 @@ Your Postgres already lives on Railway, so the main task is connecting a backend
    - `CLIENT_ORIGIN`
    - `PORT`
    - `ADMIN_SESSION_SECRET`
+   - `AFTER_HOURS_ACCESS_TOKEN`
    - `STRIPE_SECRET_KEY`
    - `STRIPE_WEBHOOK_SECRET`
    - `STRIPE_TERMINAL_READER_ID`

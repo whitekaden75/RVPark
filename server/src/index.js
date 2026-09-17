@@ -34,6 +34,9 @@ const sendGridFromName = process.env.SENDGRID_FROM_NAME || "Riverpark RV Resort"
 const sendGridReplyTo = process.env.SENDGRID_REPLY_TO || sendGridFromEmail;
 const guestAuthSecret = process.env.GUEST_AUTH_SECRET || "";
 const adminSessionSecret = process.env.ADMIN_SESSION_SECRET || "";
+const afterHoursAccessToken = String(
+  process.env.AFTER_HOURS_ACCESS_TOKEN || ""
+).trim();
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || "";
 const vapidSubject = process.env.VAPID_SUBJECT || "mailto:reservations@riverparkrvresort.com";
@@ -360,6 +363,38 @@ function verifyAdminPassword(password, salt, storedHash) {
     expectedBuffer.length === providedBuffer.length &&
     timingSafeEqual(expectedBuffer, providedBuffer)
   );
+}
+
+function hasValidAfterHoursAccessToken(value) {
+  const providedToken = String(value || "").trim();
+
+  if (!afterHoursAccessToken || !providedToken) {
+    return false;
+  }
+
+  const expectedBuffer = Buffer.from(afterHoursAccessToken);
+  const providedBuffer = Buffer.from(providedToken);
+
+  return (
+    expectedBuffer.length === providedBuffer.length &&
+    timingSafeEqual(expectedBuffer, providedBuffer)
+  );
+}
+
+function ensureAfterHoursAccess(req, res) {
+  if (!afterHoursAccessToken) {
+    res.status(503).json({
+      message: "After-hours drive-up booking is not configured yet."
+    });
+    return false;
+  }
+
+  if (!hasValidAfterHoursAccessToken(req.body?.accessToken)) {
+    res.status(404).json({ message: "This after-hours booking link is not valid." });
+    return false;
+  }
+
+  return true;
 }
 
 async function findAdminUserByUsername(username) {
@@ -1095,6 +1130,74 @@ async function sendReservationConfirmationEmail(reservation) {
     to: reservation.email,
     toName: recipientName,
     ...message
+  });
+}
+
+async function sendAfterHoursCashConfirmationEmail(reservation, cashAmount) {
+  if (!reservation?.email) {
+    return;
+  }
+
+  const guestName = `${reservation.first_name || ""} ${reservation.last_name || ""}`.trim();
+  const stay = reservation.siteStays?.[0];
+  const siteNumber = stay?.site_number || "Not assigned";
+  const arrivalDate = stay?.arrival_date
+    ? formatDisplayDate(stay.arrival_date)
+    : "Tonight";
+  const leaveDate = stay?.leave_date
+    ? formatDisplayDate(stay.leave_date)
+    : "Not set";
+  const amount = formatEmailCurrency(cashAmount);
+  const text = [
+    "Riverpark RV Resort",
+    "After-hours drive-up reservation",
+    "",
+    `Hi ${guestName || "Guest"},`,
+    "",
+    `Reservation: #${reservation.id}`,
+    `Site: ${siteNumber}`,
+    `Arrival: ${arrivalDate}`,
+    `Departure: ${leaveDate}`,
+    `Cash to place in the envelope: ${amount}`,
+    "",
+    "Take a cash-payment envelope from beside the board. Write your name, phone number, email address, and site number on it. Put the exact cash amount inside, seal it, and follow the return instructions posted at the board.",
+    "",
+    "Your reservation is being held while the office verifies the envelope payment.",
+    "",
+    "Questions? Call or text 541-295-1269."
+  ].join("\n");
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;max-width:620px;margin:auto;color:#17372f;line-height:1.6;">
+      <div style="padding:28px;background:#17372f;color:#fff;text-align:center;">
+        <div style="font-size:28px;font-family:Georgia,serif;">Riverpark RV Resort</div>
+        <div style="margin-top:6px;color:#d8ba85;text-transform:uppercase;letter-spacing:1.5px;">After-hours drive-up</div>
+      </div>
+      <div style="padding:30px;background:#fffaf2;">
+        <h1 style="font-family:Georgia,serif;font-weight:400;">Your site is reserved.</h1>
+        <p>Hi ${escapeEmailHtml(guestName || "Guest")}, use the cash-payment envelope beside the board to finish your after-hours arrival.</p>
+        <div style="padding:18px 20px;background:#f2eadc;border-left:4px solid #cf7438;">
+          <strong>Reservation #${escapeEmailHtml(reservation.id)}</strong><br>
+          Site ${escapeEmailHtml(siteNumber)}<br>
+          ${escapeEmailHtml(arrivalDate)} to ${escapeEmailHtml(leaveDate)}<br>
+          <span style="font-size:22px;font-weight:700;">Cash due: ${escapeEmailHtml(amount)}</span>
+        </div>
+        <ol>
+          <li>Take an envelope from beside the board.</li>
+          <li>Write your name, phone number, email address, and site number on it.</li>
+          <li>Put the exact cash amount inside and seal the envelope.</li>
+          <li>Follow the return instructions posted at the board.</li>
+        </ol>
+        <p>Your reservation is being held while the office verifies the envelope payment.</p>
+        <p>Questions? Call or text <strong>541-295-1269</strong>.</p>
+      </div>
+    </div>`;
+
+  await sendEmailWithSendGrid({
+    to: reservation.email,
+    toName: guestName,
+    subject: `After-hours reservation #${reservation.id} — Site ${siteNumber}`,
+    text,
+    html
   });
 }
 
@@ -2212,6 +2315,7 @@ function serializeReservationCheckIn(row, { includeSignature = true } = {}) {
 
   return {
     id: row.id,
+    reservationSiteStayId: Number(row.reservation_site_stay_id) || null,
     guestCount: Number(row.guest_count),
     homeState: row.home_state || "",
     postalCode: row.postal_code || "",
@@ -2633,7 +2737,7 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
     ? " Guest opted in to reservation-related text messages and park-wide updates or alerts."
     : " Guest did not opt in to text messages.";
   const publicReservationNotes =
-    `Created through public online checkout. Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}. Terms ${payload.termsVersion || publicBookingTermsVersion} accepted and payment-method storage authorized.${smsConsentNote}${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
+    `${payload.afterHoursDriveUp ? "Created through the QR-only after-hours drive-up page." : "Created through public online checkout."} Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}. Terms ${payload.termsVersion || publicBookingTermsVersion} accepted and payment-method storage authorized.${smsConsentNote}${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
   const reservationResult = await client.query(
     `
       INSERT INTO reservations (
@@ -4075,7 +4179,7 @@ async function fetchReservationDetails(queryable, reservationId) {
       SELECT *
       FROM reservation_check_ins
       WHERE reservation_id = $1
-      LIMIT 1
+      ORDER BY checked_in_at DESC, id DESC
     `,
     [reservationId]
   );
@@ -4193,6 +4297,7 @@ async function fetchReservationDetails(queryable, reservationId) {
       createdAt: row.created_at
     })),
     checkIn: serializeReservationCheckIn(checkInResult.rows[0]),
+    checkIns: checkInResult.rows.map((row) => serializeReservationCheckIn(row)),
     siteStays: pricedSiteStays
   };
 }
@@ -4202,8 +4307,13 @@ function buildReservationDetailsFromParts(
   paymentEventRows,
   stayRows,
   pricingLookup,
-  checkInRow = null
+  checkInRows = []
 ) {
+  const normalizedCheckInRows = Array.isArray(checkInRows)
+    ? checkInRows
+    : checkInRows
+      ? [checkInRows]
+      : [];
   const pricedSiteStays = stayRows.map((segment) => ({
     ...(function buildSegment() {
       if (isOpenEndedSegment(segment, reservationRow.reservation_term)) {
@@ -4247,7 +4357,12 @@ function buildReservationDetailsFromParts(
       recordedAt: row.recorded_at,
       createdAt: row.created_at
     })),
-    checkIn: serializeReservationCheckIn(checkInRow, { includeSignature: false }),
+    checkIn: serializeReservationCheckIn(normalizedCheckInRows[0], {
+      includeSignature: false
+    }),
+    checkIns: normalizedCheckInRows.map((row) =>
+      serializeReservationCheckIn(row, { includeSignature: false })
+    ),
     siteStays: pricedSiteStays
   };
 }
@@ -4338,6 +4453,7 @@ async function fetchReservationList(queryable) {
         SELECT
           id,
           reservation_id,
+          reservation_site_stay_id,
           guest_count,
           home_state,
           postal_code,
@@ -4351,6 +4467,7 @@ async function fetchReservationList(queryable) {
           checked_in_at
         FROM reservation_check_ins
         WHERE reservation_id = ANY($1::bigint[])
+        ORDER BY reservation_id, checked_in_at DESC, id DESC
       `,
       [reservationIds]
     ),
@@ -4372,9 +4489,13 @@ async function fetchReservationList(queryable) {
     activeStaysByReservationId.set(row.reservation_id, reservationStays);
   }
 
-  const checkInsByReservationId = new Map(
-    checkInsResult.rows.map((row) => [Number(row.reservation_id), row])
-  );
+  const checkInsByReservationId = new Map();
+  for (const row of checkInsResult.rows) {
+    const reservationCheckIns =
+      checkInsByReservationId.get(Number(row.reservation_id)) || [];
+    reservationCheckIns.push(row);
+    checkInsByReservationId.set(Number(row.reservation_id), reservationCheckIns);
+  }
 
   const canceledSiteIds = [
     ...new Set(
@@ -4442,7 +4563,7 @@ async function fetchReservationList(queryable) {
       paymentEventRows,
       stayRows,
       pricingLookup,
-      checkInsByReservationId.get(Number(reservationRow.id)) || null
+      checkInsByReservationId.get(Number(reservationRow.id)) || []
     );
   });
 }
@@ -4649,6 +4770,7 @@ function requestChangesSharedAdminData(req) {
     /^\/sites(?:\/|$)/,
     /^\/customers(?:\/|$)/,
     /^\/guest\/reservations(?:\/|$)/,
+    /^\/guest\/after-hours\/reservations(?:\/|$)/,
     /^\/stripe\/sync(?:\/|$)/
   ].some((pattern) => pattern.test(req.path));
 }
@@ -5317,6 +5439,346 @@ app.post("/api/guest/reservations/sign-in", async (req, res) => {
   }
 });
 
+app.post("/api/guest/after-hours/availability", async (req, res) => {
+  if (!ensureAfterHoursAccess(req, res)) {
+    return;
+  }
+
+  const arrivalDate = String(req.body.arrivalDate || "");
+  const leaveDate = String(req.body.leaveDate || "");
+  const numberOfNights = nightsBetween(arrivalDate, leaveDate);
+
+  if (arrivalDate !== getParkTodayDate()) {
+    return res.status(400).json({
+      message: "After-hours drive-up reservations must begin tonight."
+    });
+  }
+
+  if (!leaveDate || arrivalDate >= leaveDate || numberOfNights <= 0) {
+    return res.status(400).json({ message: "Choose a valid departure date." });
+  }
+
+  if (numberOfNights > 14) {
+    return res.status(400).json({
+      message: "After-hours stays are limited to two weeks. Call 541-295-1269 for a longer stay."
+    });
+  }
+
+  try {
+    const result = await buildAvailabilitySearchResult({
+      arrivalDate,
+      leaveDate,
+      minSizeFeet: null
+    });
+
+    return res.json({
+      arrivalDate,
+      leaveDate,
+      numberOfNights,
+      sites: result.directMatches
+        .filter(
+          (site) =>
+            site.normalPrice !== null || site.discountPrice !== null
+        )
+        .map((site) => ({
+          ...site,
+          sizeFeet: Math.max(0, Number(site.sizeFeet || 0) - 3)
+        }))
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/guest/after-hours/reservations", async (req, res) => {
+  if (!ensureAfterHoursAccess(req, res)) {
+    return;
+  }
+
+  const firstName = String(req.body.firstName || "").trim();
+  const lastName = String(req.body.lastName || "").trim();
+  const email = String(req.body.email || "").trim().toLowerCase();
+  const phoneNumber = normalizeGuestPhone(req.body.phoneNumber);
+  const arrivalDate = String(req.body.arrivalDate || "");
+  const leaveDate = String(req.body.leaveDate || "");
+  const siteId = Number(req.body.siteId);
+  const rigLengthFeet = Number(req.body.rigLengthFeet);
+  const allowedRvKinds = ["camper", "van", "5th wheel", "motor home", "trailer"];
+  const rvKind = allowedRvKinds.includes(req.body.rvKind) ? req.body.rvKind : "";
+  const motorhomeWithTow = rvKind === "motor home" && Boolean(req.body.motorhomeWithTow);
+  const towVehicleLengthFeet = motorhomeWithTow
+    ? Number(req.body.towVehicleLengthFeet)
+    : null;
+  const towVehicleType = String(req.body.towVehicleType || "");
+  const numberOfNights = nightsBetween(arrivalDate, leaveDate);
+
+  if (!firstName || !lastName || phoneNumber.length !== 10) {
+    return res.status(400).json({ message: "Name and a valid phone number are required." });
+  }
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ message: "A valid email is required." });
+  }
+
+  if (arrivalDate !== getParkTodayDate()) {
+    return res.status(400).json({
+      message: "After-hours drive-up reservations must begin tonight."
+    });
+  }
+
+  if (!leaveDate || arrivalDate >= leaveDate || numberOfNights <= 0) {
+    return res.status(400).json({ message: "Choose a valid departure date." });
+  }
+
+  if (numberOfNights > 14) {
+    return res.status(400).json({
+      message: "After-hours stays are limited to two weeks. Call 541-295-1269 for a longer stay."
+    });
+  }
+
+  if (!siteId || !rvKind || !Number.isFinite(rigLengthFeet) || rigLengthFeet <= 0) {
+    return res.status(400).json({ message: "Site and RV details are required." });
+  }
+
+  if (!req.body.termsAccepted || !req.body.cashEnvelopeAccepted) {
+    return res.status(400).json({
+      message: "Accept the terms and cash-envelope instructions before reserving."
+    });
+  }
+
+  if (rvKind === "5th wheel" && rigLengthFeet > 43) {
+    return res.status(400).json({
+      message: "We do not have room for a fifth wheel over 43 feet."
+    });
+  }
+
+  const allowedTowVehicleTypes =
+    rvKind === "5th wheel"
+      ? ["truck_short_bed", "truck_long_bed", "dually"]
+      : rvKind === "camper" || rvKind === "trailer"
+        ? ["suv", "truck_short_bed", "truck_long_bed", "dually"]
+        : [];
+
+  if (allowedTowVehicleTypes.length && !allowedTowVehicleTypes.includes(towVehicleType)) {
+    return res.status(400).json({ message: "Choose the vehicle used with your RV." });
+  }
+
+  if (
+    motorhomeWithTow &&
+    (!Number.isFinite(towVehicleLengthFeet) || towVehicleLengthFeet <= 0)
+  ) {
+    return res.status(400).json({ message: "Enter the tow vehicle length." });
+  }
+
+  const towVehicleAdditionalFeet = {
+    suv: 10,
+    truck_short_bed: 15,
+    truck_long_bed: 18,
+    dually: 18
+  }[towVehicleType] ?? 0;
+  const requiredLengthFeet = motorhomeWithTow
+    ? rigLengthFeet + towVehicleLengthFeet
+    : allowedTowVehicleTypes.length
+      ? rigLengthFeet + towVehicleAdditionalFeet
+      : rigLengthFeet;
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const siteResult = await client.query(
+      `
+        SELECT id, site_number, size_feet, is_on_river, river_category, is_big_rig
+        FROM rv_sites
+        WHERE id = $1
+        FOR SHARE
+      `,
+      [siteId]
+    );
+
+    if (siteResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "That site is no longer available." });
+    }
+
+    const site = siteResult.rows[0];
+    const displayedSiteLength = Math.max(0, Number(site.size_feet || 0) - 3);
+
+    if (requiredLengthFeet > displayedSiteLength) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: `Your setup needs more room than the displayed ${displayedSiteLength}-foot site length.`
+      });
+    }
+
+    if (
+      Boolean(req.body.slideDriverSide) &&
+      rigLengthFeet > 25 &&
+      String(site.site_number) === "23"
+    ) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "Site 23 cannot accommodate a rig over 25 feet with a driver-side slide."
+      });
+    }
+
+    const segment = { siteId, arrivalDate, leaveDate };
+    const overlap = await findReservationOverlap(client, [segment]);
+    const checkoutOverlap = await findPublicCheckoutOverlap(client, segment);
+
+    if (overlap || checkoutOverlap) {
+      await client.query("ROLLBACK");
+      return res.status(409).json(
+        overlap || { message: "That site is currently being held by another guest." }
+      );
+    }
+
+    const pricingLookup = buildPricingRuleLookup(await loadPricingRules());
+    const stayPricing = getPricingForSiteAndNights(site, numberOfNights, pricingLookup);
+    const depositPricing = getPricingForSiteAndNights(site, 1, pricingLookup);
+    const cashTotal = stayPricing.normalPrice ?? stayPricing.discountPrice;
+    const oneNightDeposit = depositPricing.normalPrice ?? depositPricing.discountPrice;
+
+    if (cashTotal === null || oneNightDeposit === null) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "Pricing is not configured for this stay. Call 541-295-1269 for help."
+      });
+    }
+
+    const existingCustomerResult = await client.query(
+      `
+        SELECT id
+        FROM customers
+        WHERE LOWER(TRIM(first_name)) = LOWER($1)
+          AND LOWER(TRIM(last_name)) = LOWER($2)
+          AND RIGHT(REGEXP_REPLACE(COALESCE(phone_number, ''), '[^0-9]', '', 'g'), 10) = $3
+        LIMIT 1
+      `,
+      [firstName, lastName, phoneNumber]
+    );
+    let customerId = existingCustomerResult.rows[0]?.id;
+
+    if (customerId) {
+      await client.query(
+        `UPDATE customers SET email = $2, phone_number = $3 WHERE id = $1`,
+        [customerId, email, phoneNumber]
+      );
+    } else {
+      const customerResult = await client.query(
+        `
+          INSERT INTO customers (first_name, last_name, email, phone_number)
+          VALUES ($1, $2, $3, $4)
+          RETURNING id
+        `,
+        [firstName, lastName, email, phoneNumber]
+      );
+      customerId = customerResult.rows[0].id;
+    }
+
+    const expectedCashAmount = roundCurrency(cashTotal);
+    const notes = [
+      "AFTER-HOURS DRIVE-UP — cash envelope payment awaiting office verification.",
+      `Expected envelope amount: ${formatEmailCurrency(expectedCashAmount)}.`,
+      `Displayed usable site length: ${displayedSiteLength} ft (stored site length minus 3 ft).`,
+      motorhomeWithTow ? `Tow vehicle length: ${towVehicleLengthFeet} ft.` : "",
+      towVehicleType ? `Tow vehicle type: ${towVehicleType.replaceAll("_", " ")}.` : "",
+      "Guest accepted the cash-envelope instructions and reservation terms."
+    ].filter(Boolean).join(" ");
+    const reservationResult = await client.query(
+      `
+        INSERT INTO reservations (
+          customer_id,
+          booked_date,
+          status,
+          reservation_term,
+          billing_mode,
+          deposit_amount,
+          total_price,
+          rv_kind,
+          motorhome_class_a,
+          motorhome_class_c,
+          motorhome_with_tow,
+          slide_driver_side,
+          slide_passenger_side,
+          rig_length_feet,
+          amount_paid,
+          notes,
+          payment_method
+        )
+        VALUES (
+          $1,
+          (CURRENT_TIMESTAMP AT TIME ZONE 'America/Los_Angeles')::date,
+          'pending',
+          'standard',
+          'standard',
+          $2,
+          NULL,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          0,
+          $10,
+          'bank'
+        )
+        RETURNING id
+      `,
+      [
+        customerId,
+        Math.min(
+          roundCurrency(oneNightDeposit * (numberOfNights > 7 ? 2 : 1)),
+          expectedCashAmount
+        ),
+        rvKind,
+        rvKind === "motor home" && Boolean(req.body.motorhomeClassA),
+        rvKind === "motor home" && Boolean(req.body.motorhomeClassC),
+        motorhomeWithTow,
+        Boolean(req.body.slideDriverSide),
+        Boolean(req.body.slidePassengerSide),
+        rigLengthFeet,
+        notes
+      ]
+    );
+    const reservationId = reservationResult.rows[0].id;
+
+    await client.query(
+      `
+        INSERT INTO reservation_site_stays (reservation_id, site_id, arrival_date, leave_date)
+        VALUES ($1, $2, $3, $4)
+      `,
+      [reservationId, siteId, arrivalDate, leaveDate]
+    );
+    await client.query("COMMIT");
+
+    const reservation = await fetchReservationDetails(pool, reservationId);
+    Promise.allSettled([
+      sendAfterHoursCashConfirmationEmail(reservation, expectedCashAmount),
+      sendPublicBookingPushNotification(reservationId)
+    ]).catch(() => {});
+
+    return res.status(201).json({
+      reservation: sanitizeGuestReservation(reservation),
+      cashAmount: expectedCashAmount,
+      displayedSiteLength
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.code === "23P01") {
+      return res.status(409).json({
+        message: "That site was just reserved. Please choose another available site."
+      });
+    }
+
+    return res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/api/guest/booking-checkouts", async (req, res) => {
   if (!ensureStripeConfigured(res)) {
     return;
@@ -5350,6 +5812,14 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       ? "card"
       : "";
   const baseUrl = String(req.body.baseUrl || "").trim().replace(/\/+$/, "");
+  const isAfterHoursDriveUp = Boolean(req.body.afterHoursAccessToken);
+
+  if (
+    isAfterHoursDriveUp &&
+    !hasValidAfterHoursAccessToken(req.body.afterHoursAccessToken)
+  ) {
+    return res.status(404).json({ message: "This after-hours booking link is not valid." });
+  }
 
   if (!firstName || !lastName || phoneNumber.length !== 10) {
     return res.status(400).json({ message: "Name and a valid phone number are required." });
@@ -5366,6 +5836,12 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
   if (arrivalDate < getParkTodayDate()) {
     return res.status(400).json({
       message: "The earliest arrival date is today in Pacific Time."
+    });
+  }
+
+  if (isAfterHoursDriveUp && arrivalDate !== getParkTodayDate()) {
+    return res.status(400).json({
+      message: "After-hours drive-up reservations must begin tonight."
     });
   }
 
@@ -5473,7 +5949,7 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       dually: 18
     }[towVehicleType] ?? null;
     const requiredSiteLength = motorhomeWithTow
-      ? rigLengthFeet + towVehicleLengthFeet + 3
+      ? rigLengthFeet + towVehicleLengthFeet + (isAfterHoursDriveUp ? 0 : 3)
       : allowedTowVehicleTypes.length && towVehicleAdditionalFeet !== null
         ? rigLengthFeet + towVehicleAdditionalFeet
         : rigLengthFeet;
@@ -5489,7 +5965,11 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       });
     }
 
-    if (site.size_feet < requiredSiteLength) {
+    const availableSiteLength = isAfterHoursDriveUp
+      ? Math.max(0, Number(site.size_feet || 0) - 3)
+      : Number(site.size_feet || 0);
+
+    if (availableSiteLength < requiredSiteLength) {
       await client.query("ROLLBACK");
       return res.status(400).json({
         message: "That site is too short for the entered RV setup."
@@ -5574,7 +6054,8 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       termsAccepted: true,
       termsVersion: publicBookingTermsVersion,
       paymentMethodStorageAccepted: true,
-      smsConsent: Boolean(req.body.smsConsent)
+      smsConsent: Boolean(req.body.smsConsent),
+      afterHoursDriveUp: isAfterHoursDriveUp
     };
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
@@ -7435,6 +7916,7 @@ app.post("/api/stripe/terminal/payments/:paymentIntentId/cancel", async (req, re
 
 app.post("/api/reservations/:id/check-in", async (req, res) => {
   const reservationId = Number(req.params.id);
+  const reservationSiteStayId = Number(req.body?.siteStayId);
   const guestCount = Number(req.body?.guestCount);
   const signedName = String(req.body?.signedName || "").trim();
   const signatureDataUrl = String(req.body?.signatureDataUrl || "");
@@ -7443,6 +7925,10 @@ app.post("/api/reservations/:id/check-in", async (req, res) => {
 
   if (!reservationId) {
     return res.status(400).json({ message: "Reservation is required." });
+  }
+
+  if (!reservationSiteStayId) {
+    return res.status(400).json({ message: "Choose the arriving stay to check in." });
   }
 
   if (!Number.isInteger(guestCount) || guestCount < 1 || guestCount > 50) {
@@ -7478,6 +7964,16 @@ app.post("/api/reservations/:id/check-in", async (req, res) => {
       return res.status(400).json({ message: "Canceled reservations cannot be checked in." });
     }
 
+    const arrivalStay = reservation.siteStays.find(
+      (stay) => Number(stay.id) === reservationSiteStayId
+    );
+
+    if (!arrivalStay) {
+      return res.status(400).json({
+        message: "That stay does not belong to this reservation."
+      });
+    }
+
     let paymentReceipt = null;
 
     if (paymentIntentId) {
@@ -7511,6 +8007,7 @@ app.post("/api/reservations/:id/check-in", async (req, res) => {
       `
         INSERT INTO reservation_check_ins (
           reservation_id,
+          reservation_site_stay_id,
           guest_count,
           home_state,
           postal_code,
@@ -7525,8 +8022,9 @@ app.post("/api/reservations/:id/check-in", async (req, res) => {
           guest_notes,
           checked_in_by_admin_user_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-        ON CONFLICT (reservation_id) DO UPDATE SET
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        ON CONFLICT (reservation_site_stay_id) DO UPDATE SET
+          reservation_id = EXCLUDED.reservation_id,
           guest_count = EXCLUDED.guest_count,
           home_state = EXCLUDED.home_state,
           postal_code = EXCLUDED.postal_code,
@@ -7546,6 +8044,7 @@ app.post("/api/reservations/:id/check-in", async (req, res) => {
       `,
       [
         reservationId,
+        reservationSiteStayId,
         guestCount,
         String(req.body?.homeState || "").trim().slice(0, 50) || null,
         String(req.body?.postalCode || "").trim().slice(0, 20) || null,

@@ -2536,6 +2536,572 @@ function PublicPaymentPage({ token }) {
   );
 }
 
+function AfterHoursDriveUpPage({ accessToken }) {
+  const today = getParkDateFromTimestamp(new Date());
+  const [leaveDate, setLeaveDate] = useState(addDays(today, 1));
+  const [sites, setSites] = useState([]);
+  const [selectedSite, setSelectedSite] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [confirmation, setConfirmation] = useState(null);
+  const [form, setForm] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    phoneNumber: "",
+    rvKind: "",
+    rigLengthFeet: "",
+    motorhomeClassA: false,
+    motorhomeClassC: false,
+    motorhomeWithTow: false,
+    towVehicleLengthFeet: "",
+    towVehicleType: "",
+    slideDriverSide: false,
+    slidePassengerSide: false,
+    termsAccepted: false,
+    cashEnvelopeAccepted: false,
+  });
+  const numberOfNights = nightsBetween(today, leaveDate);
+  const phoneDigits = form.phoneNumber.replaceAll(/\D/g, "");
+  const towVehicleAdditionalFeet =
+    {
+      suv: 10,
+      truck_short_bed: 15,
+      truck_long_bed: 18,
+      dually: 18,
+    }[form.towVehicleType] ?? 0;
+  const setupLength =
+    form.rvKind === "motor home" && form.motorhomeWithTow
+      ? Number(form.rigLengthFeet || 0) +
+        Number(form.towVehicleLengthFeet || 0)
+      : ["camper", "trailer", "5th wheel"].includes(form.rvKind) &&
+          form.towVehicleType
+        ? Number(form.rigLengthFeet || 0) + towVehicleAdditionalFeet
+        : Number(form.rigLengthFeet || 0);
+  const requiresTowVehicleType = ["camper", "trailer", "5th wheel"].includes(
+    form.rvKind
+  );
+  const contactIsComplete = Boolean(
+    form.firstName.trim() &&
+      form.lastName.trim() &&
+      form.email.includes("@") &&
+      phoneDigits.length === 10
+  );
+  const rigIsComplete = Boolean(
+    form.rvKind &&
+      Number(form.rigLengthFeet) > 0 &&
+      (!requiresTowVehicleType || form.towVehicleType) &&
+      (!form.motorhomeWithTow || Number(form.towVehicleLengthFeet) > 0)
+  );
+  const selectedSiteFits = Boolean(
+    selectedSite && setupLength > 0 && setupLength <= Number(selectedSite.sizeFeet)
+  );
+  const formIsComplete = Boolean(
+    contactIsComplete &&
+      rigIsComplete &&
+      selectedSiteFits &&
+      form.termsAccepted
+  );
+  const cashTotal = selectedSite?.normalPrice ?? selectedSite?.discountPrice;
+  const depositBase = getPublicBookingDeposit(cashTotal, numberOfNights);
+  const cardDeposit = getCardStayTotal(
+    depositBase,
+    Number(numberOfNights) > 7 ? 2 : 1
+  );
+
+  async function loadAvailableSites(event) {
+    event?.preventDefault();
+    setIsLoading(true);
+    setErrorMessage("");
+    setSelectedSite(null);
+
+    try {
+      const result = await guestApiRequest("/guest/after-hours/availability", {
+        method: "POST",
+        body: JSON.stringify({
+          accessToken,
+          arrivalDate: today,
+          leaveDate,
+        }),
+      });
+      setSites(ensureArray(result.sites, "After-hours availability"));
+    } catch (error) {
+      setSites([]);
+      setErrorMessage(error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAvailableSites();
+  }, []);
+
+  function updateForm(field, value) {
+    setForm((current) => {
+      const next = { ...current, [field]: value };
+
+      if (field === "rvKind") {
+        next.motorhomeClassA = false;
+        next.motorhomeClassC = false;
+        next.motorhomeWithTow = false;
+        next.towVehicleLengthFeet = "";
+        next.towVehicleType = "";
+      }
+
+      return next;
+    });
+    setErrorMessage("");
+  }
+
+  function chooseSite(site) {
+    if (!rigIsComplete || setupLength > Number(site.sizeFeet)) {
+      return;
+    }
+
+    setSelectedSite(site);
+    setErrorMessage("");
+    window.requestAnimationFrame(() => {
+      document.getElementById("after-hours-guest-details")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }
+
+  function buildReservationPayload() {
+    return {
+      ...form,
+      accessToken,
+      afterHoursAccessToken: accessToken,
+      paymentMethodStorageAccepted: form.termsAccepted,
+      discounts: [],
+      siteId: selectedSite.id,
+      arrivalDate: today,
+      leaveDate,
+      rigLengthFeet: Number(form.rigLengthFeet),
+      towVehicleLengthFeet: form.motorhomeWithTow
+        ? Number(form.towVehicleLengthFeet)
+        : null,
+      baseUrl: window.location.origin,
+    };
+  }
+
+  async function reserveWithCash() {
+    if (!formIsComplete || !form.cashEnvelopeAccepted) return;
+
+    setIsSubmitting(true);
+    setErrorMessage("");
+
+    try {
+      const result = await guestApiRequest(
+        "/guest/after-hours/reservations",
+        {
+          method: "POST",
+          body: JSON.stringify(buildReservationPayload()),
+        }
+      );
+      setConfirmation(result);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function payByCard() {
+    if (!formIsComplete) return;
+
+    setIsSubmitting(true);
+    setErrorMessage("");
+
+    try {
+      const result = await guestApiRequest("/guest/booking-checkouts", {
+        method: "POST",
+        body: JSON.stringify({
+          ...buildReservationPayload(),
+          paymentMethod: "card",
+        }),
+      });
+      window.location.assign(result.checkoutUrl);
+    } catch (error) {
+      setErrorMessage(error.message);
+      setIsSubmitting(false);
+    }
+  }
+
+  if (confirmation?.reservation) {
+    const reservation = confirmation.reservation;
+    const stay = reservation.siteStays?.[0];
+
+    return (
+      <main className="after-hours-page after-hours-confirmation-page">
+        <section className="after-hours-confirmation-card">
+          <div className="after-hours-checkmark" aria-hidden="true">✓</div>
+          <p className="eyebrow">Site reserved</p>
+          <h1>Welcome to Riverpark.</h1>
+          <p className="after-hours-lead">
+            Reservation #{reservation.id} is holding Site {stay?.site_number} for
+            you tonight.
+          </p>
+          <div className="after-hours-cash-total">
+            <span>Place this exact amount in the envelope</span>
+            <strong>{formatCurrency(confirmation.cashAmount)}</strong>
+          </div>
+          <div className="after-hours-stay-summary">
+            <span>Site {stay?.site_number}</span>
+            <span>{confirmation.displayedSiteLength} ft usable length</span>
+            <span>
+              {formatDisplayDate(stay?.arrival_date)} to{" "}
+              {formatDisplayDate(stay?.leave_date)}
+            </span>
+          </div>
+          <ol className="after-hours-envelope-steps">
+            <li>Take a cash-payment envelope from beside the board.</li>
+            <li>
+              Write your name, phone number, email address, and Site{" "}
+              {stay?.site_number} on it.
+            </li>
+            <li>
+              Put {formatCurrency(confirmation.cashAmount)} in the envelope and
+              seal it.
+            </li>
+            <li>Follow the envelope-return instructions posted at the board.</li>
+          </ol>
+          <div className="after-hours-pending-note">
+            The office will verify your envelope payment in the morning. A copy
+            of these instructions was sent to {reservation.email}.
+          </div>
+          <a className="after-hours-call-link" href="tel:+15412951269">
+            Need help? Call or text 541-295-1269
+          </a>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="after-hours-page">
+      <header className="after-hours-hero">
+        <div className="after-hours-brand-mark">RP</div>
+        <p className="eyebrow">Riverpark RV Resort</p>
+        <h1>After-hours drive-up</h1>
+        <p>
+          Find an open site for tonight, reserve it now, then pay by card or use
+          a cash envelope from beside the board.
+        </p>
+      </header>
+
+      <section className="after-hours-panel">
+        <div className="after-hours-step-heading">
+          <span>1</span>
+          <div>
+            <h2>How long are you staying?</h2>
+            <p>After-hours reservations begin tonight.</p>
+          </div>
+        </div>
+        <form className="after-hours-date-row" onSubmit={loadAvailableSites}>
+          <label>
+            Arrival
+            <input type="date" value={today} disabled />
+          </label>
+          <label>
+            Departure
+            <input
+              type="date"
+              min={addDays(today, 1)}
+              max={addDays(today, 14)}
+              value={leaveDate}
+              onChange={(event) => setLeaveDate(event.target.value)}
+            />
+          </label>
+          <button type="submit" className="public-search-button" disabled={isLoading}>
+            {isLoading ? "Checking sites..." : "Update available sites"}
+          </button>
+        </form>
+      </section>
+
+      <section className="after-hours-panel">
+        <div className="after-hours-step-heading">
+          <span>2</span>
+          <div>
+            <h2>Tell us about your setup.</h2>
+            <p>We’ll make sure the site has enough usable length.</p>
+          </div>
+        </div>
+        <div className="after-hours-form-grid">
+          <label>
+            RV type
+            <select
+              value={form.rvKind}
+              onChange={(event) => updateForm("rvKind", event.target.value)}>
+              <option value="">Choose type</option>
+              {rvKinds.map((kind) => (
+                <option key={kind} value={kind}>{kind}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            RV length in feet
+            <input
+              type="number"
+              min="1"
+              max="60"
+              inputMode="numeric"
+              value={form.rigLengthFeet}
+              onChange={(event) => updateForm("rigLengthFeet", event.target.value)}
+            />
+          </label>
+          {requiresTowVehicleType ? (
+            <label>
+              Tow vehicle
+              <select
+                value={form.towVehicleType}
+                onChange={(event) => updateForm("towVehicleType", event.target.value)}>
+                <option value="">Choose vehicle</option>
+                {form.rvKind !== "5th wheel" ? <option value="suv">SUV</option> : null}
+                <option value="truck_short_bed">Short-bed truck</option>
+                <option value="truck_long_bed">Long-bed truck</option>
+                <option value="dually">Dually</option>
+              </select>
+            </label>
+          ) : null}
+          {form.rvKind === "motor home" ? (
+            <>
+              <label className="after-hours-checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={form.motorhomeWithTow}
+                  onChange={(event) => updateForm("motorhomeWithTow", event.target.checked)}
+                />
+                I am towing a vehicle
+              </label>
+              {form.motorhomeWithTow ? (
+                <label>
+                  Tow vehicle length in feet
+                  <input
+                    type="number"
+                    min="1"
+                    max="30"
+                    value={form.towVehicleLengthFeet}
+                    onChange={(event) => updateForm("towVehicleLengthFeet", event.target.value)}
+                  />
+                </label>
+              ) : null}
+            </>
+          ) : null}
+          <label className="after-hours-checkbox-field">
+            <input
+              type="checkbox"
+              checked={form.slideDriverSide}
+              onChange={(event) => updateForm("slideDriverSide", event.target.checked)}
+            />
+            Driver-side slide
+          </label>
+          <label className="after-hours-checkbox-field">
+            <input
+              type="checkbox"
+              checked={form.slidePassengerSide}
+              onChange={(event) => updateForm("slidePassengerSide", event.target.checked)}
+            />
+            Passenger-side slide
+          </label>
+        </div>
+        {rigIsComplete ? (
+          <p className="after-hours-setup-length">
+            Your setup needs about <strong>{setupLength} feet</strong> of usable
+            site length.
+          </p>
+        ) : null}
+      </section>
+
+      <section className="after-hours-panel">
+        <div className="after-hours-step-heading">
+          <span>3</span>
+          <div>
+            <h2>Choose an available site.</h2>
+            <p>
+              Each displayed length is the site’s recorded length minus 3 feet.
+            </p>
+          </div>
+        </div>
+        {errorMessage ? <div className="public-search-message error">{errorMessage}</div> : null}
+        {isLoading ? (
+          <p className="after-hours-empty">Checking tonight’s availability…</p>
+        ) : sites.length ? (
+          <div className="after-hours-site-grid">
+            {sites.map((site) => {
+              const fits = rigIsComplete && setupLength <= Number(site.sizeFeet);
+              const isSelected = selectedSite?.id === site.id;
+
+              return (
+                <article
+                  key={site.id}
+                  className={`after-hours-site-card ${isSelected ? "selected" : ""} ${
+                    rigIsComplete && !fits ? "does-not-fit" : ""
+                  }`.trim()}>
+                  <div>
+                    <span className="eyebrow">Available tonight</span>
+                    <h3>Site {site.siteNumber}</h3>
+                    <p>{getSiteTypeLabel(site)}</p>
+                  </div>
+                  <div className="after-hours-site-size">
+                    <strong>{site.sizeFeet} ft</strong>
+                    <span>usable length</span>
+                  </div>
+                  <div className="after-hours-site-price">
+                    <span>Cash total for {numberOfNights} {numberOfNights === 1 ? "night" : "nights"}</span>
+                    <strong>{formatCurrency(site.normalPrice ?? site.discountPrice)}</strong>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!fits}
+                    onClick={() => chooseSite(site)}>
+                    {!rigIsComplete
+                      ? "Enter RV details first"
+                      : !fits
+                        ? "Too short for your setup"
+                        : isSelected
+                          ? "Selected"
+                          : "Choose this site"}
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="after-hours-empty">
+            <strong>No sites are available for those dates.</strong>
+            <a href="tel:+15412951269">Call or text 541-295-1269 for help.</a>
+          </div>
+        )}
+      </section>
+
+      {selectedSite ? (
+        <section className="after-hours-panel" id="after-hours-guest-details">
+          <div className="after-hours-step-heading">
+            <span>4</span>
+            <div>
+              <h2>Reserve Site {selectedSite.siteNumber}.</h2>
+              <p>Enter the same contact information you’ll write on the envelope.</p>
+            </div>
+          </div>
+          <div className="after-hours-form-grid">
+            <label>
+              First name
+              <input
+                autoComplete="given-name"
+                value={form.firstName}
+                onChange={(event) => updateForm("firstName", event.target.value)}
+              />
+            </label>
+            <label>
+              Last name
+              <input
+                autoComplete="family-name"
+                value={form.lastName}
+                onChange={(event) => updateForm("lastName", event.target.value)}
+              />
+            </label>
+            <label>
+              Email address
+              <input
+                type="email"
+                autoComplete="email"
+                value={form.email}
+                onChange={(event) => updateForm("email", event.target.value)}
+              />
+            </label>
+            <label>
+              Phone number
+              <input
+                type="tel"
+                autoComplete="tel"
+                inputMode="numeric"
+                value={form.phoneNumber}
+                onChange={(event) =>
+                  updateForm("phoneNumber", formatPhoneNumber(event.target.value))
+                }
+              />
+            </label>
+          </div>
+          <label className="after-hours-agreement">
+            <input
+              type="checkbox"
+              checked={form.termsAccepted}
+              onChange={(event) => updateForm("termsAccepted", event.target.checked)}
+            />
+            <span>
+              I agree to Riverpark RV Resort’s{" "}
+              <a href="/?page=terms" target="_blank" rel="noreferrer">Terms &amp; Conditions</a>
+              {" "}and understand that site assignments may be changed if needed.
+            </span>
+          </label>
+
+          <div className="after-hours-payment-options">
+            <article className="after-hours-payment-card cash">
+              <span className="eyebrow">Pay at the board</span>
+              <h3>Cash envelope</h3>
+              <strong>{formatCurrency(cashTotal)}</strong>
+              <p>
+                Reserve now, then place the full stay amount in a cash-payment
+                envelope beside the board.
+              </p>
+              <label className="after-hours-agreement compact">
+                <input
+                  type="checkbox"
+                  checked={form.cashEnvelopeAccepted}
+                  onChange={(event) =>
+                    updateForm("cashEnvelopeAccepted", event.target.checked)
+                  }
+                />
+                <span>I will fill out, seal, and return the cash envelope tonight.</span>
+              </label>
+              <button
+                type="button"
+                className="public-search-button"
+                disabled={isSubmitting || !formIsComplete || !form.cashEnvelopeAccepted}
+                onClick={reserveWithCash}>
+                {isSubmitting ? "Reserving..." : "Reserve with cash envelope"}
+              </button>
+            </article>
+            <article className="after-hours-payment-card card">
+              <span className="eyebrow">Pay online</span>
+              <h3>Credit card</h3>
+              <strong>{formatCurrency(cardDeposit)}</strong>
+              <p>
+                Pay the required card deposit securely now. Your reservation is
+                created after Stripe confirms payment.
+              </p>
+              <button
+                type="button"
+                className="public-search-button"
+                disabled={isSubmitting || !formIsComplete}
+                onClick={payByCard}>
+                {isSubmitting ? "Opening payment..." : "Pay deposit by card"}
+              </button>
+            </article>
+          </div>
+          {!formIsComplete ? (
+            <p className="public-payment-disabled-hint">
+              Complete your RV details, contact information, site choice, and
+              terms above to continue.
+            </p>
+          ) : null}
+          {errorMessage ? <div className="public-search-message error">{errorMessage}</div> : null}
+        </section>
+      ) : null}
+
+      <footer className="after-hours-footer">
+        Riverpark RV Resort · 2956 Rogue River Hwy · Grants Pass, OR ·{" "}
+        <a href="tel:+15412951269">541-295-1269</a>
+      </footer>
+    </main>
+  );
+}
+
 function PublicHome({
   searchForm,
   onSearchChange,
@@ -8551,7 +9117,18 @@ export default function App() {
       method: "POST",
       body: JSON.stringify({ ...form, ...paymentDetails }),
     });
-    const updatedReservation = { ...reservation, checkIn: result.checkIn };
+    const updatedReservation = {
+      ...reservation,
+      checkIn: result.checkIn,
+      checkIns: [
+        result.checkIn,
+        ...(reservation.checkIns || []).filter(
+          (checkIn) =>
+            Number(checkIn.reservationSiteStayId) !==
+            Number(result.checkIn.reservationSiteStayId)
+        ),
+      ],
+    };
 
     setReservations((current) =>
       current.map((entry) =>
@@ -9685,6 +10262,10 @@ export default function App() {
     typeof window !== "undefined"
       ? new URLSearchParams(window.location.search).get("pay")
       : "";
+  const afterHoursAccessToken =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("after_hours")
+      : "";
 
   const isTerminalSourceVisible = terminalPayment
     ? (activePage === "checkin" &&
@@ -9714,6 +10295,10 @@ export default function App() {
 
   if (publicPaymentToken) {
     return <PublicPaymentPage token={publicPaymentToken} />;
+  }
+
+  if (afterHoursAccessToken) {
+    return <AfterHoursDriveUpPage accessToken={afterHoursAccessToken} />;
   }
 
   if (

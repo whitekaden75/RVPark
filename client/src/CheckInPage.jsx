@@ -19,17 +19,52 @@ function formatDate(value) {
 }
 
 function getArrivalStay(reservation, date) {
-  return (reservation.siteStays || []).find(
-    (stay) => stay.arrival_date === date
-  );
+  return getReservationVisits(reservation).find(
+    (visit) => visit.arrival_date === date
+  )?.firstStay;
 }
 
-function getInitialStay(reservation) {
-  return [...(reservation.siteStays || [])].sort((left, right) =>
+function getReservationVisits(reservation) {
+  const sortedStays = [...(reservation?.siteStays || [])].sort((left, right) =>
     String(left.arrival_date || "").localeCompare(
       String(right.arrival_date || "")
     )
-  )[0];
+  );
+  const visits = [];
+
+  for (const stay of sortedStays) {
+    const currentVisit = visits.at(-1);
+
+    if (currentVisit && currentVisit.leave_date === stay.arrival_date) {
+      currentVisit.stays.push(stay);
+      currentVisit.leave_date = stay.leave_date;
+      continue;
+    }
+
+    visits.push({
+      id: stay.id,
+      firstStay: stay,
+      stays: [stay],
+      arrival_date: stay.arrival_date,
+      leave_date: stay.leave_date,
+    });
+  }
+
+  return visits;
+}
+
+function getCheckInForStay(reservation, stay) {
+  if (!reservation || !stay) return null;
+
+  const stayCheckIn = (reservation.checkIns || []).find(
+    (checkIn) => Number(checkIn.reservationSiteStayId) === Number(stay.id)
+  );
+
+  if (stayCheckIn) return stayCheckIn;
+
+  return Number(reservation.checkIn?.reservationSiteStayId) === Number(stay.id)
+    ? reservation.checkIn
+    : null;
 }
 
 function getDefaultRvType(reservation) {
@@ -231,16 +266,14 @@ function SignaturePad({ value, onChange }) {
   );
 }
 
-function CompletedCheckIn({ reservation, onBack }) {
-  const checkIn = reservation.checkIn;
-
+function CompletedCheckIn({ reservation, stay, checkIn, onBack }) {
   return (
     <section className="checkin-kiosk-card checkin-complete-card">
       <div className="checkin-success-mark">✓</div>
       <p className="checkin-eyebrow">Checked in</p>
       <h2>Welcome, {reservation.first_name}</h2>
       <p>
-        Site {getArrivalStay(reservation, reservation.siteStays?.[0]?.arrival_date)?.site_number || reservation.siteStays?.[0]?.site_number || "—"}
+        Site {stay?.site_number || "—"}
         {" • "}
         {new Date(checkIn.checkedInAt).toLocaleString()}
       </p>
@@ -276,6 +309,7 @@ export default function CheckInPage({
   onActiveReservationChange,
 }) {
   const [activeReservationId, setActiveReservationId] = useState(null);
+  const [activeStayId, setActiveStayId] = useState(null);
   const [form, setForm] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -289,20 +323,25 @@ export default function CheckInPage({
   const arrivals = useMemo(
     () =>
       reservations
-        .filter(
-          (reservation) =>
-            reservation.status !== "canceled" &&
-            getInitialStay(reservation)?.arrival_date === today
+        .filter((reservation) => reservation.status !== "canceled")
+        .flatMap((reservation) =>
+          getReservationVisits(reservation)
+            .filter((visit) => visit.arrival_date === today)
+            .map((visit) => ({
+              reservation,
+              visit,
+              stay: visit.firstStay,
+              checkIn: getCheckInForStay(reservation, visit.firstStay),
+            }))
         )
-        .filter((reservation) => {
+        .filter((arrival) => {
           const query = search.trim().toLowerCase();
           if (!query) return true;
-          const stay = getArrivalStay(reservation, today);
           return [
-            reservation.first_name,
-            reservation.last_name,
-            reservation.phone_number,
-            stay?.site_number,
+            arrival.reservation.first_name,
+            arrival.reservation.last_name,
+            arrival.reservation.phone_number,
+            arrival.stay?.site_number,
           ]
             .filter(Boolean)
             .join(" ")
@@ -310,15 +349,16 @@ export default function CheckInPage({
             .includes(query);
         })
         .sort((a, b) => {
-          const checkInOrder = Number(Boolean(a.checkIn)) - Number(Boolean(b.checkIn));
+          const checkInOrder =
+            Number(Boolean(a.checkIn)) - Number(Boolean(b.checkIn));
 
           if (checkInOrder !== 0) {
             return checkInOrder;
           }
 
           return (
-            Number(getArrivalStay(a, today)?.site_number || 0) -
-            Number(getArrivalStay(b, today)?.site_number || 0)
+            Number(a.stay?.site_number || 0) -
+            Number(b.stay?.site_number || 0)
           );
         }),
     [reservations, search, today]
@@ -326,6 +366,10 @@ export default function CheckInPage({
   const activeReservation = reservations.find(
     (reservation) => reservation.id === activeReservationId
   );
+  const activeStay = activeReservation?.siteStays?.find(
+    (stay) => Number(stay.id) === Number(activeStayId)
+  );
+  const activeCheckIn = getCheckInForStay(activeReservation, activeStay);
 
   useEffect(() => {
     onActiveReservationChange?.(activeReservationId);
@@ -333,15 +377,17 @@ export default function CheckInPage({
     return () => onActiveReservationChange?.(null);
   }, [activeReservationId, onActiveReservationChange]);
 
-  async function beginCheckIn(reservation) {
+  async function beginCheckIn(reservation, stay) {
     setErrorMessage("");
 
     try {
       const completeReservation =
-        reservation.checkIn && !reservation.checkIn.signatureDataUrl
+        getCheckInForStay(reservation, stay) &&
+        !getCheckInForStay(reservation, stay)?.signatureDataUrl
           ? await onLoadReservation(reservation.id)
           : reservation;
       setActiveReservationId(completeReservation.id);
+      setActiveStayId(stay.id);
       setForm(createCheckInForm(completeReservation));
       setIsCashCheckOpen(false);
       setIsCheckNumberOpen(false);
@@ -422,9 +468,10 @@ export default function CheckInPage({
       }
 
       if (paymentIsDue) {
+        const checkInForm = { ...form, siteStayId: activeStay.id };
         const result = await onSendToTerminal(
           activeReservation,
-          form,
+          checkInForm,
           selectedBalance,
           "card"
         );
@@ -435,7 +482,10 @@ export default function CheckInPage({
           );
         }
       } else {
-        await onSubmit(activeReservation, form);
+        await onSubmit(activeReservation, {
+          ...form,
+          siteStayId: activeStay.id,
+        });
       }
     } catch (error) {
       setErrorMessage(error.message);
@@ -444,12 +494,15 @@ export default function CheckInPage({
     }
   }
 
-  if (activeReservation?.checkIn) {
+  if (activeReservation && activeStay && activeCheckIn) {
     return (
       <CompletedCheckIn
         reservation={activeReservation}
+        stay={activeStay}
+        checkIn={activeCheckIn}
         onBack={() => {
           setActiveReservationId(null);
+          setActiveStayId(null);
           setForm(null);
         }}
       />
@@ -457,7 +510,14 @@ export default function CheckInPage({
   }
 
   if (activeReservation && form) {
-    const arrivalStay = getArrivalStay(activeReservation, today) || activeReservation.siteStays?.[0];
+    const arrivalStay = activeStay || getArrivalStay(activeReservation, today);
+    const reservationVisits = getReservationVisits(activeReservation);
+    const activeVisit = reservationVisits.find(
+      (visit) => Number(visit.firstStay.id) === Number(arrivalStay.id)
+    );
+    const remainingVisits = reservationVisits.filter(
+      (visit) => visit.arrival_date >= arrivalStay.arrival_date
+    );
     const standardBalance = getCheckInBankBalance(activeReservation);
     const cardBalance = getCheckInCardBalance(activeReservation);
     const nightProgress = getNightPaymentProgress(activeReservation);
@@ -513,6 +573,7 @@ export default function CheckInPage({
             className="checkin-back-button"
             onClick={() => {
               setActiveReservationId(null);
+              setActiveStayId(null);
               setForm(null);
             }}>
             ← Office view
@@ -525,10 +586,37 @@ export default function CheckInPage({
 
         <section className="checkin-stay-banner">
           <div><span>Guest</span><strong>{activeReservation.first_name} {activeReservation.last_name}</strong></div>
-          <div><span>Site</span><strong>{arrivalStay?.site_number || "—"}</strong></div>
+          <div><span>{activeVisit?.stays.length > 1 ? "Sites" : "Site"}</span><strong>{activeVisit?.stays.map((stay) => stay.site_number).join(" → ") || arrivalStay?.site_number || "—"}</strong></div>
           <div><span>Arrival</span><strong>{formatDate(arrivalStay?.arrival_date)}</strong></div>
-          <div><span>Departure</span><strong>{formatDate(arrivalStay?.leave_date)}</strong></div>
+          <div><span>Departure</span><strong>{formatDate(activeVisit?.leave_date || arrivalStay?.leave_date)}</strong></div>
         </section>
+
+        {remainingVisits.length > 1 ? (
+          <section className="checkin-return-stays">
+            <div>
+              <p className="checkin-eyebrow">This reservation has return visits</p>
+              <h3>Your remaining stays</h3>
+              <p>
+                Payment below covers the reservation nights shown here. The guest
+                will appear in Check In again on each return date.
+              </p>
+            </div>
+            <div className="checkin-return-stay-list">
+              {remainingVisits.map((visit, index) => (
+                <article key={visit.id}>
+                  <span>{index === 0 ? "Current arrival" : `Return visit ${index}`}</span>
+                  <strong>
+                    {visit.stays.length === 1 ? "Site " : "Sites "}
+                    {visit.stays.map((stay) => stay.site_number).join(" → ")}
+                  </strong>
+                  <small>
+                    {formatDate(visit.arrival_date)} to {formatDate(visit.leave_date)}
+                  </small>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <section className="checkin-form-section checkin-rules-section">
           <div className="checkin-section-heading"><span>01</span><div><h3>Park agreement</h3><p>Please read each item before signing.</p></div></div>
@@ -573,7 +661,7 @@ export default function CheckInPage({
             </div>
             <div className="checkin-terminal-balance">
               <div className="checkin-stay-length-metric">
-                <span>Stay length</span>
+                <span>Reservation nights</span>
                 <strong>
                   {nightProgress
                     ? `${nightProgress.total} ${
@@ -807,7 +895,7 @@ export default function CheckInPage({
     );
   }
 
-  const checkedInCount = arrivals.filter((reservation) => reservation.checkIn).length;
+  const checkedInCount = arrivals.filter((arrival) => arrival.checkIn).length;
 
   return (
     <section className="card checkin-dashboard">
@@ -841,9 +929,8 @@ export default function CheckInPage({
             <p>Checking the reservation list now.</p>
           </div>
         ) : arrivals.length ? (
-          arrivals.map((reservation) => {
-            const stay = getArrivalStay(reservation, today);
-            return <article key={reservation.id} className={`checkin-arrival-card ${reservation.checkIn ? "complete" : ""}`}><div className="checkin-site-chip">Site {stay?.site_number || "—"}</div><div><h3>{reservation.first_name} {reservation.last_name}</h3><p>{reservation.phone_number || "No phone on file"}</p><p>{reservation.rv_kind || "RV type not set"} · Departing {formatDate(stay?.leave_date)}</p></div><div className="checkin-arrival-actions"><span className={`checkin-status ${reservation.checkIn ? "complete" : "pending"}`}>{reservation.checkIn ? "✓ Checked in" : "Awaiting arrival"}</span><button type="button" className={reservation.checkIn ? "ghost-button" : "primary-button"} onClick={() => beginCheckIn(reservation)}>{reservation.checkIn ? "View signed form" : "Start check-in"}</button><button type="button" className="checkin-text-button" onClick={() => onOpenReservation(reservation)}>Open reservation</button></div></article>;
+          arrivals.map(({ reservation, visit, stay, checkIn }) => {
+            return <article key={`${reservation.id}-${stay.id}`} className={`checkin-arrival-card ${checkIn ? "complete" : ""}`}><div className="checkin-site-chip">Site {stay?.site_number || "—"}</div><div><h3>{reservation.first_name} {reservation.last_name}</h3><p>{reservation.phone_number || "No phone on file"}</p><p>{reservation.rv_kind || "RV type not set"} · Departing {formatDate(visit.leave_date)}</p></div><div className="checkin-arrival-actions"><span className={`checkin-status ${checkIn ? "complete" : "pending"}`}>{checkIn ? "✓ Checked in" : "Awaiting arrival"}</span><button type="button" className={checkIn ? "ghost-button" : "primary-button"} onClick={() => beginCheckIn(reservation, stay)}>{checkIn ? "View signed form" : "Start check-in"}</button><button type="button" className="checkin-text-button" onClick={() => onOpenReservation(reservation)}>Open reservation</button></div></article>;
           })
         ) : (
           <div className="checkin-empty-state">
