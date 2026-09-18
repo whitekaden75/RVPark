@@ -7587,11 +7587,22 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
       return res.status(400).json({ message: "Canceled reservations cannot accept payments." });
     }
 
+    // Match the Monthly page using actual stay lengths. Pricing totals omit
+    // numberOfNights for stays over 28 nights and cannot classify monthly stays.
+    const stayNights = (reservation.siteStays || []).reduce((total, stay) => {
+      const nights = Number(
+        stay.numberOfNights ??
+          (stay.arrival_date && stay.leave_date && stay.leave_date !== openEndedStayDate
+            ? nightsBetween(stay.arrival_date, stay.leave_date)
+            : null)
+      );
+      return total + (Number.isFinite(nights) && nights > 0 ? nights : 0);
+    }, 0);
     const isMonthlyStay =
       reservation.effectiveBillingMode === "monthly" ||
       reservation.billing_mode === "monthly" ||
       (reservation.reservation_term !== "yearly" &&
-        Number(reservation.totals?.numberOfNights || 0) >= 28);
+        stayNights >= 28);
 
     if (customCharge && !isMonthlyStay) {
       return res.status(400).json({

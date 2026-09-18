@@ -477,6 +477,12 @@ function isMonthlyReservation(reservation) {
   );
 }
 
+function getCurrentMonthlyStays(reservation, today) {
+  return (reservation.siteStays || []).filter(
+    (stay) => stay.arrival_date <= today && stay.leave_date > today
+  );
+}
+
 function formatDateInput(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -7373,6 +7379,7 @@ export default function App() {
     .sort((left, right) =>
       (left.booked_date || "").localeCompare(right.booked_date || "")
     );
+  const today = getParkDateFromTimestamp(new Date());
   const monthlyReservations = reservations
     .filter(isMonthlyReservation)
     .sort((left, right) => {
@@ -7380,12 +7387,17 @@ export default function App() {
       const rightDate = right.siteStays?.[0]?.arrival_date || "";
       return leftDate.localeCompare(rightDate);
     });
+  const currentMonthlyReservations = monthlyReservations.filter(
+    (reservation) => getCurrentMonthlyStays(reservation, today).length > 0
+  );
   const monthlySearchValue = monthlySearch.trim().toLowerCase();
-  const monthlySearchDigits = monthlySearch.replaceAll(/\D/g, "");
+  const monthlySearchDigits = /^[+\d().\s-]+$/.test(monthlySearchValue)
+    ? monthlySearchValue.replaceAll(/\D/g, "")
+    : "";
   const filteredMonthlyReservations = monthlyReservations.filter(
     (reservation) => {
       if (!monthlySearchValue) {
-        return true;
+        return getCurrentMonthlyStays(reservation, today).length > 0;
       }
 
       const guestName = `${reservation.first_name || ""} ${
@@ -7401,6 +7413,8 @@ export default function App() {
 
       return (
         guestName.includes(monthlySearchValue) ||
+        String(reservation.email || "").toLowerCase().includes(monthlySearchValue) ||
+        String(reservation.id) === monthlySearchValue.replace(/^#/, "") ||
         (monthlySearchDigits && phoneDigits.includes(monthlySearchDigits)) ||
         siteNumbers.some(
           (siteNumber) =>
@@ -7434,7 +7448,6 @@ export default function App() {
     },
     {}
   );
-  const today = getParkDateFromTimestamp(new Date());
   const currentOccupancy = scheduleReservations
     .map((reservation) => {
       const activeSiteStays = reservation.siteStays.filter(
@@ -12832,16 +12845,20 @@ export default function App() {
                 <button
                   type="button"
                   className="ghost-button"
-                  onClick={() => clearSection("monthly")}>
-                  Clear charge amounts
+                  onClick={() => setMonthlyChargeAmounts({})}>
+                  Reset charge amounts
                 </button>
               </div>
             </div>
-            <div className="section-heading">
-              <p>
-                Active stays of 28 nights or longer appear here. Enter any
-                charge amount and send it directly to the office Terminal.
-              </p>
+            <div className="monthly-overview">
+              <div>
+                <span className="eyebrow">Staying today · {formatDisplayDate(today)}</span>
+                <p className="monthly-current-count">
+                  {hasLoadedReservations ? currentMonthlyReservations.length : "—"}
+                  <span>monthly {currentMonthlyReservations.length === 1 ? "guest" : "guests"}</span>
+                </p>
+                <p className="muted">Choose a guest, enter an amount, and collect payment.</p>
+              </div>
               <div className="button-row monthly-terminal-status">
                 <span
                   className={`status-badge ${
@@ -12861,15 +12878,30 @@ export default function App() {
                 <p className="muted">Loading monthly guests...</p>
               ) : null}
             </div>
-            <label className="monthly-search-field">
-              Search monthly guests
-              <input
-                type="search"
-                value={monthlySearch}
-                onChange={(event) => setMonthlySearch(event.target.value)}
-                placeholder="Name, phone number, or site"
-              />
-            </label>
+            <div className="monthly-search-toolbar">
+              <label className="monthly-search-field">
+                Find a monthly guest
+                <input
+                  type="search"
+                  value={monthlySearch}
+                  onChange={(event) => setMonthlySearch(event.target.value)}
+                  placeholder="Name, site, phone, email, or booking #"
+                  aria-describedby="monthly-search-help"
+                />
+                <span id="monthly-search-help" className="muted small-text">
+                  Search includes past and upcoming monthly stays.
+                </span>
+              </label>
+              {monthlySearchValue ? (
+                <button type="button" className="ghost-button" onClick={() => setMonthlySearch("")}>
+                  Back to current guests
+                </button>
+              ) : null}
+            </div>
+            <div className="monthly-results-heading" role="status">
+              <h3>{monthlySearchValue ? "Search results · All dates" : "Current guests"}</h3>
+              <span className="muted">{filteredMonthlyReservations.length} {filteredMonthlyReservations.length === 1 ? "booking" : "bookings"}</span>
+            </div>
             {terminalPaymentError ? (
               <div className="message error">{terminalPaymentError}</div>
             ) : null}
@@ -12878,6 +12910,10 @@ export default function App() {
             ) : filteredMonthlyReservations.length ? (
               <div className="schedule-list monthly-reservation-list">
                 {filteredMonthlyReservations.map((reservation) => {
+                  const currentStays = getCurrentMonthlyStays(reservation, today);
+                  const nextStay = (reservation.siteStays || []).find((stay) => stay.arrival_date > today);
+                  const displayStay = currentStays[0] || nextStay || reservation.siteStays?.at(-1);
+                  const stayStatus = currentStays.length ? "Staying now" : nextStay ? "Upcoming" : "Past stay";
                   const chargeAmount =
                     monthlyChargeAmounts[reservation.id] ??
                     (Number(reservation.monthlyRentPrice || 0) > 0
@@ -12895,12 +12931,15 @@ export default function App() {
                       className="timeline-card history-reservation-card monthly-reservation-card">
                       <div className="result-header">
                         <div>
+                          <div className="monthly-guest-status">
+                            <span className="monthly-site-label">Site {displayStay?.site_number || "Not set"}</span>
+                            <span className={`status-badge ${currentStays.length ? "active" : "pending"}`}>{stayStatus}</span>
+                          </div>
                           <h3>
                             {reservation.first_name} {reservation.last_name}
                           </h3>
                           <p className="muted">
-                            Reservation #{reservation.id} • Site{" "}
-                            {reservation.siteStays?.[0]?.site_number || "Not set"}
+                            Booking #{reservation.id}
                             {" • "}
                             {formatPhoneNumber(reservation.phone_number || "") ||
                               "No phone"}
@@ -12924,28 +12963,18 @@ export default function App() {
                           ]}
                         />
                       </div>
-                      <div className="pricing-summary">
-                        <span>
-                          Stay: {getReservationStayNights(reservation)} nights
-                        </span>
-                        <span>
-                          {formatDisplayDate(
-                            reservation.siteStays?.[0]?.arrival_date
-                          )}{" "}
-                          to{" "}
-                          {formatLeaveDate(
-                            reservation.siteStays?.at(-1)?.leave_date
-                          )}
-                        </span>
-                        <span>
-                          Monthly rate: {formatCurrency(reservation.monthlyRentPrice)}
-                        </span>
-                        <span>Total paid: {formatCurrency(reservation.amountPaid || 0)}</span>
+                      <div className="monthly-stay-details">
+                        <div><span>Arrival</span><strong>{formatDisplayDate(displayStay?.arrival_date)}</strong></div>
+                        <div><span>Departure</span><strong>{formatLeaveDate(displayStay?.leave_date)}</strong></div>
+                        <div><span>Monthly rate</span><strong>{Number(reservation.monthlyRentPrice) > 0 ? formatCurrency(reservation.monthlyRentPrice) : "Not set"}</strong></div>
+                        <div><span>Total paid on booking</span><strong>{formatCurrency(reservation.amountPaid || 0)}</strong></div>
                       </div>
                       <div className="monthly-charge-controls">
                         <label className="payment-amount-field">
-                          Custom Terminal charge
+                          Amount to charge ($)
                           <input
+                            aria-label={`Amount to charge ${reservation.first_name} ${reservation.last_name}`}
+                            inputMode="decimal"
                             type="number"
                             min="0.01"
                             step="0.01"
@@ -12960,6 +12989,7 @@ export default function App() {
                             onWheel={(event) => event.currentTarget.blur()}
                           />
                         </label>
+                        <p className="muted small-text monthly-charge-help">Enter rent, utilities, or another amount to collect.</p>
                         <div className="button-row monthly-charge-actions">
                           <button
                             type="button"
@@ -13006,9 +13036,12 @@ export default function App() {
                                 { moto: true, customCharge: true }
                               )
                             }>
-                            Take payment over phone
+                            Charge by phone
                           </button>
                         </div>
+                        {terminalReader?.status !== "online" ? (
+                          <p className="muted small-text">Connect the office Terminal, then refresh its status above to collect payment.</p>
+                        ) : null}
                       </div>
                       {terminalPayment?.reservationId === reservation.id ? (
                         <TerminalPaymentPanel
@@ -13027,11 +13060,12 @@ export default function App() {
                 })}
               </div>
             ) : (
-              <p className="muted">
-                {monthlyReservations.length
-                  ? "No monthly guests match that search."
-                  : "No active monthly guests."}
-              </p>
+              <div className="monthly-empty-state">
+                <h3>{monthlySearchValue ? "No matching monthly guests" : "No monthly guests staying today"}</h3>
+                <p className="muted">{monthlySearchValue
+                  ? "Try another name, site, phone number, email, or booking number."
+                  : "Search above to find a past or upcoming monthly guest."}</p>
+              </div>
             )}
           </Paper>
         ) : null}
