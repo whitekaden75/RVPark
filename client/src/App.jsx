@@ -10452,6 +10452,11 @@ export default function App() {
       />
     ) : null;
 
+  useEffect(() => {
+    if (activePage !== "monthly") return;
+    apiRequest("/monthly/rates").then(setMonthlyRates).catch(() => {});
+  }, [activePage]);
+
   if (publicPaymentToken) {
     return <PublicPaymentPage token={publicPaymentToken} />;
   }
@@ -10578,11 +10583,6 @@ export default function App() {
       </Box>
     );
   }
-
-  useEffect(() => {
-    if (activePage !== "monthly") return;
-    apiRequest("/monthly/rates").then(setMonthlyRates).catch(() => {});
-  }, [activePage]);
 
   return (
     <Container className="page-shell admin-shell" maxWidth="xl">
