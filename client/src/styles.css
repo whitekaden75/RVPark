@@ -2112,6 +2112,30 @@ select option {
   flex: 1 1 180px;
 }
 
+.monthly-rate-defaults,
+.monthly-settings-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  align-items: end;
+}
+
+.monthly-rate-defaults {
+  min-width: min(100%, 520px);
+}
+
+.monthly-rate-defaults label,
+.monthly-settings-grid label {
+  display: grid;
+  gap: 5px;
+  font-size: .8rem;
+}
+
+.monthly-rate-defaults input,
+.monthly-settings-grid input {
+  width: 100%;
+}
+
 .monthly-empty-state {
   padding: 36px 20px;
   text-align: center;

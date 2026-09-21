@@ -6315,6 +6315,12 @@ export default function App() {
     useState("");
   const [activeScheduleCheckNumber, setActiveScheduleCheckNumber] = useState("");
   const [monthlyChargeAmounts, setMonthlyChargeAmounts] = useState({});
+  const [monthlyEditValues, setMonthlyEditValues] = useState({});
+  const [monthlyMeterHistory, setMonthlyMeterHistory] = useState({});
+  const [monthlyRates, setMonthlyRates] = useState({
+    on_river_summer_rate: 1100, on_river_winter_rate: 700,
+    off_river_summer_rate: 900, off_river_winter_rate: 600,
+  });
   const [monthlySearch, setMonthlySearch] = useState("");
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
@@ -10371,6 +10377,30 @@ export default function App() {
     }
   }
 
+  async function saveMonthlySettings(reservation) {
+    const value = monthlyEditValues[reservation.id] || {};
+    try {
+      await apiRequest(`/reservations/${reservation.id}/monthly-settings`, { method: "PUT", body: JSON.stringify({
+        monthlyRentPrice: value.rate ?? reservation.monthlyRentPrice ?? 0,
+        monthlyBillingDay: value.day ?? reservation.monthlyBillingDay ?? 1,
+        monthlySummerRate: value.summer,
+        monthlyWinterRate: value.winter,
+      }) });
+      setAdminSaveNotice(`Monthly settings saved for ${reservation.first_name} ${reservation.last_name}.`);
+      await ensureReservationsLoaded({ force: true });
+    } catch (error) { setAdminSaveNotice(error.message); }
+  }
+
+  async function addMonthlyMeterReading(reservation) {
+    const value = monthlyEditValues[reservation.id] || {};
+    try {
+      const reading = await apiRequest(`/reservations/${reservation.id}/monthly-meter-readings`, { method: "POST", body: JSON.stringify({ reading: value.meter, readingDate: value.meterDate }) });
+      setMonthlyMeterHistory((current) => ({ ...current, [reservation.id]: [reading, ...(current[reservation.id] || [])] }));
+      setAdminSaveNotice("Meter reading saved.");
+      await ensureReservationsLoaded({ force: true });
+    } catch (error) { setAdminSaveNotice(error.message); }
+  }
+
   function changeTimelineMonth(offset) {
     setTimelineMonthCursor((current) => {
       const next = new Date(current);
@@ -10548,6 +10578,11 @@ export default function App() {
       </Box>
     );
   }
+
+  useEffect(() => {
+    if (activePage !== "monthly") return;
+    apiRequest("/monthly/rates").then(setMonthlyRates).catch(() => {});
+  }, [activePage]);
 
   return (
     <Container className="page-shell admin-shell" maxWidth="xl">
@@ -12877,6 +12912,13 @@ export default function App() {
               {isMonthlyPageLoading ? (
                 <p className="muted">Loading monthly guests...</p>
               ) : null}
+              <div className="monthly-rate-defaults">
+                <strong>Base monthly rates</strong>
+                {[["on_river_summer_rate", "On river summer"], ["on_river_winter_rate", "On river winter"], ["off_river_summer_rate", "Off river summer"], ["off_river_winter_rate", "Off river winter"]].map(([key, label]) => (
+                  <label key={key}>{label}<input type="number" min="0" value={monthlyRates[key]} onChange={(event) => setMonthlyRates((current) => ({ ...current, [key]: event.target.value }))} /></label>
+                ))}
+                <button type="button" className="ghost-button" onClick={async () => { try { await apiRequest("/monthly/rates", { method: "PUT", body: JSON.stringify({ onRiverSummerRate: monthlyRates.on_river_summer_rate, onRiverWinterRate: monthlyRates.on_river_winter_rate, offRiverSummerRate: monthlyRates.off_river_summer_rate, offRiverWinterRate: monthlyRates.off_river_winter_rate }) }); setAdminSaveNotice("Base monthly rates saved."); } catch (error) { setAdminSaveNotice(error.message); } }}>Save base rates</button>
+              </div>
             </div>
             <div className="monthly-search-toolbar">
               <label className="monthly-search-field">
@@ -12968,6 +13010,13 @@ export default function App() {
                         <div><span>Departure</span><strong>{formatLeaveDate(displayStay?.leave_date)}</strong></div>
                         <div><span>Monthly rate</span><strong>{Number(reservation.monthlyRentPrice) > 0 ? formatCurrency(reservation.monthlyRentPrice) : "Not set"}</strong></div>
                         <div><span>Total paid on booking</span><strong>{formatCurrency(reservation.amountPaid || 0)}</strong></div>
+                      </div>
+                      <div className="monthly-settings-grid">
+                        <label>Rate for this guest ($)<input type="number" min="0" value={monthlyEditValues[reservation.id]?.rate ?? reservation.monthlyRentPrice ?? ""} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], rate: event.target.value } }))} /></label>
+                        <label>Billing day (1–31)<input type="number" min="1" max="31" value={monthlyEditValues[reservation.id]?.day ?? reservation.monthlyBillingDay ?? 1} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], day: event.target.value } }))} /></label>
+                        <label>Electric meter reading<input type="number" min="0" value={monthlyEditValues[reservation.id]?.meter ?? ""} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], meter: event.target.value } }))} /></label>
+                        <button type="button" className="ghost-button" onClick={() => saveMonthlySettings(reservation)}>Save rate & day</button>
+                        <button type="button" className="ghost-button" disabled={monthlyEditValues[reservation.id]?.meter === undefined || monthlyEditValues[reservation.id]?.meter === ""} onClick={() => addMonthlyMeterReading(reservation)}>Save meter reading</button>
                       </div>
                       <div className="monthly-charge-controls">
                         <label className="payment-amount-field">

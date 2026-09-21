@@ -2066,6 +2066,9 @@ function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
     totalPrice: toPriceNumber(reservationRow.total_price),
     monthlyRentPrice: toPriceNumber(reservationRow.monthly_rent_price),
     electricMeterReading: toMeterNumber(reservationRow.electric_meter_reading),
+    monthlyBillingDay: reservationRow.monthly_billing_day || null,
+    monthlySummerRate: toPriceNumber(reservationRow.monthly_summer_rate),
+    monthlyWinterRate: toPriceNumber(reservationRow.monthly_winter_rate),
     utilityPrice,
     amountPaid,
     effectiveBillingMode,
@@ -4134,6 +4137,9 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.total_price,
         r.monthly_rent_price,
         r.electric_meter_reading,
+        r.monthly_billing_day,
+        r.monthly_summer_rate,
+        r.monthly_winter_rate,
         r.canceled_at,
         r.canceled_site_stays,
         r.rv_kind,
@@ -4388,6 +4394,9 @@ async function fetchReservationList(queryable) {
         r.total_price,
         r.monthly_rent_price,
         r.electric_meter_reading,
+        r.monthly_billing_day,
+        r.monthly_summer_rate,
+        r.monthly_winter_rate,
         r.canceled_at,
         r.canceled_site_stays,
         r.rv_kind,
@@ -7422,6 +7431,53 @@ app.get("/api/reservations/:id", async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
+});
+
+app.get("/api/monthly/rates", async (_req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM monthly_rate_settings WHERE id = true");
+    res.json(result.rows[0] || {
+      on_river_summer_rate: 1100, on_river_winter_rate: 700,
+      off_river_summer_rate: 900, off_river_winter_rate: 600
+    });
+  } catch (error) { res.status(500).json({ message: error.message }); }
+});
+
+app.put("/api/monthly/rates", async (req, res) => {
+  const values = ["onRiverSummerRate", "onRiverWinterRate", "offRiverSummerRate", "offRiverWinterRate"].map((key) => Number(req.body?.[key]));
+  if (values.some((value) => !Number.isFinite(value) || value < 0)) return res.status(400).json({ message: "All monthly rates must be zero or greater." });
+  try {
+    const result = await pool.query(`UPDATE monthly_rate_settings SET on_river_summer_rate=$1, on_river_winter_rate=$2, off_river_summer_rate=$3, off_river_winter_rate=$4, updated_at=now() WHERE id=true RETURNING *`, values);
+    res.json(result.rows[0]);
+  } catch (error) { res.status(500).json({ message: error.message }); }
+});
+
+app.get("/api/reservations/:id/monthly-meter-readings", async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT id, reading, reading_date::text, note, created_at FROM monthly_meter_readings WHERE reservation_id=$1 ORDER BY reading_date DESC, id DESC`, [req.params.id]);
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ message: error.message }); }
+});
+
+app.post("/api/reservations/:id/monthly-meter-readings", async (req, res) => {
+  const reading = Number(req.body?.reading);
+  if (!Number.isFinite(reading) || reading < 0) return res.status(400).json({ message: "Enter a valid non-negative meter reading." });
+  try {
+    const result = await pool.query(`INSERT INTO monthly_meter_readings (reservation_id, reading, reading_date, note) VALUES ($1,$2,COALESCE($3::date,CURRENT_DATE),$4) RETURNING id, reading, reading_date::text, note, created_at`, [req.params.id, reading, req.body?.readingDate || null, String(req.body?.note || "")]);
+    await pool.query("UPDATE reservations SET electric_meter_reading=$2 WHERE id=$1", [req.params.id, reading]);
+    res.status(201).json(result.rows[0]);
+  } catch (error) { res.status(500).json({ message: error.message }); }
+});
+
+app.put("/api/reservations/:id/monthly-settings", async (req, res) => {
+  const rent = Number(req.body?.monthlyRentPrice);
+  const day = Number(req.body?.monthlyBillingDay);
+  if (!Number.isFinite(rent) || rent < 0 || !Number.isInteger(day) || day < 1 || day > 31) return res.status(400).json({ message: "Enter a valid monthly rate and billing day (1–31)." });
+  try {
+    const result = await pool.query(`UPDATE reservations SET monthly_rent_price=$2, monthly_billing_day=$3, monthly_summer_rate=$4, monthly_winter_rate=$5 WHERE id=$1 RETURNING id, monthly_rent_price, monthly_billing_day, monthly_summer_rate, monthly_winter_rate`, [req.params.id, rent, day, req.body?.monthlySummerRate ? Number(req.body.monthlySummerRate) : null, req.body?.monthlyWinterRate ? Number(req.body.monthlyWinterRate) : null]);
+    if (!result.rowCount) return res.status(404).json({ message: "Reservation not found." });
+    res.json(result.rows[0]);
+  } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
 app.get("/api/stripe/terminal/status", async (_req, res) => {
