@@ -6152,6 +6152,9 @@ export default function App() {
   const [bookkeepingCategories, setBookkeepingCategories] = useState([]);
   const [bookkeepingNewCategory, setBookkeepingNewCategory] = useState("");
   const [bookkeepingTransactionFilter, setBookkeepingTransactionFilter] = useState("pending");
+  const [bookkeepingTypeFilter, setBookkeepingTypeFilter] = useState("all");
+  const [bookkeepingPaymentFilter, setBookkeepingPaymentFilter] = useState("all");
+  const [bookkeepingCategoryFilter, setBookkeepingCategoryFilter] = useState("all");
   const [bookkeepingDocumentStatusFilter, setBookkeepingDocumentStatusFilter] = useState("all");
   const [bookkeepingDocumentTypeFilter, setBookkeepingDocumentTypeFilter] = useState("all");
   const [isSigningInAdmin, setIsSigningInAdmin] = useState(false);
@@ -6765,6 +6768,16 @@ export default function App() {
     (bookkeepingDocumentStatusFilter === "all" || document.processing_status === bookkeepingDocumentStatusFilter) &&
     (bookkeepingDocumentTypeFilter === "all" || document.document_type === bookkeepingDocumentTypeFilter)
   );
+  const visibleBookkeepingTransactions = bookkeepingTransactions.filter((transaction) => {
+    const payment = String(transaction.payment_account || "").toLowerCase();
+    const paymentMatches = bookkeepingPaymentFilter === "all" ||
+      (bookkeepingPaymentFilter === "card" && /(card|visa|mastercard|amex|discover)/.test(payment)) ||
+      (bookkeepingPaymentFilter === "cash" && payment.includes("cash")) ||
+      (bookkeepingPaymentFilter === "check" && /(check|cheque)/.test(payment)) ||
+      (bookkeepingPaymentFilter === "other" && payment && !/(card|visa|mastercard|amex|discover|cash|check|cheque)/.test(payment));
+    return (bookkeepingTypeFilter === "all" || transaction.transaction_type === bookkeepingTypeFilter) &&
+      paymentMatches && (bookkeepingCategoryFilter === "all" || transaction.category === bookkeepingCategoryFilter);
+  });
 
   async function deleteBookkeepingDocument(document) {
     if (!window.confirm(`Remove ${document.original_filename}? This deletes the uploaded file before processing.`)) return;
@@ -13560,10 +13573,16 @@ export default function App() {
           <Paper component="section" className="card" elevation={0}>
             <div className="page-section-header">
               <div><h2>Bookkeeping assistant</h2><p className="muted">Upload receipts, bank statements, and credit-card statements. AI suggestions remain pending until you approve them.</p></div>
-              <label className="primary-button" style={{ cursor: bookkeepingBusy ? "wait" : "pointer" }}>
-                {bookkeepingBusy ? "Working…" : "Upload document"}
-                <input type="file" hidden accept="application/pdf,image/jpeg,image/png,image/webp,text/csv,.doc,.docx,.xls,.xlsx" capture="environment" disabled={bookkeepingBusy} onChange={uploadBookkeepingDocument} />
-              </label>
+              <div className="button-row">
+                <label className="primary-button" style={{ cursor: bookkeepingBusy ? "wait" : "pointer" }}>
+                  {bookkeepingBusy ? "Working…" : "Take photo"}
+                  <input type="file" hidden accept="image/jpeg,image/png,image/webp" capture="environment" disabled={bookkeepingBusy} onChange={uploadBookkeepingDocument} />
+                </label>
+                <label className="ghost-button" style={{ cursor: bookkeepingBusy ? "wait" : "pointer" }}>
+                  Choose file
+                  <input type="file" hidden accept="application/pdf,image/jpeg,image/png,image/webp,text/csv,.doc,.docx,.xls,.xlsx" disabled={bookkeepingBusy} onChange={uploadBookkeepingDocument} />
+                </label>
+              </div>
             </div>
             {bookkeepingMessage ? <Alert severity="info" sx={{ mb: 2 }}>{bookkeepingMessage}</Alert> : null}
             <div className="result-panel">
@@ -13580,7 +13599,8 @@ export default function App() {
             </div>
             <div className="result-panel" style={{ marginTop: "1rem" }}>
               <div className="page-section-header"><h3>{bookkeepingTransactionFilter === "pending" ? "Transactions awaiting review" : bookkeepingTransactionFilter === "approved" ? "Approved transactions" : "All transactions"}</h3><select value={bookkeepingTransactionFilter} onChange={(event) => setBookkeepingTransactionFilter(event.target.value)}><option value="pending">Pending review</option><option value="approved">Approved</option><option value="all">All transactions</option></select></div>
-              {bookkeepingTransactions.length ? bookkeepingTransactions.map((transaction) => (
+              <div className="button-row" style={{ marginBottom: "1rem" }}><select value={bookkeepingTypeFilter} onChange={(event) => setBookkeepingTypeFilter(event.target.value)}><option value="all">All types</option><option value="income">Income</option><option value="expense">Expenses</option><option value="refund">Refunds</option><option value="transfer">Transfers</option></select><select value={bookkeepingPaymentFilter} onChange={(event) => setBookkeepingPaymentFilter(event.target.value)}><option value="all">All payment methods</option><option value="cash">Cash</option><option value="check">Check</option><option value="card">Card</option><option value="other">Other</option></select><select value={bookkeepingCategoryFilter} onChange={(event) => setBookkeepingCategoryFilter(event.target.value)}><option value="all">All categories</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}</select></div>
+              {visibleBookkeepingTransactions.length ? visibleBookkeepingTransactions.map((transaction) => (
                 <article className="result-panel" key={transaction.id} style={{ marginBottom: ".75rem" }}>
                   <button type="button" className="payment-summary-row" style={{ width: "100%", border: 0, background: "transparent", cursor: "pointer", textAlign: "left" }} onClick={() => { const next = bookkeepingReviewId === transaction.id ? null : transaction.id; setBookkeepingReviewId(next); setBookkeepingReviewDraft(next ? { ...transaction } : null); }}>
                     <span><strong>{transaction.vendor || "Unknown vendor"}</strong><br /><small>{transaction.transaction_date || "No date"} · {transaction.category || "Uncategorized"}</small></span>
