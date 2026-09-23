@@ -5,6 +5,9 @@ import express from "express";
 import Stripe from "stripe";
 import webPush from "web-push";
 import { pool } from "./db.js";
+import { createMessaging } from "./messaging.js";
+import { createMessageNotifier } from "./message-notifications.js";
+import { createArrivalReminders } from "./arrival-reminders.js";
 import {
   buildAvailabilityMap,
   buildAvailabilityBookingContext,
@@ -74,6 +77,14 @@ const isTwilioConfigured = Boolean(
   (twilioPhoneNumber || twilioMessagingServiceSid)
 );
 const adminEventClients = new Set();
+const messaging = createMessaging({
+  pool, accountSid: twilioAccountSid,
+  authToken: process.env.TWILIO_AUTH_TOKEN || "",
+  webhookBaseUrl: process.env.TWILIO_WEBHOOK_BASE_URL || "",
+  notify: broadcastAdminDataChange,
+  onIncomingMessage: createMessageNotifier({ pool, webPush,
+    configured: () => isWebPushConfigured, getClientUrl })
+});
 
 if (isWebPushConfigured) {
   webPush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
@@ -121,6 +132,12 @@ function addSmsComplianceFooter(messageBody) {
 }
 
 async function makeTwilioRequest(path, { method = "GET", form = null } = {}) {
+  const sendingMessage = method === "POST" && path.endsWith("/Messages.json");
+  if (sendingMessage) {
+    // Fail before sending if message storage has not been migrated or is unavailable.
+    await pool.query("SELECT sid FROM text_messages LIMIT 0");
+    if (messaging.statusUrl) form = { ...form, StatusCallback: messaging.statusUrl };
+  }
   const response = await fetch(`https://api.twilio.com${path}`, {
     method,
     headers: {
@@ -142,6 +159,15 @@ async function makeTwilioRequest(path, { method = "GET", form = null } = {}) {
     throw error;
   }
 
+  if (sendingMessage) {
+    try {
+      await messaging.save(result);
+    } catch (error) {
+      // The provider accepted the message: do not tell staff to retry and send a duplicate.
+      console.error("SMS accepted but database save failed", result.sid, error.code);
+      result.storageWarning = "Twilio accepted this message, but saving it failed. Do not resend; use Sync recent Twilio history to recover it.";
+    }
+  }
   return result;
 }
 
@@ -219,6 +245,7 @@ app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), asyn
   }
 });
 
+app.use("/api/twilio", messaging.router);
 app.use(express.json({ limit: "1mb" }));
 
 function parseCookies(cookieHeader = "") {
@@ -299,12 +326,13 @@ function createAdminSessionToken(adminUser) {
   return `${encodedPayload}.${signature}`;
 }
 
-function createGuestPaymentLinkToken(reservationId) {
+function createGuestPaymentLinkToken(reservationId, amount = null) {
   const payload = {
     type: "guest_payment_link",
     reservationId: Number(reservationId),
     nonce: randomBytes(12).toString("hex"),
-    expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 90
+    expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 90,
+    ...(Number.isFinite(Number(amount)) && Number(amount) > 0 ? { customAmount: roundCurrency(amount) } : {})
   };
   const encodedPayload = encodeTokenPayload(payload);
   const signature = signTokenPayload(encodedPayload, guestAuthSecret);
@@ -544,7 +572,53 @@ app.get("/api/admin/events", (req, res) => {
   });
 });
 
-app.get("/api/messages", async (_req, res) => {
+const arrivalReminders = createArrivalReminders({
+  pool,
+  tomorrow: () => addDays(getParkTodayDate(), 1),
+  getReservation: id => fetchReservationDetails(pool, id),
+  normalizePhone: normalizeSmsPhoneNumber,
+  formatDate: formatDisplayDate,
+  configured: () => isTwilioConfigured,
+  send: ({ to, body }) => makeTwilioRequest(`/2010-04-01/Accounts/${encodeURIComponent(twilioAccountSid)}/Messages.json`, {
+    method: "POST", form: { To: to, Body: addSmsComplianceFooter(body),
+      ...(twilioMessagingServiceSid ? { MessagingServiceSid: twilioMessagingServiceSid } : { From: twilioPhoneNumber }) }
+  })
+});
+
+app.get("/api/messages/arrival-reminders", async (_req, res) => {
+  try { return res.json(await arrivalReminders.preview()); }
+  catch (error) { return res.status(503).json({ message: error.code === "42P01" ? "Run the arrival-text-reminders database migration to enable bulk reminders." : "Unable to load tomorrow’s arrivals." }); }
+});
+
+app.get("/api/messages/arrival-reminders/:id", async (req, res) => {
+  try { return res.json(await arrivalReminders.draft(req.params.id, req.query.date)); }
+  catch (error) { return res.status(400).json({ message: error.message }); }
+});
+
+app.post("/api/messages/arrival-reminders", async (req, res) => {
+  if (!Array.isArray(req.body.reservationIds) || req.body.reservationIds.length > 500 || !req.body.reservationIds.every(id => /^\d+$/.test(String(id)))) {
+    return res.status(400).json({ message: "Select valid arrival reservations." });
+  }
+  try { return res.json(await arrivalReminders.sendBatch(req.body.date, req.body.reservationIds)); }
+  catch (error) { return res.status(503).json({ message: error.code === "42P01" ? "Run both SMS database migrations before sending arrival reminders." : error.message }); }
+});
+
+app.get("/api/messages", async (req, res) => {
+  try {
+    const offset = Math.max(0, Math.min(1000000, Number.parseInt(req.query.offset, 10) || 0));
+    const history = await messaging.history(offset);
+    return res.json({ configured: isTwilioConfigured, missing: [
+      ...(!twilioAccountSid ? ["TWILIO_ACCOUNT_SID"] : []),
+      ...(!twilioApiKeySid ? ["TWILIO_API_KEY_SID"] : []),
+      ...(!twilioApiKeySecret ? ["TWILIO_API_KEY_SECRET"] : []),
+      ...(!twilioPhoneNumber && !twilioMessagingServiceSid ? ["TWILIO_PHONE_NUMBER or TWILIO_MESSAGING_SERVICE_SID"] : [])
+    ], webhookConfigured: Boolean(messaging.statusUrl), ...history });
+  } catch (error) {
+    return res.status(503).json({ message: error.code === "42P01" ? "Run the text_messages database migration before using the inbox." : "Unable to load saved messages." });
+  }
+});
+
+app.post("/api/messages/sync", async (_req, res) => {
   if (!isTwilioConfigured) {
     const missing = [];
 
@@ -565,13 +639,15 @@ app.get("/api/messages", async (_req, res) => {
       )}/Messages.json?PageSize=50`
     );
     const normalizedParkNumber = normalizeSmsPhoneNumber(twilioPhoneNumber);
-    const messages = (Array.isArray(result.messages) ? result.messages : [])
+    const sourceMessages = (Array.isArray(result.messages) ? result.messages : [])
       .filter(
         (message) =>
           !normalizedParkNumber ||
           message.from === normalizedParkNumber ||
           message.to === normalizedParkNumber
-      )
+      );
+    for (const message of sourceMessages) await messaging.save(message);
+    const messages = sourceMessages
       .map((message) => ({
         sid: message.sid,
         direction: message.direction,
@@ -645,7 +721,8 @@ app.post("/api/messages", async (req, res) => {
       status: message.status || "queued",
       dateSent: message.date_created || new Date().toISOString(),
       errorCode: message.error_code || null,
-      errorMessage: message.error_message || ""
+      errorMessage: message.error_message || "",
+      storageWarning: message.storageWarning || ""
     });
   } catch (error) {
     console.error("Unable to send Twilio message", error.code || error.message);
@@ -7039,8 +7116,9 @@ app.get("/api/guest/payment-links/:token", async (req, res) => {
       });
     }
 
-    const { bankAmount, cardAmount } =
-      getRemainingBalancePaymentAmounts(reservation);
+    const { bankAmount: remainingBankAmount, cardAmount: remainingCardAmount } = getRemainingBalancePaymentAmounts(reservation);
+    const bankAmount = link.customAmount || remainingBankAmount;
+    const cardAmount = link.customAmount || remainingCardAmount;
 
     return res.json({
       reservationId: reservation.id,
@@ -7051,7 +7129,7 @@ app.get("/api/guest/payment-links/:token", async (req, res) => {
       unpaidStayNights: reservation.unpaidStayNights,
       bankAmount,
       cardAmount,
-      paymentComplete: !hasPaymentDueForReservation(reservation),
+      paymentComplete: !link.customAmount && !hasPaymentDueForReservation(reservation),
       siteStays: reservation.siteStays.map((stay) => ({
         siteNumber: stay.site_number,
         arrivalDate: stay.arrival_date,
@@ -7102,12 +7180,13 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
       return res.status(400).json({ message: "This reservation cannot accept payments." });
     }
 
-    const { bankAmount, cardAmount } =
-      getRemainingBalancePaymentAmounts(reservation);
+    const { bankAmount: remainingBankAmount, cardAmount: remainingCardAmount } = getRemainingBalancePaymentAmounts(reservation);
+    const bankAmount = link.customAmount || remainingBankAmount;
+    const cardAmount = link.customAmount || remainingCardAmount;
     const paymentAmount = paymentMethod === "card" ? cardAmount : bankAmount;
     const amountCents = toAmountCents(paymentAmount);
 
-    if (!hasPaymentDueForReservation(reservation) || !amountCents) {
+    if ((!link.customAmount && !hasPaymentDueForReservation(reservation)) || !amountCents) {
       return res.status(400).json({
         message: "This reservation does not have any unpaid nights."
       });
@@ -7463,9 +7542,36 @@ app.post("/api/reservations/:id/monthly-meter-readings", async (req, res) => {
   const reading = Number(req.body?.reading);
   if (!Number.isFinite(reading) || reading < 0) return res.status(400).json({ message: "Enter a valid non-negative meter reading." });
   try {
+    const previousResult = await pool.query(`SELECT reading FROM public.monthly_meter_readings WHERE reservation_id=$1 ORDER BY reading_date DESC, id DESC LIMIT 1`, [req.params.id]);
+    const previousReading = previousResult.rows[0]?.reading === undefined ? null : Number(previousResult.rows[0].reading);
+    const usage = Math.max(reading - (previousReading ?? 0), 0);
+    const electricCharge = Math.max(usage * 0.17 - 75, 0);
     const result = await pool.query(`INSERT INTO monthly_meter_readings (reservation_id, reading, reading_date, note) VALUES ($1,$2,COALESCE($3::date,CURRENT_DATE),$4) RETURNING id, reading, reading_date::text, note, created_at`, [req.params.id, reading, req.body?.readingDate || null, String(req.body?.note || "")]);
     await pool.query("UPDATE reservations SET electric_meter_reading=$2 WHERE id=$1", [req.params.id, reading]);
-    res.status(201).json(result.rows[0]);
+    let billingMessage = null;
+    if (req.body?.sendBillingMessage === true) {
+      const reservation = await fetchReservationDetails(pool, req.params.id);
+      const chargesResult = await pool.query(`SELECT description, amount FROM public.monthly_recurring_charges WHERE reservation_id=$1 AND active=true ORDER BY id`, [req.params.id]);
+      const recurringCharges = chargesResult.rows;
+      const recurringTotal = recurringCharges.reduce((total, charge) => total + Number(charge.amount || 0), 0);
+      const rent = Number(reservation?.monthlyRentPrice || 0);
+      const total = roundCurrency(rent + recurringTotal + electricCharge);
+      const baseUrl = String(process.env.CLIENT_ORIGIN || "").split(",")[0].trim().replace(/\/+$/, "");
+      const token = createGuestPaymentLinkToken(reservation.id, total);
+      const paymentUrl = `${baseUrl}/?pay=${encodeURIComponent(token)}`;
+      const phone = normalizeSmsPhoneNumber(reservation.phone_number);
+      if (!isTwilioConfigured) throw new Error("Twilio is not configured for billing messages.");
+      if (!phone) throw new Error("This guest does not have a valid phone number.");
+      const lines = ["Riverpark RV Resort", `Monthly statement for ${reservation.first_name || "guest"}:`, `Rent: $${rent.toFixed(2)}`];
+      recurringCharges.forEach((charge) => lines.push(`${charge.description}: $${Number(charge.amount).toFixed(2)}`));
+      if (electricCharge > 0) lines.push(`Electric (${usage} kWh): $${electricCharge.toFixed(2)}`);
+      lines.push(`Total due: $${total.toFixed(2)}`, `Pay by card or bank account: ${paymentUrl}`);
+      const body = addSmsComplianceFooter(lines.join("\n"));
+      const form = { To: phone, Body: body, ...(twilioMessagingServiceSid ? { MessagingServiceSid: twilioMessagingServiceSid } : { From: twilioPhoneNumber }) };
+      const message = await makeTwilioRequest(`/2010-04-01/Accounts/${encodeURIComponent(twilioAccountSid)}/Messages.json`, { method: "POST", form });
+      billingMessage = { sid: message.sid, total, paymentUrl };
+    }
+    res.status(201).json({ ...result.rows[0], previousReading, usage, electricCharge: Number(electricCharge.toFixed(2)), billingMessage });
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
@@ -7477,6 +7583,30 @@ app.put("/api/reservations/:id/monthly-settings", async (req, res) => {
     const result = await pool.query(`UPDATE reservations SET monthly_rent_price=$2, monthly_billing_day=$3, monthly_summer_rate=$4, monthly_winter_rate=$5 WHERE id=$1 RETURNING id, monthly_rent_price, monthly_billing_day, monthly_summer_rate, monthly_winter_rate`, [req.params.id, rent, day, req.body?.monthlySummerRate ? Number(req.body.monthlySummerRate) : null, req.body?.monthlyWinterRate ? Number(req.body.monthlyWinterRate) : null]);
     if (!result.rowCount) return res.status(404).json({ message: "Reservation not found." });
     res.json(result.rows[0]);
+  } catch (error) { res.status(500).json({ message: error.message }); }
+});
+
+app.get("/api/reservations/:id/monthly-charges", async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT id, description, amount, active, created_at FROM public.monthly_recurring_charges WHERE reservation_id=$1 AND active=true ORDER BY id`, [req.params.id]);
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ message: error.message }); }
+});
+
+app.post("/api/reservations/:id/monthly-charges", async (req, res) => {
+  const description = String(req.body?.description || "").trim();
+  const amount = Number(req.body?.amount);
+  if (!description || !Number.isFinite(amount) || amount < 0) return res.status(400).json({ message: "Enter a charge description and a valid amount." });
+  try {
+    const result = await pool.query(`INSERT INTO public.monthly_recurring_charges (reservation_id, description, amount) VALUES ($1,$2,$3) RETURNING id, description, amount, active, created_at`, [req.params.id, description, amount]);
+    res.status(201).json(result.rows[0]);
+  } catch (error) { res.status(500).json({ message: error.message }); }
+});
+
+app.delete("/api/reservations/:reservationId/monthly-charges/:chargeId", async (req, res) => {
+  try {
+    await pool.query(`UPDATE public.monthly_recurring_charges SET active=false, updated_at=now() WHERE id=$1 AND reservation_id=$2`, [req.params.chargeId, req.params.reservationId]);
+    res.status(204).end();
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
@@ -8886,14 +9016,16 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
       return res.status(400).json({ message: "Canceled reservations cannot accept payments." });
     }
 
-    const { bankAmount, cardAmount } =
-      getRemainingBalancePaymentAmounts(reservation);
+    const requestedAmount = Number(req.body?.customAmount);
+    const { bankAmount: remainingBankAmount, cardAmount: remainingCardAmount } = getRemainingBalancePaymentAmounts(reservation);
+    const bankAmount = Number.isFinite(requestedAmount) && requestedAmount > 0 ? roundCurrency(requestedAmount) : remainingBankAmount;
+    const cardAmount = bankAmount;
 
     if (!toAmountCents(bankAmount)) {
       return res.status(400).json({ message: "This reservation does not have any unpaid nights." });
     }
 
-    const token = createGuestPaymentLinkToken(reservation.id);
+    const token = createGuestPaymentLinkToken(reservation.id, requestedAmount);
     const paymentUrl = `${baseUrl}/?pay=${encodeURIComponent(token)}`;
 
     return res.json({

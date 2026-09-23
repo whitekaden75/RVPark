@@ -1195,70 +1195,6 @@ function buildReservationConfirmationText(reservation, paymentLink) {
     .join("\n");
 }
 
-function buildArrivalReminderText(reservation, arrivalDate) {
-  if (!reservation) {
-    return "";
-  }
-
-  const customerName = `${reservation.first_name || ""} ${
-    reservation.last_name || ""
-  }`.trim();
-  const arrivingSegment =
-    reservation.arrivingSiteStays?.find(
-      (segment) => segment.arrival_date === arrivalDate
-    ) ||
-    reservation.siteStays?.find(
-      (segment) => segment.arrival_date === arrivalDate
-    ) ||
-    reservation.siteStays?.[0] ||
-    null;
-  const nightProgress = getNightPaymentProgress(reservation);
-
-  return [
-    "Riverpark RV Resort",
-    "",
-    `Hello ${customerName || "Guest"},`,
-    "",
-    `We're looking forward to your arrival ${formatArrivalReference(
-      arrivalDate
-    )}!`,
-    "",
-    "Reservation Details",
-    `Arrival: ${
-      arrivingSegment?.arrival_date
-        ? formatDisplayDate(arrivingSegment.arrival_date)
-        : "Not set"
-    }`,
-    `Departure: ${
-      arrivingSegment?.leave_date
-        ? formatDisplayDate(arrivingSegment.leave_date)
-        : "Not set"
-    }`,
-    "Check-in: 1:00 PM",
-    ...(nightProgress?.unpaid > 0
-      ? [
-          `${nightProgress.unpaid} ${
-            nightProgress.unpaid === 1 ? "night remains" : "nights remain"
-          } to be paid`,
-        ]
-      : []),
-    "",
-    "Payment Information",
-    "We do not accept debit cards.",
-    "Card payments use the displayed card price.",
-    "Cash and checks use the displayed bank price.",
-    "",
-    "Please reply to this message to confirm your arrival and provide your approximate arrival time. Any questions? Call (541) 295-1269",
-    "",
-    "Thank you!",
-    "",
-    "Makayla",
-    "Riverpark RV Resort",
-    "2956 Rogue River Hwy",
-    "Grants Pass, OR 97527",
-  ].join("\n");
-}
-
 function buildSmsComposeUrl(phoneNumber, messageBody) {
   const separator = phoneNumber ? "?&" : "?";
   return `sms:${phoneNumber}${separator}body=${encodeURIComponent(
@@ -6197,6 +6133,12 @@ export default function App() {
     body: "",
   });
   const [textMessages, setTextMessages] = useState([]);
+  const [arrivalTextPreview, setArrivalTextPreview] = useState(null);
+  const [arrivalTextError, setArrivalTextError] = useState("");
+  const [isSendingArrivalTexts, setIsSendingArrivalTexts] = useState(false);
+  const arrivalSendInFlight = useRef(false);
+  const [hasMoreTextMessages, setHasMoreTextMessages] = useState(false);
+  const [smsWebhookConfigured, setSmsWebhookConfigured] = useState(true);
   const [isTextMessagingConfigured, setIsTextMessagingConfigured] =
     useState(null);
   const [missingTextMessageConfig, setMissingTextMessageConfig] = useState([]);
@@ -6316,12 +6258,18 @@ export default function App() {
   const [activeScheduleCheckNumber, setActiveScheduleCheckNumber] = useState("");
   const [monthlyChargeAmounts, setMonthlyChargeAmounts] = useState({});
   const [monthlyEditValues, setMonthlyEditValues] = useState({});
+  const [editingMonthlyCards, setEditingMonthlyCards] = useState({});
+  const [addingMonthlyMeter, setAddingMonthlyMeter] = useState({});
+  const [showMonthlyMeterHistory, setShowMonthlyMeterHistory] = useState({});
+  const [monthlyRecurringCharges, setMonthlyRecurringCharges] = useState({});
+  const [monthlyChargeForms, setMonthlyChargeForms] = useState({});
   const [monthlyMeterHistory, setMonthlyMeterHistory] = useState({});
   const [monthlyRates, setMonthlyRates] = useState({
     on_river_summer_rate: 1100, on_river_winter_rate: 700,
     off_river_summer_rate: 900, off_river_winter_rate: 600,
   });
   const [monthlySearch, setMonthlySearch] = useState("");
+  const [monthlySiteFilter, setMonthlySiteFilter] = useState("");
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] =
@@ -6497,7 +6445,13 @@ export default function App() {
       }
     }
 
-    function handleDataChanged() {
+    function handleDataChanged(event) {
+      try {
+        if (JSON.parse(event.data).reason === "messages_changed") {
+          window.dispatchEvent(new Event("rvpark-messages-changed"));
+          return;
+        }
+      } catch { /* Other data events still refresh the calendar. */ }
       window.clearTimeout(liveRefreshTimeoutRef.current);
       liveRefreshTimeoutRef.current = window.setTimeout(
         refreshLiveAdminData,
@@ -7397,13 +7351,16 @@ export default function App() {
     (reservation) => getCurrentMonthlyStays(reservation, today).length > 0
   );
   const monthlySearchValue = monthlySearch.trim().toLowerCase();
+  const monthlySiteOptions = [...new Set(monthlyReservations.flatMap((reservation) => (reservation.siteStays || []).map((stay) => String(stay.site_number || "").trim()).filter(Boolean)))].sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
   const monthlySearchDigits = /^[+\d().\s-]+$/.test(monthlySearchValue)
     ? monthlySearchValue.replaceAll(/\D/g, "")
     : "";
   const filteredMonthlyReservations = monthlyReservations.filter(
     (reservation) => {
+      const siteNumbers = (reservation.siteStays || []).map((stay) => String(stay.site_number || "").trim());
+      if (monthlySiteFilter && !siteNumbers.includes(monthlySiteFilter)) return false;
       if (!monthlySearchValue) {
-        return getCurrentMonthlyStays(reservation, today).length > 0;
+        return monthlySiteFilter || getCurrentMonthlyStays(reservation, today).length > 0;
       }
 
       const guestName = `${reservation.first_name || ""} ${
@@ -7413,23 +7370,25 @@ export default function App() {
         /\D/g,
         ""
       );
-      const siteNumbers = (reservation.siteStays || []).map((stay) =>
-        String(stay.site_number || "").toLowerCase()
-      );
+      const searchableSiteNumbers = siteNumbers.map((siteNumber) => siteNumber.toLowerCase());
 
       return (
         guestName.includes(monthlySearchValue) ||
         String(reservation.email || "").toLowerCase().includes(monthlySearchValue) ||
         String(reservation.id) === monthlySearchValue.replace(/^#/, "") ||
         (monthlySearchDigits && phoneDigits.includes(monthlySearchDigits)) ||
-        siteNumbers.some(
+        searchableSiteNumbers.some(
           (siteNumber) =>
             siteNumber.includes(monthlySearchValue) ||
             `site ${siteNumber}`.includes(monthlySearchValue)
         )
       );
     }
-  );
+  ).sort((left, right) => {
+    const leftCurrent = getCurrentMonthlyStays(left, today).length > 0;
+    const rightCurrent = getCurrentMonthlyStays(right, today).length > 0;
+    return Number(rightCurrent) - Number(leftCurrent);
+  });
   const activeReservations = reservations.filter(
     (reservation) => reservation.status !== "canceled"
   );
@@ -8007,7 +7966,7 @@ export default function App() {
         await existingSubscription.unsubscribe();
         setBookingNotificationStatus("disabled");
         setBookingNotificationMessage(
-          "Online-booking alerts are off on this phone."
+          "Booking and text-message alerts are off on this phone."
         );
         return;
       }
@@ -8017,7 +7976,7 @@ export default function App() {
       if (!config.configured || !config.publicKey) {
         setBookingNotificationStatus("unconfigured");
         throw new Error(
-          "Add the VAPID server variables before enabling booking alerts."
+          "Add the VAPID server variables before enabling admin alerts."
         );
       }
 
@@ -8048,7 +8007,7 @@ export default function App() {
 
       setBookingNotificationStatus("enabled");
       setBookingNotificationMessage(
-        "This phone will now alert you when an online booking is paid and confirmed."
+        "This phone will now alert you when an online booking is paid and confirmed or a guest text message arrives."
       );
     } catch (error) {
       setBookingNotificationMessage(error.message);
@@ -8057,17 +8016,93 @@ export default function App() {
     }
   }
 
-  async function loadTextMessageHistory() {
+  useEffect(() => {
+    if (!isUnlocked || activePage !== "messages") return;
+    let timer;
+    const refresh = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => loadTextMessageHistory(), 300);
+    };
+    window.addEventListener("rvpark-messages-changed", refresh);
+    const interval = window.setInterval(refresh, 15000);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearInterval(interval);
+      window.removeEventListener("rvpark-messages-changed", refresh);
+    };
+  }, [isUnlocked, activePage, textMessages.length]);
+
+  async function syncTextMessageHistory() {
+    setIsLoadingTextMessages(true);
+    try {
+      const result = await apiRequest("/messages/sync", { method: "POST" });
+      if (result.historyError) throw new Error(result.historyError);
+      await loadTextMessageHistory();
+    } catch (error) {
+      setTextMessageError(error.message);
+    } finally {
+      setIsLoadingTextMessages(false);
+    }
+  }
+
+  async function loadArrivalTextPreview() {
+    try {
+      const preview = await apiRequest("/messages/arrival-reminders");
+      setArrivalTextPreview(preview);
+      setArrivalTextError("");
+    } catch (error) {
+      setArrivalTextError(error.message);
+      setArrivalTextPreview(null);
+    }
+  }
+
+  useEffect(() => {
+    if (isUnlocked && activePage === "messages") loadArrivalTextPreview();
+  }, [isUnlocked, activePage]);
+
+  async function sendTomorrowArrivalTexts() {
+    if (arrivalSendInFlight.current || !arrivalTextPreview) return;
+    arrivalSendInFlight.current = true;
+    setIsSendingArrivalTexts(true);
+    setTextMessageSuccess("");
+    setArrivalTextError("");
+    try {
+      const result = await apiRequest("/messages/arrival-reminders", {
+        method: "POST", body: JSON.stringify({ date: arrivalTextPreview.date,
+          reservationIds: arrivalTextPreview.recipients.filter(guest => guest.eligible).map(guest => guest.id) })
+      });
+      const sent = result.results.filter(item => item.state === "sent").length;
+      const skipped = result.results.filter(item => item.state === "skipped").length;
+      const problems = result.results.filter(item => !["sent", "skipped"].includes(item.state) || item.message && item.state === "sent");
+      setTextMessageSuccess(`${sent} arrival reminders queued. ${skipped} skipped. ${problems.length} need attention.`);
+      await Promise.all([loadTextMessageHistory(), loadArrivalTextPreview()]);
+      if (problems.length) setArrivalTextError(problems.map(item => `Booking #${item.id}: ${item.message}`).join(" "));
+    } catch (error) {
+      await loadArrivalTextPreview();
+      setArrivalTextError(`${error.message} Refresh the list before trying again; already accepted reminders will be skipped.`);
+    } finally {
+      arrivalSendInFlight.current = false;
+      setIsSendingArrivalTexts(false);
+    }
+  }
+
+  async function loadTextMessageHistory(older = false) {
     setIsLoadingTextMessages(true);
     setTextMessageError("");
 
     try {
-      const result = await apiRequest("/messages");
+      const append = older === true;
+      const result = await apiRequest(`/messages?offset=${append ? textMessages.length : 0}`);
       setIsTextMessagingConfigured(Boolean(result.configured));
       setMissingTextMessageConfig(
         Array.isArray(result.missing) ? result.missing : []
       );
-      setTextMessages(Array.isArray(result.messages) ? result.messages : []);
+      const incoming = Array.isArray(result.messages) ? result.messages : [];
+      setTextMessages(current => append
+        ? [...current, ...incoming.filter(message => !current.some(existing => existing.sid === message.sid))]
+        : [...incoming, ...current.filter(message => !incoming.some(existing => existing.sid === message.sid))]);
+      setHasMoreTextMessages(current => append || textMessages.length <= 100 ? Boolean(result.hasMore) : current);
+      setSmsWebhookConfigured(Boolean(result.webhookConfigured));
 
       if (result.historyError) {
         setTextMessageError(result.historyError);
@@ -8099,6 +8134,8 @@ export default function App() {
       setTextMessageSuccess(
         `Message queued for ${formatPhoneNumber(sentMessage.to)}.`
       );
+      await loadTextMessageHistory();
+      if (sentMessage.storageWarning) setTextMessageError(sentMessage.storageWarning);
     } catch (error) {
       setTextMessageError(error.message);
     } finally {
@@ -8798,21 +8835,16 @@ export default function App() {
     }
   }
 
-  function openArrivalTextMessage(reservation, arrivalDate) {
-    const phoneNumber = normalizePhoneForSms(reservation?.phone_number);
-
-    if (!phoneNumber) {
-      setErrorMessage(
-        "Add a customer phone number before opening a text message."
-      );
-      return;
+  async function openArrivalTextMessage(reservation, arrivalDate) {
+    try {
+      const draft = await apiRequest(`/messages/arrival-reminders/${reservation.id}?date=${encodeURIComponent(arrivalDate)}`);
+      setTextMessageForm({ to: draft.to, body: draft.body });
+      setActivePage("messages");
+      setTextMessageSuccess(`Arrival reminder for booking #${reservation.id} is ready to review and send.`);
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error.message);
     }
-
-    const messageBody = buildArrivalReminderText(reservation, arrivalDate);
-    const smsUrl = buildSmsComposeUrl(phoneNumber, messageBody);
-    window.location.href = smsUrl;
-    setSuccessMessage(`Opened text draft for reservation #${reservation.id}.`);
-    setErrorMessage("");
   }
 
   async function copyPaymentLinkToClipboard() {
@@ -9066,7 +9098,8 @@ export default function App() {
       "Reply STOP to unsubscribe or HELP for assistance.",
     ].join("\n");
 
-    window.location.href = buildSmsComposeUrl(phoneNumber, message);
+    setTextMessageForm({ to: formatPhoneNumber(phoneNumber), body: message });
+    setActivePage("messages");
     setPaymentLinkSuccessMessage("Opened a text draft with the payment link.");
     setPaymentLinkErrorMessage("");
   }
@@ -10393,12 +10426,54 @@ export default function App() {
 
   async function addMonthlyMeterReading(reservation) {
     const value = monthlyEditValues[reservation.id] || {};
+    const currentReading = Number(value.meter);
+    let history = monthlyMeterHistory[reservation.id] || [];
+    if (!history.length) {
+      try { history = await apiRequest(`/reservations/${reservation.id}/monthly-meter-readings`); setMonthlyMeterHistory((current) => ({ ...current, [reservation.id]: history })); } catch (error) { setAdminSaveNotice(error.message); return; }
+    }
+    const previousReading = history.length ? Number(history[0].reading) : 0;
+    const usage = Math.max(currentReading - previousReading, 0);
+    const electricCharge = Math.max(usage * 0.17 - 75, 0);
+    if (!Number.isFinite(currentReading) || !window.confirm(`Save meter reading ${currentReading}?\n\nPrevious reading: ${previousReading}\nUsage: ${usage} kWh\nElectric charge: ${formatCurrency(electricCharge)}`)) return;
     try {
-      const reading = await apiRequest(`/reservations/${reservation.id}/monthly-meter-readings`, { method: "POST", body: JSON.stringify({ reading: value.meter, readingDate: value.meterDate }) });
+      const reading = await apiRequest(`/reservations/${reservation.id}/monthly-meter-readings`, { method: "POST", body: JSON.stringify({ reading: value.meter, readingDate: value.meterDate, sendBillingMessage: true }) });
       setMonthlyMeterHistory((current) => ({ ...current, [reservation.id]: [reading, ...(current[reservation.id] || [])] }));
-      setAdminSaveNotice("Meter reading saved.");
+      setAdminSaveNotice(reading.billingMessage ? "Meter reading saved and billing text sent." : "Meter reading saved.");
       await ensureReservationsLoaded({ force: true });
     } catch (error) { setAdminSaveNotice(error.message); }
+  }
+
+  async function toggleMonthlyMeterHistory(reservation) {
+    const nextVisible = !showMonthlyMeterHistory[reservation.id];
+    setShowMonthlyMeterHistory((current) => ({ ...current, [reservation.id]: nextVisible }));
+    if (nextVisible && !monthlyMeterHistory[reservation.id]) {
+      try {
+        const readings = await apiRequest(`/reservations/${reservation.id}/monthly-meter-readings`);
+        setMonthlyMeterHistory((current) => ({ ...current, [reservation.id]: readings }));
+      } catch (error) { setAdminSaveNotice(error.message); }
+    }
+  }
+
+  async function loadMonthlyCharges(reservation) {
+    if (monthlyRecurringCharges[reservation.id]) return;
+    try {
+      const charges = await apiRequest(`/reservations/${reservation.id}/monthly-charges`);
+      setMonthlyRecurringCharges((current) => ({ ...current, [reservation.id]: charges }));
+    } catch (error) { setAdminSaveNotice(error.message); }
+  }
+
+  async function addMonthlyRecurringCharge(reservation) {
+    const form = monthlyChargeForms[reservation.id] || {};
+    try {
+      const charge = await apiRequest(`/reservations/${reservation.id}/monthly-charges`, { method: "POST", body: JSON.stringify(form) });
+      setMonthlyRecurringCharges((current) => ({ ...current, [reservation.id]: [...(current[reservation.id] || []), charge] }));
+      setMonthlyChargeForms((current) => ({ ...current, [reservation.id]: { description: "", amount: "" } }));
+    } catch (error) { setAdminSaveNotice(error.message); }
+  }
+
+  async function removeMonthlyRecurringCharge(reservation, chargeId) {
+    await apiRequest(`/reservations/${reservation.id}/monthly-charges/${chargeId}`, { method: "DELETE" });
+    setMonthlyRecurringCharges((current) => ({ ...current, [reservation.id]: (current[reservation.id] || []).filter((charge) => charge.id !== chargeId) }));
   }
 
   function changeTimelineMonth(offset) {
@@ -10626,8 +10701,8 @@ export default function App() {
                   {isUpdatingBookingNotifications
                     ? "Updating alerts..."
                     : bookingNotificationStatus === "enabled"
-                      ? "Booking alerts on"
-                      : "Enable booking alerts"}
+                      ? "Booking & text alerts on"
+                      : "Enable booking & text alerts"}
                 </Button>
                 <Button
                   type="button"
@@ -12912,13 +12987,15 @@ export default function App() {
               {isMonthlyPageLoading ? (
                 <p className="muted">Loading monthly guests...</p>
               ) : null}
-              <div className="monthly-rate-defaults">
-                <strong>Base monthly rates</strong>
+              <details className="monthly-rate-settings-dropdown">
+                <summary>Base monthly rates</summary>
+                <div className="monthly-rate-defaults">
                 {[["on_river_summer_rate", "On river summer"], ["on_river_winter_rate", "On river winter"], ["off_river_summer_rate", "Off river summer"], ["off_river_winter_rate", "Off river winter"]].map(([key, label]) => (
                   <label key={key}>{label}<input type="number" min="0" value={monthlyRates[key]} onChange={(event) => setMonthlyRates((current) => ({ ...current, [key]: event.target.value }))} /></label>
                 ))}
                 <button type="button" className="ghost-button" onClick={async () => { try { await apiRequest("/monthly/rates", { method: "PUT", body: JSON.stringify({ onRiverSummerRate: monthlyRates.on_river_summer_rate, onRiverWinterRate: monthlyRates.on_river_winter_rate, offRiverSummerRate: monthlyRates.off_river_summer_rate, offRiverWinterRate: monthlyRates.off_river_winter_rate }) }); setAdminSaveNotice("Base monthly rates saved."); } catch (error) { setAdminSaveNotice(error.message); } }}>Save base rates</button>
-              </div>
+                </div>
+              </details>
             </div>
             <div className="monthly-search-toolbar">
               <label className="monthly-search-field">
@@ -12934,6 +13011,13 @@ export default function App() {
                   Search includes past and upcoming monthly stays.
                 </span>
               </label>
+              <label className="monthly-site-filter-field">
+                Find by site
+                <select value={monthlySiteFilter} onChange={(event) => setMonthlySiteFilter(event.target.value)}>
+                  <option value="">All sites · current guests first</option>
+                  {monthlySiteOptions.map((siteNumber) => <option key={siteNumber} value={siteNumber}>Site {siteNumber}</option>)}
+                </select>
+              </label>
               {monthlySearchValue ? (
                 <button type="button" className="ghost-button" onClick={() => setMonthlySearch("")}>
                   Back to current guests
@@ -12941,7 +13025,7 @@ export default function App() {
               ) : null}
             </div>
             <div className="monthly-results-heading" role="status">
-              <h3>{monthlySearchValue ? "Search results · All dates" : "Current guests"}</h3>
+              <h3>{monthlySearchValue || monthlySiteFilter ? "Monthly guest results" : "Current guests"}</h3>
               <span className="muted">{filteredMonthlyReservations.length} {filteredMonthlyReservations.length === 1 ? "booking" : "bookings"}</span>
             </div>
             {terminalPaymentError ? (
@@ -12956,11 +13040,12 @@ export default function App() {
                   const nextStay = (reservation.siteStays || []).find((stay) => stay.arrival_date > today);
                   const displayStay = currentStays[0] || nextStay || reservation.siteStays?.at(-1);
                   const stayStatus = currentStays.length ? "Staying now" : nextStay ? "Upcoming" : "Past stay";
+                  const recurringTotal = (monthlyRecurringCharges[reservation.id] || []).reduce((total, charge) => total + Number(charge.amount || 0), 0);
                   const chargeAmount =
                     monthlyChargeAmounts[reservation.id] ??
                     (Number(reservation.monthlyRentPrice || 0) > 0
-                      ? Number(reservation.monthlyRentPrice).toFixed(2)
-                      : "");
+                      ? (Number(reservation.monthlyRentPrice) + recurringTotal).toFixed(2)
+                      : recurringTotal > 0 ? recurringTotal.toFixed(2) : "");
                   const terminalIsBusyForReservation =
                     terminalPayment?.reservationId === reservation.id &&
                     ["in_progress", "finalizing"].includes(
@@ -13011,13 +13096,56 @@ export default function App() {
                         <div><span>Monthly rate</span><strong>{Number(reservation.monthlyRentPrice) > 0 ? formatCurrency(reservation.monthlyRentPrice) : "Not set"}</strong></div>
                         <div><span>Total paid on booking</span><strong>{formatCurrency(reservation.amountPaid || 0)}</strong></div>
                       </div>
-                      <div className="monthly-settings-grid">
-                        <label>Rate for this guest ($)<input type="number" min="0" value={monthlyEditValues[reservation.id]?.rate ?? reservation.monthlyRentPrice ?? ""} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], rate: event.target.value } }))} /></label>
-                        <label>Billing day (1–31)<input type="number" min="1" max="31" value={monthlyEditValues[reservation.id]?.day ?? reservation.monthlyBillingDay ?? 1} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], day: event.target.value } }))} /></label>
-                        <label>Electric meter reading<input type="number" min="0" value={monthlyEditValues[reservation.id]?.meter ?? ""} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], meter: event.target.value } }))} /></label>
-                        <button type="button" className="ghost-button" onClick={() => saveMonthlySettings(reservation)}>Save rate & day</button>
-                        <button type="button" className="ghost-button" disabled={monthlyEditValues[reservation.id]?.meter === undefined || monthlyEditValues[reservation.id]?.meter === ""} onClick={() => addMonthlyMeterReading(reservation)}>Save meter reading</button>
+                      <div className="monthly-card-actions">
+                        <div><span>Billing day</span><strong>{reservation.monthlyBillingDay ? `Day ${reservation.monthlyBillingDay} of each month` : "Not set"}</strong></div>
+                        <button type="button" className="ghost-button" onClick={() => setEditingMonthlyCards((current) => ({ ...current, [reservation.id]: !current[reservation.id] }))}>
+                          {editingMonthlyCards[reservation.id] ? "Cancel edit" : "Edit monthly details"}
+                        </button>
                       </div>
+                      {editingMonthlyCards[reservation.id] ? (
+                        <div className="monthly-settings-grid">
+                          <label>Rate for this guest ($)<input type="number" min="0" value={monthlyEditValues[reservation.id]?.rate ?? reservation.monthlyRentPrice ?? ""} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], rate: event.target.value } }))} /></label>
+                          <label>Billing date<input type="date" value={`${new Date().toISOString().slice(0, 7)}-${String(monthlyEditValues[reservation.id]?.day ?? reservation.monthlyBillingDay ?? 1).padStart(2, "0")}`} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], day: new Date(`${event.target.value}T00:00:00Z`).getUTCDate() } }))} /></label>
+                          <button type="button" className="ghost-button" onClick={() => { saveMonthlySettings(reservation); setEditingMonthlyCards((current) => ({ ...current, [reservation.id]: false })); }}>Save changes</button>
+                        </div>
+                      ) : null}
+                      <div className="monthly-meter-actions">
+                        <button type="button" className="ghost-button" onClick={() => setAddingMonthlyMeter((current) => ({ ...current, [reservation.id]: !current[reservation.id] }))}>
+                          {addingMonthlyMeter[reservation.id] ? "Cancel meter entry" : "Add new meter reading"}
+                        </button>
+                        <button type="button" className="ghost-button" onClick={() => toggleMonthlyMeterHistory(reservation)}>
+                          {showMonthlyMeterHistory[reservation.id] ? "Hide meter history" : "View meter history"}
+                        </button>
+                      </div>
+                      {addingMonthlyMeter[reservation.id] ? (
+                        <div className="monthly-settings-grid">
+                          <label>New meter reading<input type="number" min="0" value={monthlyEditValues[reservation.id]?.meter ?? ""} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], meter: event.target.value } }))} /></label>
+                          <label>Reading date<input type="date" value={monthlyEditValues[reservation.id]?.meterDate ?? ""} onChange={(event) => setMonthlyEditValues((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], meterDate: event.target.value } }))} /></label>
+                          <button type="button" className="ghost-button" disabled={!monthlyEditValues[reservation.id]?.meter} onClick={() => { addMonthlyMeterReading(reservation); setAddingMonthlyMeter((current) => ({ ...current, [reservation.id]: false })); }}>Save meter reading</button>
+                        </div>
+                      ) : null}
+                      {showMonthlyMeterHistory[reservation.id] ? (
+                        <div className="monthly-meter-history">
+                          <strong>Meter history</strong>
+                          {(monthlyMeterHistory[reservation.id] || []).length ? monthlyMeterHistory[reservation.id].map((reading) => <div key={reading.id}><span>{formatDisplayDate(reading.reading_date)}</span><strong>{reading.reading}</strong></div>) : <p className="muted small-text">No saved meter readings.</p>}
+                        </div>
+                      ) : null}
+                      <details className="monthly-recurring-dropdown" onToggle={(event) => event.currentTarget.open && loadMonthlyCharges(reservation)}>
+                        <summary>Recurring monthly charges <strong>{formatCurrency((monthlyRecurringCharges[reservation.id] || []).reduce((total, charge) => total + Number(charge.amount || 0), 0))}</strong></summary>
+                        <div className="monthly-recurring-charges">
+                        <div className="monthly-card-actions">
+                          <button type="button" className="ghost-button" onClick={() => loadMonthlyCharges(reservation)}>Refresh charges</button>
+                        </div>
+                        {(monthlyRecurringCharges[reservation.id] || []).map((charge) => (
+                          <div className="monthly-recurring-charge-row" key={charge.id}><span>{charge.description}</span><strong>{formatCurrency(charge.amount)}</strong><button type="button" className="ghost-button danger-button" onClick={() => removeMonthlyRecurringCharge(reservation, charge.id)}>Remove</button></div>
+                        ))}
+                        <div className="monthly-settings-grid">
+                          <label>Charge note<input type="text" placeholder="Storage, propane, etc." value={monthlyChargeForms[reservation.id]?.description || ""} onChange={(event) => setMonthlyChargeForms((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], description: event.target.value } }))} /></label>
+                          <label>Amount every month ($)<input type="number" min="0" step="0.01" value={monthlyChargeForms[reservation.id]?.amount || ""} onChange={(event) => setMonthlyChargeForms((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], amount: event.target.value } }))} /></label>
+                          <button type="button" className="ghost-button" onClick={() => addMonthlyRecurringCharge(reservation)}>Add recurring charge</button>
+                        </div>
+                        </div>
+                      </details>
                       <div className="monthly-charge-controls">
                         <label className="payment-amount-field">
                           Amount to charge ($)
@@ -13259,6 +13387,25 @@ export default function App() {
               </Alert>
             ) : null}
 
+            <section className="sms-booking-details" aria-label="Tomorrow’s arrival reminders">
+              <h3>Tomorrow’s arrival texts</h3>
+              <p>Send a personalized reminder to each arriving booking for {arrivalTextPreview ? formatDisplayDate(arrivalTextPreview.date) : "tomorrow"} (Pacific time). Previously sent bulk reminders are skipped.</p>
+              <div className="button-row">
+                <button type="button" className="primary-button" disabled={isSendingArrivalTexts || !isTextMessagingConfigured || !arrivalTextPreview?.recipients.some(guest => guest.eligible)} onClick={sendTomorrowArrivalTexts}>
+                  {isSendingArrivalTexts ? "Sending arrival texts…" : `Send all tomorrow’s reminders (${arrivalTextPreview?.recipients.filter(guest => guest.eligible).length || 0})`}
+                </button>
+                <button type="button" className="text-button" disabled={isSendingArrivalTexts} onClick={loadArrivalTextPreview}>Refresh arrivals</button>
+              </div>
+              {arrivalTextError ? <Alert severity="warning">{arrivalTextError}</Alert> : null}
+              {arrivalTextPreview?.recipients.length ? <details>
+                <summary>View {arrivalTextPreview.recipients.length} arriving bookings</summary>
+                {arrivalTextPreview.recipients.map(guest => <p key={guest.id}>
+                  {guest.first_name} {guest.last_name} · Booking #{guest.id} · {guest.phone || "No valid mobile number"} · {guest.state === "sent" ? "Queued previously" : guest.state === "review" || guest.state === "sending" ? "Check Twilio history before retrying" : guest.eligible ? "Ready to send" : "Skipped"}
+                  {guest.error_message ? ` — ${guest.error_message}` : ""}
+                </p>)}
+              </details> : arrivalTextPreview ? <p className="muted">No active bookings arrive tomorrow.</p> : null}
+            </section>
+            {!smsWebhookConfigured ? <Alert severity="warning">Incoming messages require TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on the server.</Alert> : null}
             <div className="admin-text-message-layout">
               <form className="admin-text-composer" onSubmit={sendTextMessage}>
                 <div className="section-heading">
@@ -13331,10 +13478,11 @@ export default function App() {
               <section className="admin-text-history" aria-label="Recent text messages">
                 <div className="admin-text-history-heading">
                   <div>
-                    <span className="eyebrow">Twilio history</span>
-                    <h3>Recent messages</h3>
+                    <span className="eyebrow">Saved inbox · updates automatically</span>
+                    <h3>Guest messages</h3>
                   </div>
                   <span>{textMessages.length} shown</span>
+                  <button type="button" className="text-button" disabled={isLoadingTextMessages || !isTextMessagingConfigured} onClick={syncTextMessageHistory}>Sync recent Twilio history</button>
                 </div>
                 {isLoadingTextMessages && !textMessages.length ? (
                   <p className="muted">Loading text messages...</p>
@@ -13358,6 +13506,21 @@ export default function App() {
                             <span>{formatTextMessageTimestamp(message.dateSent)}</span>
                           </div>
                           <p>{message.body}</p>
+                          {message.mediaCount > 0 ? <p className="muted">{message.mediaCount} media attachment(s). Media viewing is not available here yet.</p> : null}
+                          {message.errorCode ? <p role="status">Delivery error: {message.errorCode}</p> : null}
+                          <details className="sms-booking-details">
+                            <summary>{message.bookings?.length ? [...new Set(message.bookings.map(booking => `${booking.first_name || ""} ${booking.last_name || ""}`.trim()))].join(" / ") : "No matching guest found"} · Booking details</summary>
+                            {message.bookings?.map(booking => (
+                              <div key={`${booking.customer_id}-${booking.reservation_id || "guest"}`}>
+                                <strong>{booking.first_name} {booking.last_name}</strong>
+                                {booking.reservation_id ? <>
+                                  <p>Booking #{booking.reservation_id} · {booking.status}</p>
+                                  {booking.stays?.map((stay, index) => <p key={index}>Site {stay.site} · {stay.arrival} – {stay.departure}</p>)}
+                                  <p>Total: ${Number(booking.total_price || 0).toFixed(2)} · Paid: ${Number(booking.amount_paid || 0).toFixed(2)}</p>
+                                </> : <p>No bookings found.</p>}
+                              </div>
+                            ))}
+                          </details>
                           <div className="admin-text-history-footer">
                             <span>Status: {message.status || "unknown"}</span>
                             <button
@@ -13382,8 +13545,9 @@ export default function App() {
                     })}
                   </div>
                 ) : (
-                  <p className="muted">No text messages to show yet.</p>
+                  <p className="muted">No saved messages yet. Send a text or sync recent Twilio history.</p>
                 )}
+                {hasMoreTextMessages ? <button type="button" className="text-button" disabled={isLoadingTextMessages} onClick={() => loadTextMessageHistory(true)}>Load older messages</button> : null}
               </section>
             </div>
           </Paper>
