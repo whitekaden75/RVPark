@@ -6570,6 +6570,10 @@ select option {
     display: none;
   }
 
+  .admin-navigation-row {
+    display: none;
+  }
+
   .admin-mobile-menu-panel {
     display: grid;
     gap: 10px;

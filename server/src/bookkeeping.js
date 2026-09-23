@@ -63,6 +63,24 @@ export function registerBookkeepingRoutes(app, { pool }) {
   const bucket = process.env.RAILWAY_BUCKET_NAME || process.env.RAILWAY_BUCKET;
   const storage = createStorageClient();
 
+  app.get("/api/bookkeeping/categories", async (_req, res) => {
+    const result = await pool.query("SELECT id, name, category_type FROM bookkeeping_categories WHERE is_active = TRUE ORDER BY category_type, name");
+    return res.json({ categories: result.rows });
+  });
+
+  app.post("/api/bookkeeping/categories", async (req, res) => {
+    const name = String(req.body?.name || "").trim().slice(0, 100);
+    const categoryType = ["income", "expense", "other"].includes(req.body?.category_type) ? req.body.category_type : "expense";
+    if (!name) return res.status(400).json({ message: "Category name is required." });
+    try {
+      const result = await pool.query("INSERT INTO bookkeeping_categories (name, category_type) VALUES ($1, $2) RETURNING id, name, category_type", [name, categoryType]);
+      return res.status(201).json({ category: result.rows[0] });
+    } catch (error) {
+      if (error.code === "23505") return res.status(409).json({ message: "That category already exists." });
+      throw error;
+    }
+  });
+
   app.post("/api/bookkeeping/documents", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ message: "Upload a PDF, CSV, JPG, PNG, or WEBP file." });
     if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
