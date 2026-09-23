@@ -3211,6 +3211,29 @@ select option {
     font-size 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.admin-navigation-dropdowns {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  flex-wrap: wrap;
+}
+
+.admin-navigation-dropdown select {
+  min-height: 38px;
+  padding: .45rem 2rem .45rem .75rem;
+  border: 1px solid #b8c9bf;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--admin-pine);
+  font: inherit;
+  font-weight: 700;
+}
+
+.admin-navigation-dropdown select:focus {
+  outline: 2px solid #77a88f;
+  outline-offset: 2px;
+}
+
 .admin-shell .app-header.compact {
   padding: 16px 22px;
   box-shadow: 0 16px 30px rgba(23, 55, 47, 0.1);

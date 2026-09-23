@@ -1301,7 +1301,7 @@ function ensureArray(value, label) {
 async function apiRequest(path, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
   const headers = {
-    "Content-Type": "application/json",
+    ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
     "X-RVPark-Client-Id": adminClientId,
     ...(options.headers || {}),
   };
@@ -6104,14 +6104,27 @@ function FloatingTerminalPayment({
 export default function App() {
   const appPages = [
     { key: "checkin", label: "Check In" },
-    { key: "availability", label: "Availability" },
-    { key: "reservation", label: "Reservations" },
-    { key: "schedule", label: "Schedule" },
-    { key: "history", label: "History" },
-    { key: "monthly", label: "Monthly" },
-    { key: "yearly", label: "Yearly" },
     { key: "messages", label: "Text Messages" },
-    { key: "sites", label: "Sites" },
+  ];
+  const adminDropdowns = [
+    {
+      label: "Reservations",
+      pages: [
+        { key: "availability", label: "Availability" },
+        { key: "reservation", label: "Reservations" },
+        { key: "schedule", label: "Schedule" },
+        { key: "history", label: "History" },
+      ],
+    },
+    {
+      label: "Finance & Setup",
+      pages: [
+        { key: "monthly", label: "Monthly" },
+        { key: "yearly", label: "Yearly" },
+        { key: "bookkeeping", label: "Bookkeeping" },
+        { key: "sites", label: "Sites" },
+      ],
+    },
   ];
   const stripeReturnState = getStripeReturnState();
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -6121,6 +6134,10 @@ export default function App() {
     password: "",
   });
   const [adminLoginError, setAdminLoginError] = useState("");
+  const [bookkeepingDocuments, setBookkeepingDocuments] = useState([]);
+  const [bookkeepingTransactions, setBookkeepingTransactions] = useState([]);
+  const [bookkeepingBusy, setBookkeepingBusy] = useState(false);
+  const [bookkeepingMessage, setBookkeepingMessage] = useState("");
   const [isSigningInAdmin, setIsSigningInAdmin] = useState(false);
   const [bookingNotificationStatus, setBookingNotificationStatus] =
     useState("checking");
@@ -6615,6 +6632,15 @@ export default function App() {
         if (activePage === "sites") {
           await ensureSitesLoaded();
         }
+
+        if (activePage === "bookkeeping") {
+          const [documents, transactions] = await Promise.all([
+            apiRequest("/bookkeeping/documents"),
+            apiRequest("/bookkeeping/transactions"),
+          ]);
+          setBookkeepingDocuments(documents.documents || []);
+          setBookkeepingTransactions(transactions.transactions || []);
+        }
       } catch (error) {
         setErrorMessage(error.message);
       }
@@ -6622,6 +6648,41 @@ export default function App() {
 
     loadDataForActivePage();
   }, [activePage, isUnlocked]);
+
+  async function uploadBookkeepingDocument(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBookkeepingBusy(true);
+    setBookkeepingMessage("Uploading document…");
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const result = await apiRequest("/bookkeeping/documents", {
+        method: "POST",
+        headers: { "X-RVPark-Client-Id": adminClientId },
+        body,
+      });
+      setBookkeepingDocuments((current) => [result.document, ...current]);
+      setBookkeepingMessage("Uploaded. Click Process to extract transactions.");
+    } catch (error) { setBookkeepingMessage(error.message); }
+    finally { setBookkeepingBusy(false); }
+  }
+
+  async function processBookkeepingDocument(id) {
+    setBookkeepingBusy(true);
+    setBookkeepingMessage("AI is reading the document…");
+    try {
+      await apiRequest(`/bookkeeping/documents/${id}/process`, { method: "POST" });
+      const [documents, transactions] = await Promise.all([
+        apiRequest("/bookkeeping/documents"), apiRequest("/bookkeeping/transactions")
+      ]);
+      setBookkeepingDocuments(documents.documents || []);
+      setBookkeepingTransactions(transactions.transactions || []);
+      setBookkeepingMessage("Extraction complete. Review transactions before approving.");
+    } catch (error) { setBookkeepingMessage(error.message); }
+    finally { setBookkeepingBusy(false); }
+  }
 
   useEffect(() => {
     if (!activeScheduleReservation) {
@@ -10761,7 +10822,7 @@ export default function App() {
             </Typography>
           </div>
           <Tabs
-            value={activePage}
+            value={appPages.some((page) => page.key === activePage) ? activePage : false}
             onChange={(_event, nextValue) => setActivePage(nextValue)}
             variant="scrollable"
             scrollButtons="auto"
@@ -10771,6 +10832,21 @@ export default function App() {
               <Tab key={page.key} value={page.key} label={page.label} />
             ))}
           </Tabs>
+          <div className="admin-navigation-dropdowns" aria-label="More admin pages">
+            {adminDropdowns.map((dropdown) => (
+              <label key={dropdown.label} className="admin-navigation-dropdown">
+                <span className="sr-only">{dropdown.label}</span>
+                <select
+                  value={dropdown.pages.some((page) => page.key === activePage) ? activePage : ""}
+                  onChange={(event) => event.target.value && setActivePage(event.target.value)}>
+                  <option value="">{dropdown.label}</option>
+                  {dropdown.pages.map((page) => (
+                    <option key={page.key} value={page.key}>{page.label}</option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
           {isAdminMobileMenuOpen ? (
             <div className="admin-mobile-menu-panel" id="admin-mobile-menu">
               {appPages.map((page) => (
@@ -10780,6 +10856,15 @@ export default function App() {
                   className={`admin-mobile-menu-item ${
                     activePage === page.key ? "active" : ""
                   }`}
+                  onClick={() => setActivePage(page.key)}>
+                  {page.label}
+                </button>
+              ))}
+              {adminDropdowns.flatMap((dropdown) => dropdown.pages).map((page) => (
+                <button
+                  key={page.key}
+                  type="button"
+                  className={`admin-mobile-menu-item ${activePage === page.key ? "active" : ""}`}
                   onClick={() => setActivePage(page.key)}>
                   {page.label}
                 </button>
@@ -13370,6 +13455,37 @@ export default function App() {
                 <p className="muted">No active yearly bookings.</p>
               )}
             </>
+          </Paper>
+        ) : null}
+
+        {activePage === "bookkeeping" ? (
+          <Paper component="section" className="card" elevation={0}>
+            <div className="page-section-header">
+              <div><h2>Bookkeeping assistant</h2><p className="muted">Upload receipts, bank statements, and credit-card statements. AI suggestions remain pending until you approve them.</p></div>
+              <label className="primary-button" style={{ cursor: bookkeepingBusy ? "wait" : "pointer" }}>
+                {bookkeepingBusy ? "Working…" : "Upload document"}
+                <input type="file" hidden accept="application/pdf,image/jpeg,image/png,image/webp,text/csv" capture="environment" disabled={bookkeepingBusy} onChange={uploadBookkeepingDocument} />
+              </label>
+            </div>
+            {bookkeepingMessage ? <Alert severity="info" sx={{ mb: 2 }}>{bookkeepingMessage}</Alert> : null}
+            <div className="result-panel">
+              <h3>Documents</h3>
+              {bookkeepingDocuments.length ? bookkeepingDocuments.map((document) => (
+                <div className="payment-summary-row" key={document.id}>
+                  <span><strong>{document.original_filename}</strong><br /><small>{document.document_type} · {document.processing_status}</small></span>
+                  <button type="button" className="ghost-button" disabled={bookkeepingBusy || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => processBookkeepingDocument(document.id)}>Process</button>
+                </div>
+              )) : <p className="muted">No bookkeeping documents uploaded yet.</p>}
+            </div>
+            <div className="result-panel" style={{ marginTop: "1rem" }}>
+              <h3>Transactions awaiting review</h3>
+              {bookkeepingTransactions.length ? bookkeepingTransactions.map((transaction) => (
+                <div className="payment-summary-row" key={transaction.id}>
+                  <span><strong>{transaction.vendor || "Unknown vendor"}</strong><br /><small>{transaction.transaction_date || "No date"} · {transaction.category || "Uncategorized"}</small></span>
+                  <strong>{transaction.currency} {Number(transaction.total || 0).toFixed(2)} · {transaction.status}</strong>
+                </div>
+              )) : <p className="muted">Processed transactions will appear here for review.</p>}
+            </div>
           </Paper>
         ) : null}
 

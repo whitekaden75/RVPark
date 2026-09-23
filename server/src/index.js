@@ -8,6 +8,7 @@ import { pool } from "./db.js";
 import { createMessaging } from "./messaging.js";
 import { createMessageNotifier } from "./message-notifications.js";
 import { createArrivalReminders } from "./arrival-reminders.js";
+import { registerBookkeepingRoutes } from "./bookkeeping.js";
 import {
   buildAvailabilityMap,
   buildAvailabilityBookingContext,
@@ -9473,6 +9474,8 @@ app.delete("/api/reservations/:id", async (req, res) => {
     client.release();
   }
 });
+
+registerBookkeepingRoutes(app, { pool });
 
 app.listen(port, () => {
   console.log(`RV Park server listening on port ${port}`);
