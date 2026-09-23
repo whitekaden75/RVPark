@@ -30,17 +30,29 @@ function jsonObject(text) {
   return JSON.parse(match[0]);
 }
 
-async function extractDocument(file) {
+function normalizeTransactionType(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[ -]+/g, "_");
+  const aliases = {
+    purchase: "expense", purchases: "expense", debit: "expense", charge: "expense", payment: "expense",
+    sale: "income", sales: "income", credit: "income", deposit: "income", revenue: "income",
+    reimbursement: "refund", returned: "refund", transfer_in: "transfer", transfer_out: "transfer"
+  };
+  return aliases[normalized] || ["income", "expense", "transfer", "refund", "adjustment"].includes(normalized)
+    ? (aliases[normalized] || normalized)
+    : "expense";
+}
+
+async function extractDocument(file, note = "") {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const base64 = file.buffer.toString("base64");
   const input = file.mimetype === "application/pdf" || file.mimetype === "text/csv"
     ? { type: "input_file", filename: file.originalname, file_data: `data:${file.mimetype};base64,${base64}` }
     : { type: "input_image", detail: "high", image_url: `data:${file.mimetype};base64,${base64}` };
-  const response = await client.responses.create({
+      const response = await client.responses.create({
     model: process.env.OPENAI_BOOKKEEPING_MODEL || "gpt-5",
     input: [{ role: "user", content: [
-      { type: "input_text", text: "Extract bookkeeping data. Return JSON only with documentType, transactions (array), and confidence. Each transaction must include transactionDate, vendor, description, subtotal, tax, total, currency, category, paymentAccount, transactionType, and lineItems. Use null when unknown; never invent values." },
+      { type: "input_text", text: `Extract bookkeeping data. Return JSON only with documentType, transactions (array), and confidence. Each transaction must include transactionDate, vendor, description, subtotal, tax, total, currency, category, paymentAccount, transactionType, and lineItems. transactionType MUST be exactly one of: income, expense, transfer, refund, adjustment. Use null when unknown; never invent values. Additional information from the admin: ${String(note || "No additional information provided.")}` },
       input
     ] }]
   });
@@ -61,7 +73,8 @@ export function registerBookkeepingRoutes(app, { pool }) {
     const id = idResult.rows[0].id;
     const key = `bookkeeping/${new Date().toISOString().slice(0, 7)}/${id}-${path.basename(req.file.originalname).replace(/[^a-zA-Z0-9._-]/g, "_")}`;
     await storage.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: req.file.buffer, ContentType: req.file.mimetype }));
-    const result = await pool.query(`INSERT INTO bookkeeping_documents (id, uploaded_by_admin_user_id, original_filename, mime_type, file_size_bytes, storage_key, sha256_hash, document_type, processing_status) VALUES ($1,$2,$3,$4,$5,$6,$7,'other','queued') RETURNING *`, [id, req.adminUser.id, req.file.originalname, req.file.mimetype, req.file.size, key, hash]);
+    const note = String(req.body?.note || "").trim().slice(0, 4000);
+    const result = await pool.query(`INSERT INTO bookkeeping_documents (id, uploaded_by_admin_user_id, original_filename, mime_type, file_size_bytes, storage_key, sha256_hash, document_type, processing_status, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,'other','queued',$8) RETURNING *`, [id, req.adminUser.id, req.file.originalname, req.file.mimetype, req.file.size, key, hash, JSON.stringify({ note })]);
     return res.status(201).json({ document: result.rows[0] });
   });
 
@@ -87,11 +100,11 @@ export function registerBookkeepingRoutes(app, { pool }) {
       const storageObject = await storage.send(new GetObjectCommand({ Bucket: bucket, Key: document.storage_key }));
       const chunks = [];
       for await (const chunk of storageObject.Body) chunks.push(chunk);
-      const extracted = await extractDocument({ buffer: Buffer.concat(chunks), mimetype: document.mime_type, originalname: document.original_filename });
+      const extracted = await extractDocument({ buffer: Buffer.concat(chunks), mimetype: document.mime_type, originalname: document.original_filename }, document.metadata?.note || "");
       await client.query("BEGIN");
       await client.query("INSERT INTO bookkeeping_extractions (document_id, model, extracted_json, confidence) VALUES ($1,$2,$3,$4)", [document.id, process.env.OPENAI_BOOKKEEPING_MODEL || "gpt-5", extracted, extracted.confidence || null]);
       for (const item of Array.isArray(extracted.transactions) ? extracted.transactions : []) {
-        const tx = await client.query(`INSERT INTO bookkeeping_transactions (document_id, uploaded_by_admin_user_id, transaction_date, vendor, description, subtotal, tax, total, currency, category, payment_account, transaction_type, ai_confidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`, [document.id, req.adminUser.id, item.transactionDate || null, item.vendor || null, item.description || null, item.subtotal ?? null, item.tax ?? null, item.total ?? 0, item.currency || "USD", item.category || null, item.paymentAccount || null, item.transactionType || "expense", item.confidence || extracted.confidence || null]);
+        const tx = await client.query(`INSERT INTO bookkeeping_transactions (document_id, uploaded_by_admin_user_id, transaction_date, vendor, description, subtotal, tax, total, currency, category, payment_account, transaction_type, ai_confidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`, [document.id, req.adminUser.id, item.transactionDate || null, item.vendor || null, item.description || null, item.subtotal ?? null, item.tax ?? null, item.total ?? 0, item.currency || "USD", item.category || null, item.paymentAccount || null, normalizeTransactionType(item.transactionType), item.confidence || extracted.confidence || null]);
         for (const line of Array.isArray(item.lineItems) ? item.lineItems : []) await client.query("INSERT INTO bookkeeping_line_items (transaction_id, description, quantity, unit_price, amount, category) VALUES ($1,$2,$3,$4,$5,$6)", [tx.rows[0].id, line.description || "Item", line.quantity ?? null, line.unitPrice ?? null, line.amount ?? 0, line.category || null]);
       }
       await client.query("UPDATE bookkeeping_documents SET document_type=$2, processing_status='needs_review', processed_at=NOW(), error_message=NULL WHERE id=$1", [document.id, extracted.documentType || "other"]);

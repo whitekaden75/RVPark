@@ -3218,6 +3218,30 @@ select option {
   flex-wrap: wrap;
 }
 
+.admin-navigation-row {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  flex-wrap: wrap;
+}
+
+.admin-navigation-tab {
+  min-height: 38px;
+  padding: .45rem .8rem;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--admin-pine);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.admin-navigation-tab.active {
+  border-bottom-color: var(--admin-river);
+  color: var(--admin-pine-deep);
+}
+
 .admin-navigation-dropdown select {
   min-height: 38px;
   padding: .45rem 2rem .45rem .75rem;

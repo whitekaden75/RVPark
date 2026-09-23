@@ -6138,6 +6138,7 @@ export default function App() {
   const [bookkeepingTransactions, setBookkeepingTransactions] = useState([]);
   const [bookkeepingBusy, setBookkeepingBusy] = useState(false);
   const [bookkeepingMessage, setBookkeepingMessage] = useState("");
+  const [bookkeepingNote, setBookkeepingNote] = useState("");
   const [isSigningInAdmin, setIsSigningInAdmin] = useState(false);
   const [bookingNotificationStatus, setBookingNotificationStatus] =
     useState("checking");
@@ -6658,12 +6659,14 @@ export default function App() {
     try {
       const body = new FormData();
       body.append("file", file);
+      body.append("note", bookkeepingNote);
       const result = await apiRequest("/bookkeeping/documents", {
         method: "POST",
         headers: { "X-RVPark-Client-Id": adminClientId },
         body,
       });
       setBookkeepingDocuments((current) => [result.document, ...current]);
+      setBookkeepingNote("");
       setBookkeepingMessage("Uploaded. Click Process to extract transactions.");
     } catch (error) { setBookkeepingMessage(error.message); }
     finally { setBookkeepingBusy(false); }
@@ -10821,18 +10824,11 @@ export default function App() {
               Switch between pages from the top navigation.
             </Typography>
           </div>
-          <Tabs
-            value={appPages.some((page) => page.key === activePage) ? activePage : false}
-            onChange={(_event, nextValue) => setActivePage(nextValue)}
-            variant="scrollable"
-            scrollButtons="auto"
-            allowScrollButtonsMobile
-            aria-label="Primary">
-            {appPages.map((page) => (
-              <Tab key={page.key} value={page.key} label={page.label} />
-            ))}
-          </Tabs>
-          <div className="admin-navigation-dropdowns" aria-label="More admin pages">
+          <div className="admin-navigation-row" aria-label="Primary">
+            <button
+              type="button"
+              className={`admin-navigation-tab ${activePage === "checkin" ? "active" : ""}`}
+              onClick={() => setActivePage("checkin")}>Check In</button>
             {adminDropdowns.map((dropdown) => (
               <label key={dropdown.label} className="admin-navigation-dropdown">
                 <span className="sr-only">{dropdown.label}</span>
@@ -10846,6 +10842,10 @@ export default function App() {
                 </select>
               </label>
             ))}
+            <button
+              type="button"
+              className={`admin-navigation-tab ${activePage === "messages" ? "active" : ""}`}
+              onClick={() => setActivePage("messages")}>Text Messages</button>
           </div>
           {isAdminMobileMenuOpen ? (
             <div className="admin-mobile-menu-panel" id="admin-mobile-menu">
@@ -13468,6 +13468,16 @@ export default function App() {
               </label>
             </div>
             {bookkeepingMessage ? <Alert severity="info" sx={{ mb: 2 }}>{bookkeepingMessage}</Alert> : null}
+            <TextField
+              label="Note for the AI (optional)"
+              value={bookkeepingNote}
+              onChange={(event) => setBookkeepingNote(event.target.value)}
+              placeholder="Example: This is a business fuel receipt paid with the card ending in 1234."
+              multiline
+              minRows={2}
+              fullWidth
+              sx={{ mb: 2 }}
+            />
             <div className="result-panel">
               <h3>Documents</h3>
               {bookkeepingDocuments.length ? bookkeepingDocuments.map((document) => (
