@@ -6139,6 +6139,8 @@ export default function App() {
   const [bookkeepingBusy, setBookkeepingBusy] = useState(false);
   const [bookkeepingMessage, setBookkeepingMessage] = useState("");
   const [bookkeepingNote, setBookkeepingNote] = useState("");
+  const [bookkeepingProcessDocument, setBookkeepingProcessDocument] = useState(null);
+  const [bookkeepingReviewId, setBookkeepingReviewId] = useState(null);
   const [isSigningInAdmin, setIsSigningInAdmin] = useState(false);
   const [bookingNotificationStatus, setBookingNotificationStatus] =
     useState("checking");
@@ -6672,17 +6674,47 @@ export default function App() {
     finally { setBookkeepingBusy(false); }
   }
 
-  async function processBookkeepingDocument(id) {
+  async function processBookkeepingDocument(id, note = "") {
     setBookkeepingBusy(true);
     setBookkeepingMessage("AI is reading the document…");
     try {
-      await apiRequest(`/bookkeeping/documents/${id}/process`, { method: "POST" });
+      await apiRequest(`/bookkeeping/documents/${id}/process`, { method: "POST", body: JSON.stringify({ note }) });
       const [documents, transactions] = await Promise.all([
         apiRequest("/bookkeeping/documents"), apiRequest("/bookkeeping/transactions")
       ]);
       setBookkeepingDocuments(documents.documents || []);
       setBookkeepingTransactions(transactions.transactions || []);
       setBookkeepingMessage("Extraction complete. Review transactions before approving.");
+    } catch (error) { setBookkeepingMessage(error.message); }
+    finally { setBookkeepingBusy(false); }
+  }
+
+  async function approveBookkeepingTransaction(transaction) {
+    try {
+      await apiRequest(`/bookkeeping/transactions/${transaction.id}`, { method: "PATCH", body: JSON.stringify({
+        transaction_date: transaction.transaction_date,
+        vendor: transaction.vendor,
+        description: transaction.description,
+        subtotal: transaction.subtotal,
+        tax: transaction.tax,
+        total: transaction.total,
+        category: transaction.category,
+        payment_account: transaction.payment_account,
+        notes: transaction.notes,
+        status: "approved",
+      }) });
+      setBookkeepingTransactions((current) => current.map((item) => item.id === transaction.id ? { ...item, status: "approved" } : item));
+      setBookkeepingMessage("Transaction approved.");
+    } catch (error) { setBookkeepingMessage(error.message); }
+  }
+
+  async function deleteBookkeepingDocument(document) {
+    if (!window.confirm(`Remove ${document.original_filename}? This deletes the uploaded file before processing.`)) return;
+    setBookkeepingBusy(true);
+    try {
+      await apiRequest(`/bookkeeping/documents/${document.id}`, { method: "DELETE" });
+      setBookkeepingDocuments((current) => current.filter((item) => item.id !== document.id));
+      setBookkeepingMessage("Document removed.");
     } catch (error) { setBookkeepingMessage(error.message); }
     finally { setBookkeepingBusy(false); }
   }
@@ -10860,14 +10892,23 @@ export default function App() {
                   {page.label}
                 </button>
               ))}
-              {adminDropdowns.flatMap((dropdown) => dropdown.pages).map((page) => (
-                <button
-                  key={page.key}
-                  type="button"
-                  className={`admin-mobile-menu-item ${activePage === page.key ? "active" : ""}`}
-                  onClick={() => setActivePage(page.key)}>
-                  {page.label}
-                </button>
+              {adminDropdowns.map((dropdown) => (
+                <label key={dropdown.label} className="admin-mobile-menu-dropdown">
+                  <span>{dropdown.label}</span>
+                  <select
+                    value={dropdown.pages.some((page) => page.key === activePage) ? activePage : ""}
+                    onChange={(event) => {
+                      if (event.target.value) {
+                        setActivePage(event.target.value);
+                        setIsAdminMobileMenuOpen(false);
+                      }
+                    }}>
+                    <option value="">Choose a page</option>
+                    {dropdown.pages.map((page) => (
+                      <option key={page.key} value={page.key}>{page.label}</option>
+                    ))}
+                  </select>
+                </label>
               ))}
               <button
                 type="button"
@@ -13468,34 +13509,38 @@ export default function App() {
               </label>
             </div>
             {bookkeepingMessage ? <Alert severity="info" sx={{ mb: 2 }}>{bookkeepingMessage}</Alert> : null}
-            <TextField
-              label="Note for the AI (optional)"
-              value={bookkeepingNote}
-              onChange={(event) => setBookkeepingNote(event.target.value)}
-              placeholder="Example: This is a business fuel receipt paid with the card ending in 1234."
-              multiline
-              minRows={2}
-              fullWidth
-              sx={{ mb: 2 }}
-            />
             <div className="result-panel">
               <h3>Documents</h3>
               {bookkeepingDocuments.length ? bookkeepingDocuments.map((document) => (
                 <div className="payment-summary-row" key={document.id}>
                   <span><strong>{document.original_filename}</strong><br /><small>{document.document_type} · {document.processing_status}</small></span>
-                  <button type="button" className="ghost-button" disabled={bookkeepingBusy || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => processBookkeepingDocument(document.id)}>Process</button>
+                  <span className="button-row">
+                    <button type="button" className="ghost-button" disabled={bookkeepingBusy || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => setBookkeepingProcessDocument(document)}>Process</button>
+                    {["uploaded", "queued", "failed", "rejected"].includes(document.processing_status) ? <button type="button" className="ghost-button" disabled={bookkeepingBusy} onClick={() => deleteBookkeepingDocument(document)}>Remove</button> : null}
+                  </span>
                 </div>
               )) : <p className="muted">No bookkeeping documents uploaded yet.</p>}
             </div>
             <div className="result-panel" style={{ marginTop: "1rem" }}>
               <h3>Transactions awaiting review</h3>
               {bookkeepingTransactions.length ? bookkeepingTransactions.map((transaction) => (
-                <div className="payment-summary-row" key={transaction.id}>
-                  <span><strong>{transaction.vendor || "Unknown vendor"}</strong><br /><small>{transaction.transaction_date || "No date"} · {transaction.category || "Uncategorized"}</small></span>
-                  <strong>{transaction.currency} {Number(transaction.total || 0).toFixed(2)} · {transaction.status}</strong>
-                </div>
+                <article className="result-panel" key={transaction.id} style={{ marginBottom: ".75rem" }}>
+                  <button type="button" className="payment-summary-row" style={{ width: "100%", border: 0, background: "transparent", cursor: "pointer", textAlign: "left" }} onClick={() => setBookkeepingReviewId(bookkeepingReviewId === transaction.id ? null : transaction.id)}>
+                    <span><strong>{transaction.vendor || "Unknown vendor"}</strong><br /><small>{transaction.transaction_date || "No date"} · {transaction.category || "Uncategorized"}</small></span>
+                    <strong>{transaction.currency} {Number(transaction.total || 0).toFixed(2)} · {transaction.status}</strong>
+                  </button>
+                  {bookkeepingReviewId === transaction.id ? <div className="bookkeeping-review-card">
+                    <p><strong>Description:</strong> {transaction.description || "Not provided"}</p>
+                    <p><strong>Subtotal:</strong> {transaction.subtotal ?? "Not provided"} &nbsp; <strong>Tax:</strong> {transaction.tax ?? "Not provided"}</p>
+                    <p><strong>Category:</strong> {transaction.category || "AI could not determine one"}</p>
+                    <p><strong>Payment account:</strong> {transaction.payment_account || "Not provided"}</p>
+                    <p><strong>AI confidence:</strong> {transaction.ai_confidence == null ? "Not provided" : `${Math.round(Number(transaction.ai_confidence) * 100)}%`}</p>
+                    {transaction.status === "pending" ? <button type="button" className="primary-button" onClick={() => approveBookkeepingTransaction(transaction)}>Approve transaction</button> : <span className="status-badge">Approved</span>}
+                  </div> : null}
+                </article>
               )) : <p className="muted">Processed transactions will appear here for review.</p>}
             </div>
+            {bookkeepingProcessDocument ? <div className="modal-backdrop" role="presentation" onClick={() => setBookkeepingProcessDocument(null)}><div className="modal-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><h3>Additional information for the AI</h3><p className="muted">Add context before this document is processed. This note will be saved with the document.</p><TextField autoFocus fullWidth multiline minRows={4} value={bookkeepingNote} onChange={(event) => setBookkeepingNote(event.target.value)} placeholder="Example: This is a business fuel receipt paid with the card ending in 1234." /><div className="button-row"><button type="button" className="ghost-button" onClick={() => setBookkeepingProcessDocument(null)}>Cancel</button><button type="button" className="primary-button" onClick={async () => { const document = bookkeepingProcessDocument; setBookkeepingProcessDocument(null); await processBookkeepingDocument(document.id, bookkeepingNote); setBookkeepingNote(""); }}>Process document</button></div></div></div> : null}
           </Paper>
         ) : null}
 

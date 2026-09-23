@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from "multer";
 import OpenAI from "openai";
@@ -91,12 +91,29 @@ export function registerBookkeepingRoutes(app, { pool }) {
     return res.json({ url });
   });
 
+  app.delete("/api/bookkeeping/documents/:id", async (req, res) => {
+    const result = await pool.query("SELECT storage_key, processing_status FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ message: "Document not found." });
+    if (!["uploaded", "queued", "failed", "rejected"].includes(result.rows[0].processing_status)) {
+      return res.status(409).json({ message: "Processed documents cannot be deleted from here." });
+    }
+    if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
+    await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: result.rows[0].storage_key }));
+    await pool.query("DELETE FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
+    return res.status(204).end();
+  });
+
   app.post("/api/bookkeeping/documents/:id/process", async (req, res) => {
     const client = await pool.connect();
     try {
       const documentResult = await client.query("SELECT * FROM bookkeeping_documents WHERE id = $1 FOR UPDATE", [req.params.id]);
       if (!documentResult.rowCount) return res.status(404).json({ message: "Document not found." });
       const document = documentResult.rows[0];
+      const adminNote = String(req.body?.note || document.metadata?.note || "").trim().slice(0, 4000);
+      if (adminNote && JSON.stringify(document.metadata?.note || "") !== JSON.stringify(adminNote)) {
+        await client.query("UPDATE bookkeeping_documents SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{note}', to_jsonb($2::text)) WHERE id = $1", [document.id, adminNote]);
+        document.metadata = { ...(document.metadata || {}), note: adminNote };
+      }
       const storageObject = await storage.send(new GetObjectCommand({ Bucket: bucket, Key: document.storage_key }));
       const chunks = [];
       for await (const chunk of storageObject.Body) chunks.push(chunk);

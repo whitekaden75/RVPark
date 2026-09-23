@@ -3258,6 +3258,38 @@ select option {
   outline-offset: 2px;
 }
 
+.admin-mobile-menu-dropdown {
+  display: grid;
+  gap: .35rem;
+  padding: .45rem .65rem;
+  color: var(--admin-pine);
+  font-size: .78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.admin-mobile-menu-dropdown select {
+  min-height: 40px;
+  padding: .45rem .65rem;
+  border: 1px solid #b8c9bf;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--admin-pine);
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.bookkeeping-review-card {
+  margin-top: .35rem;
+  padding: 1rem;
+  border-top: 1px solid #dce7df;
+  color: var(--admin-pine);
+}
+
+.bookkeeping-review-card p { margin: .35rem 0; }
+
 .admin-shell .app-header.compact {
   padding: 16px 22px;
   box-shadow: 0 16px 30px rgba(23, 55, 47, 0.1);
