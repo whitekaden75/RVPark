@@ -9,7 +9,7 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (_req, file, callback) => {
-    const allowed = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp", "text/csv"]);
+    const allowed = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp", "text/csv", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
     callback(null, allowed.has(file.mimetype));
   }
 });
@@ -153,7 +153,10 @@ export function registerBookkeepingRoutes(app, { pool }) {
   });
 
   app.get("/api/bookkeeping/transactions", async (req, res) => {
-    const result = await pool.query("SELECT * FROM bookkeeping_transactions WHERE status <> 'void' ORDER BY transaction_date DESC NULLS LAST, id DESC LIMIT 500");
+    const requestedStatus = String(req.query.status || "pending");
+    const statusClause = requestedStatus === "all" ? "t.status <> 'void'" : "t.status = $1";
+    const params = requestedStatus === "all" ? [] : [requestedStatus];
+    const result = await pool.query(`SELECT t.*, d.original_filename AS source_filename FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id = t.document_id WHERE ${statusClause} ORDER BY t.transaction_date DESC NULLS LAST, t.id DESC LIMIT 500`, params);
     return res.json({ transactions: result.rows });
   });
 

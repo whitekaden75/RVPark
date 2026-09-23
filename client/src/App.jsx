@@ -6144,6 +6144,9 @@ export default function App() {
   const [bookkeepingReviewDraft, setBookkeepingReviewDraft] = useState(null);
   const [bookkeepingCategories, setBookkeepingCategories] = useState([]);
   const [bookkeepingNewCategory, setBookkeepingNewCategory] = useState("");
+  const [bookkeepingTransactionFilter, setBookkeepingTransactionFilter] = useState("pending");
+  const [bookkeepingDocumentStatusFilter, setBookkeepingDocumentStatusFilter] = useState("all");
+  const [bookkeepingDocumentTypeFilter, setBookkeepingDocumentTypeFilter] = useState("all");
   const [isSigningInAdmin, setIsSigningInAdmin] = useState(false);
   const [bookingNotificationStatus, setBookingNotificationStatus] =
     useState("checking");
@@ -6642,7 +6645,7 @@ export default function App() {
         if (activePage === "bookkeeping") {
           const [documents, transactions, categories] = await Promise.all([
             apiRequest("/bookkeeping/documents"),
-            apiRequest("/bookkeeping/transactions"),
+            apiRequest(`/bookkeeping/transactions?status=${encodeURIComponent(bookkeepingTransactionFilter)}`),
             apiRequest("/bookkeeping/categories"),
           ]);
           setBookkeepingDocuments(documents.documents || []);
@@ -6655,7 +6658,7 @@ export default function App() {
     }
 
     loadDataForActivePage();
-  }, [activePage, isUnlocked]);
+  }, [activePage, isUnlocked, bookkeepingTransactionFilter]);
 
   async function uploadBookkeepingDocument(event) {
     const file = event.target.files?.[0];
@@ -6734,6 +6737,19 @@ export default function App() {
       setBookkeepingMessage("Category added.");
     } catch (error) { setBookkeepingMessage(error.message); }
   }
+
+  async function viewBookkeepingSource(transaction) {
+    if (!transaction.document_id) return;
+    try {
+      const result = await apiRequest(`/bookkeeping/documents/${transaction.document_id}/download`);
+      window.open(result.url, "_blank", "noopener,noreferrer");
+    } catch (error) { setBookkeepingMessage(error.message); }
+  }
+
+  const visibleBookkeepingDocuments = bookkeepingDocuments.filter((document) =>
+    (bookkeepingDocumentStatusFilter === "all" || document.processing_status === bookkeepingDocumentStatusFilter) &&
+    (bookkeepingDocumentTypeFilter === "all" || document.document_type === bookkeepingDocumentTypeFilter)
+  );
 
   async function deleteBookkeepingDocument(document) {
     if (!window.confirm(`Remove ${document.original_filename}? This deletes the uploaded file before processing.`)) return;
@@ -13531,13 +13547,13 @@ export default function App() {
               <div><h2>Bookkeeping assistant</h2><p className="muted">Upload receipts, bank statements, and credit-card statements. AI suggestions remain pending until you approve them.</p></div>
               <label className="primary-button" style={{ cursor: bookkeepingBusy ? "wait" : "pointer" }}>
                 {bookkeepingBusy ? "Working…" : "Upload document"}
-                <input type="file" hidden accept="application/pdf,image/jpeg,image/png,image/webp,text/csv" capture="environment" disabled={bookkeepingBusy} onChange={uploadBookkeepingDocument} />
+                <input type="file" hidden accept="application/pdf,image/jpeg,image/png,image/webp,text/csv,.doc,.docx,.xls,.xlsx" capture="environment" disabled={bookkeepingBusy} onChange={uploadBookkeepingDocument} />
               </label>
             </div>
             {bookkeepingMessage ? <Alert severity="info" sx={{ mb: 2 }}>{bookkeepingMessage}</Alert> : null}
             <div className="result-panel">
-              <h3>Documents</h3>
-              {bookkeepingDocuments.length ? bookkeepingDocuments.map((document) => (
+              <div className="page-section-header"><h3>Documents</h3><div className="button-row"><select value={bookkeepingDocumentStatusFilter} onChange={(event) => setBookkeepingDocumentStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="queued">Queued</option><option value="needs_review">Needs review</option><option value="failed">Failed</option></select><select value={bookkeepingDocumentTypeFilter} onChange={(event) => setBookkeepingDocumentTypeFilter(event.target.value)}><option value="all">All types</option><option value="receipt">Receipts</option><option value="bank_statement">Bank statements</option><option value="credit_card_statement">Credit cards</option><option value="invoice">Invoices</option><option value="tax_document">Tax documents</option><option value="other">Other</option></select></div></div>
+              {visibleBookkeepingDocuments.length ? visibleBookkeepingDocuments.map((document) => (
                 <div className="payment-summary-row" key={document.id}>
                   <span><strong>{document.original_filename}</strong><br /><small>{document.document_type} · {document.processing_status}</small></span>
                   <span className="button-row">
@@ -13548,7 +13564,7 @@ export default function App() {
               )) : <p className="muted">No bookkeeping documents uploaded yet.</p>}
             </div>
             <div className="result-panel" style={{ marginTop: "1rem" }}>
-              <h3>Transactions awaiting review</h3>
+              <div className="page-section-header"><h3>{bookkeepingTransactionFilter === "pending" ? "Transactions awaiting review" : bookkeepingTransactionFilter === "approved" ? "Approved transactions" : "All transactions"}</h3><select value={bookkeepingTransactionFilter} onChange={(event) => setBookkeepingTransactionFilter(event.target.value)}><option value="pending">Pending review</option><option value="approved">Approved</option><option value="all">All transactions</option></select></div>
               {bookkeepingTransactions.length ? bookkeepingTransactions.map((transaction) => (
                 <article className="result-panel" key={transaction.id} style={{ marginBottom: ".75rem" }}>
                   <button type="button" className="payment-summary-row" style={{ width: "100%", border: 0, background: "transparent", cursor: "pointer", textAlign: "left" }} onClick={() => { const next = bookkeepingReviewId === transaction.id ? null : transaction.id; setBookkeepingReviewId(next); setBookkeepingReviewDraft(next ? { ...transaction } : null); }}>
@@ -13567,6 +13583,8 @@ export default function App() {
                         <TextField label="Total" type="number" value={draft.total ?? ""} onChange={(event) => set("total", event.target.value)} />
                         <TextField label="Payment account" value={draft.payment_account || ""} onChange={(event) => set("payment_account", event.target.value)} />
                       </div>
+                      <p><strong>Source file:</strong> {transaction.source_filename || "Not available"}</p>
+                      <button type="button" className="ghost-button" onClick={() => viewBookkeepingSource(transaction)}>View original file</button>
                       <p><strong>AI confidence:</strong> {transaction.ai_confidence == null ? "Not provided" : `${Math.round(Number(transaction.ai_confidence) * 100)}%`}</p>
                       <div className="button-row"><TextField size="small" label="Add category" value={bookkeepingNewCategory} onChange={(event) => setBookkeepingNewCategory(event.target.value)} /><button type="button" className="ghost-button" onClick={addBookkeepingCategory}>Add category</button></div>
                       <div className="button-row"><button type="button" className="ghost-button" onClick={() => saveBookkeepingTransaction(transaction)}>Save changes</button>{transaction.status === "pending" ? <button type="button" className="primary-button" onClick={() => saveBookkeepingTransaction(transaction, "approved")}>Save and approve</button> : <span className="status-badge">Approved</span>}</div>
