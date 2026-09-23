@@ -6179,6 +6179,8 @@ export default function App() {
   });
   const [textMessages, setTextMessages] = useState([]);
   const [selectedConversationNumber, setSelectedConversationNumber] = useState("");
+  const [showStayInformation, setShowStayInformation] = useState(false);
+  const [isNewMessageOpen, setIsNewMessageOpen] = useState(false);
   const [arrivalTextPreview, setArrivalTextPreview] = useState(null);
   const [arrivalTextDrafts, setArrivalTextDrafts] = useState({});
   const [arrivalTextError, setArrivalTextError] = useState("");
@@ -8344,9 +8346,20 @@ export default function App() {
     if (!groups[key].bookings.length && message.bookings?.length) groups[key].bookings = message.bookings;
     return groups;
   }, {})).sort((a, b) => new Date(b.messages[0]?.dateSent || 0) - new Date(a.messages[0]?.dateSent || 0));
-  const selectedConversation = messageConversations.find(item => item.number === selectedConversationNumber) || messageConversations[0];
+  const selectedConversation = messageConversations.find(item => item.number === selectedConversationNumber);
   const selectedMessages = selectedConversation ? [...selectedConversation.messages].sort((a, b) => new Date(a.dateSent || 0) - new Date(b.dateSent || 0)) : [];
-  const visibleTextMessages = selectedConversation ? selectedMessages : textMessages;
+  const visibleTextMessages = selectedConversation ? selectedMessages : [];
+  const unreadConversations = messageConversations.filter(conversation => conversation.messages.some(message => !String(message.direction || "").startsWith("outbound") && message.status !== "read"));
+  async function openMessageConversation(conversation) {
+    setSelectedConversationNumber(conversation.number);
+    setShowStayInformation(false);
+    setTextMessages(current => current.map(message => {
+      const inbound = !String(message.direction || "").startsWith("outbound");
+      return inbound && formatPhoneNumber(message.from) === formatPhoneNumber(conversation.number) ? { ...message, status: "read" } : message;
+    }));
+    try { await apiRequest("/messages/read", { method: "POST", body: JSON.stringify({ phone: conversation.number }) }); }
+    catch (error) { setTextMessageError(error.message); }
+  }
   const getConversationName = (conversation) => conversation?.bookings?.[0]
     ? `${conversation.bookings[0].first_name || ""} ${conversation.bookings[0].last_name || ""}`.trim()
     : formatPhoneNumber(conversation?.number || "Unknown contact");
@@ -13709,8 +13722,9 @@ export default function App() {
             </section>
             {!smsWebhookConfigured ? <Alert severity="warning">Incoming messages require TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on the server.</Alert> : null}
             <div className="admin-text-message-layout">
-              <form className="admin-text-composer" onSubmit={sendTextMessage}>
+              <form className={`admin-text-composer ${isNewMessageOpen ? "is-open" : "is-hidden"}`} onSubmit={sendTextMessage}>
                 <div className="section-heading">
+                  <button type="button" className="ghost-button" onClick={() => setIsNewMessageOpen(false)}>Close</button>
                   <p>
                     Send a reservation message or a park-wide operational
                     update to a guest.
@@ -13781,26 +13795,35 @@ export default function App() {
                 <div className="admin-text-history-heading">
                   <div>
                     <span className="eyebrow">Saved inbox · updates automatically</span>
-                    <h3>Guest messages</h3>
+                    <h3>Contacts & unread messages</h3>
                   </div>
                   <span>{textMessages.length} shown</span>
                   <button type="button" className="text-button" disabled={isLoadingTextMessages || !isTextMessagingConfigured} onClick={syncTextMessageHistory}>Sync recent Twilio history</button>
                 </div>
-                {messageConversations.length ? <div className="admin-message-contacts" aria-label="Contacts">
-                  <div className="admin-message-contacts-heading"><strong>Contacts</strong><span>{messageConversations.length}</span></div>
+                {messageConversations.length ? <div className={`admin-message-contacts ${selectedConversation ? "conversation-open" : ""}`} aria-label="Contacts">
+                  <div className="admin-message-contacts-heading"><strong>Contacts</strong><button type="button" className="admin-new-message-button" onClick={() => setIsNewMessageOpen(true)} aria-label="Start a new message">✎</button><span>{unreadConversations.length} unread</span></div>
                   {messageConversations.map((conversation) => {
                     const latest = [...conversation.messages].sort((a, b) => new Date(b.dateSent || 0) - new Date(a.dateSent || 0))[0];
-                    return <button type="button" key={conversation.number} className={`admin-message-contact ${selectedConversation?.number === conversation.number ? "selected" : ""}`} onClick={() => setSelectedConversationNumber(conversation.number)}>
+                    const unreadCount = conversation.messages.filter(message => !String(message.direction || "").startsWith("outbound") && message.status !== "read").length;
+                    return <button type="button" key={conversation.number} className={`admin-message-contact ${selectedConversation?.number === conversation.number ? "selected" : ""}`} onClick={() => openMessageConversation(conversation)}>
                       <span className="admin-message-avatar">{getConversationName(conversation).slice(0, 1).toUpperCase()}</span>
                       <span className="admin-message-contact-copy"><strong>{getConversationName(conversation)}</strong><small>{latest?.body || "Attachment"}</small></span>
+                      {unreadCount ? <b className="admin-message-unread-badge">{unreadCount}</b> : null}
                       <time>{formatTextMessageTimestamp(latest?.dateSent)}</time>
                     </button>;
                   })}
                 </div> : null}
+                {selectedConversation ? <div className="admin-message-thread-header">
+                  <div><button type="button" className="admin-message-back" onClick={() => setSelectedConversationNumber("")} aria-label="Back to contacts">‹</button><span className="admin-message-avatar">{getConversationName(selectedConversation).slice(0, 1).toUpperCase()}</span><strong>{getConversationName(selectedConversation)}</strong><small>{formatPhoneNumber(selectedConversation.number)}</small></div>
+                  <button type="button" className="ghost-button" onClick={() => setShowStayInformation(current => !current)}>{showStayInformation ? "Hide stay information" : "Show stay information"}</button>
+                </div> : null}
+                {showStayInformation && selectedConversation?.bookings?.length ? <div className="admin-message-stay-info">
+                  {selectedConversation.bookings.map(booking => <div key={`${booking.customer_id}-${booking.reservation_id || "guest"}`}><strong>{booking.first_name} {booking.last_name}</strong>{booking.reservation_id ? <><span>Booking #{booking.reservation_id} · {booking.status}</span>{booking.stays?.map((stay, index) => <span key={index}>Site {stay.site} · {stay.arrival} – {stay.departure}</span>)}<span>Total: ${Number(booking.total_price || 0).toFixed(2)} · Paid: ${Number(booking.amount_paid || 0).toFixed(2)}</span></> : <span>No booking found.</span>}</div>)}
+                </div> : null}
                 {isLoadingTextMessages && !textMessages.length ? (
                   <p className="muted">Loading text messages...</p>
                 ) : textMessages.length ? (
-                  <div className="admin-text-history-list">
+                  <div className={`admin-text-history-list ${selectedConversation ? "has-selected-thread" : "no-selected-thread"}`}>
                     {visibleTextMessages.map((message) => {
                       const isOutbound = String(message.direction || "").startsWith(
                         "outbound"

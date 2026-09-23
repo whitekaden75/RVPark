@@ -619,6 +619,16 @@ app.get("/api/messages", async (req, res) => {
   }
 });
 
+app.post("/api/messages/read", async (req, res) => {
+  try {
+    if (!req.body?.phone) return res.status(400).json({ message: "Phone number is required." });
+    await messaging.markConversationRead(req.body.phone);
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(503).json({ message: "Unable to mark messages as read." });
+  }
+});
+
 app.post("/api/messages/sync", async (_req, res) => {
   if (!isTwilioConfigured) {
     const missing = [];

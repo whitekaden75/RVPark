@@ -88,5 +88,10 @@ export function createMessaging({ pool, accountSid, authToken, webhookBaseUrl, n
       bookings: matches.rows.filter(match => normalizePhone(match.phone_number) === normalizePhone(row.direction === 'inbound' ? row.from_number : row.to_number))
     })) };
   }
-  return { router, save, history, statusUrl: authToken && base ? `${base}/api/twilio/status` : '' };
+  async function markConversationRead(phone) {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return;
+    await pool.query(`UPDATE text_messages SET status='read', updated_at=now() WHERE direction='inbound' AND status <> 'read' AND regexp_replace(from_number,'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')`, [normalized]);
+  }
+  return { router, save, history, markConversationRead, statusUrl: authToken && base ? `${base}/api/twilio/status` : '' };
 }

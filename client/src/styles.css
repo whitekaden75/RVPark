@@ -6298,6 +6298,12 @@ select option {
   background: rgba(255, 252, 246, 0.78);
 }
 
+.admin-text-history { min-height: 620px; }
+.admin-text-message-layout { display: block; }
+.admin-text-history { width: 100%; }
+.admin-text-composer.is-hidden { display: none; }
+.admin-new-message-button { margin-left: auto; border: 0; background: transparent; color: #52645d; font-size: 1.45rem; line-height: 1; cursor: pointer; }
+
 .admin-text-composer label {
   display: grid;
   gap: 8px;
@@ -6343,6 +6349,7 @@ select option {
   overflow: auto;
   padding-right: 4px;
 }
+.admin-text-history-list.no-selected-thread { display: none; }
 
 .admin-message-contacts {
   display: grid;
@@ -6383,16 +6390,52 @@ select option {
 .admin-message-contact-copy strong, .admin-message-contact-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-message-contact-copy small, .admin-message-contact time { color: #718078; font-size: .76rem; }
 .admin-message-contact time { white-space: nowrap; }
+.admin-message-thread-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 14px; padding: 10px 12px; border-bottom: 1px solid rgba(18,63,52,.1); }
+.admin-message-thread-header > div { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.admin-message-thread-header small { color: #718078; }
+.admin-message-back { display: none; border: 0; background: transparent; color: #28664f; font-size: 2rem; cursor: pointer; }
+.admin-message-unread-badge { display: grid; place-items: center; min-width: 22px; height: 22px; border-radius: 50%; color: white; background: #b14f3c; font-size: .72rem; }
+.admin-message-stay-info { display: grid; gap: 8px; margin-bottom: 14px; padding: 13px 15px; border-radius: 14px; background: #e6f0e7; }
+.admin-message-stay-info div { display: grid; gap: 2px; font-size: .82rem; }
+.admin-message-stay-info span { color: #5f7168; }
+
+@media (min-width: 760px) {
+  .admin-text-history { display: grid; grid-template-columns: minmax(240px, .78fr) minmax(0, 1.4fr); grid-template-rows: auto auto 1fr auto; gap: 0 20px; padding: 0; overflow: hidden; background: #fff; }
+  .admin-text-history-heading { grid-column: 1 / -1; padding: 20px 22px 14px; border-bottom: 1px solid rgba(18,63,52,.1); }
+  .admin-message-contacts { grid-column: 1; grid-row: 2 / 5; align-content: start; margin: 0; min-height: 0; max-height: none; overflow: auto; border: 0; border-right: 1px solid rgba(18,63,52,.1); border-radius: 0; background: #f4f5f2; }
+  .admin-message-contacts-heading { position: sticky; top: 0; z-index: 1; background: #f4f5f2; }
+  .admin-message-thread-header { grid-column: 2; grid-row: 2; margin: 0; padding: 14px 20px; }
+  .admin-message-stay-info { grid-column: 2; grid-row: 3; margin: 0 20px 10px; align-self: start; }
+  .admin-text-history-list { grid-column: 2; grid-row: 3 / 5; align-self: end; max-height: none; min-height: 0; padding: 24px 20px; overflow: auto; }
+  .admin-message-stay-info + .admin-text-history-list { grid-row: 4; }
+  .admin-text-history-item { width: fit-content; max-width: 78%; border: 0; border-radius: 20px; padding: 11px 15px; box-shadow: none; background: #e9e9ed; }
+  .admin-text-history-item.outbound { margin-left: auto; background: #1684ff; color: white; }
+  .admin-text-history-item.inbound { margin-right: auto; }
+  .admin-text-history-item p { font-size: 1rem; line-height: 1.35; }
+  .admin-text-history-item .admin-text-history-meta, .admin-text-history-item .admin-text-history-footer, .admin-text-history-item details { font-size: .7rem; }
+  .admin-text-history-item.outbound .admin-text-history-meta, .admin-text-history-item.outbound .admin-text-history-footer, .admin-text-history-item.outbound .muted { color: rgba(255,255,255,.8); }
+  .admin-text-history-item .sms-booking-details { display: none; }
+  .admin-text-composer.is-open { position: fixed; inset: 50% auto auto 50%; z-index: 30; display: grid; width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; transform: translate(-50%, -50%); box-shadow: 0 20px 60px rgba(18,45,38,.3); }
+}
+
+@media (max-width: 759px) {
+  .admin-text-history { padding: 14px; }
+  .admin-message-contacts.conversation-open { display: none; }
+  .admin-message-contacts:not(.conversation-open) + .admin-text-history-list,
+  .admin-text-history-list.no-selected-thread { display: none; }
+  .admin-message-back { display: inline-block; }
+  .admin-message-thread-header { margin-top: 0; }
+  .admin-message-thread-header .ghost-button { padding: 8px 10px; font-size: .72rem; }
+  .admin-text-composer.is-open { position: fixed; inset: 12px; z-index: 30; overflow: auto; box-shadow: 0 20px 60px rgba(18,45,38,.3); }
+}
 
 .arrival-message-drafts { display: grid; gap: 12px; margin-top: 14px; }
 .arrival-message-draft { display: grid; gap: 8px; padding: 14px; border: 1px solid rgba(18, 63, 52, .1); border-radius: 14px; background: rgba(255,255,255,.65); }
 .arrival-message-draft textarea { width: 100%; min-height: 150px; resize: vertical; }
 
 @media (min-width: 760px) {
-  .admin-message-contacts { grid-template-columns: minmax(220px, .7fr) minmax(0, 1.3fr); align-items: center; }
-  .admin-message-contacts-heading { grid-column: 1; }
-  .admin-message-contact { grid-column: 1; }
-  .admin-message-history-list { grid-column: 2; }
+  .admin-message-contacts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); align-items: center; }
+  .admin-message-contacts-heading { grid-column: 1 / -1; }
 }
 
 .admin-text-history-item {
