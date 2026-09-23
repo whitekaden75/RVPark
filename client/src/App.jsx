@@ -6155,7 +6155,7 @@ export default function App() {
   const [bookkeepingTypeFilter, setBookkeepingTypeFilter] = useState("all");
   const [bookkeepingPaymentFilter, setBookkeepingPaymentFilter] = useState("all");
   const [bookkeepingCategoryFilter, setBookkeepingCategoryFilter] = useState("all");
-  const [bookkeepingDocumentStatusFilter, setBookkeepingDocumentStatusFilter] = useState("all");
+  const [bookkeepingDocumentStatusFilter, setBookkeepingDocumentStatusFilter] = useState("needs_processing");
   const [bookkeepingDocumentTypeFilter, setBookkeepingDocumentTypeFilter] = useState("all");
   const [isSigningInAdmin, setIsSigningInAdmin] = useState(false);
 
@@ -6739,6 +6739,10 @@ export default function App() {
     try {
       const result = await apiRequest(`/bookkeeping/transactions/${transaction.id}`, { method: "PATCH", body: JSON.stringify({ ...draft, status }) });
       setBookkeepingTransactions((current) => current.map((item) => item.id === transaction.id ? result.transaction : item));
+      if (status === "approved") {
+        const documents = await apiRequest("/bookkeeping/documents");
+        setBookkeepingDocuments(documents.documents || []);
+      }
       setBookkeepingReviewDraft(result.transaction);
       setBookkeepingMessage(status === "approved" ? "Transaction approved." : "Transaction changes saved.");
     } catch (error) { setBookkeepingMessage(error.message); }
@@ -6764,8 +6768,19 @@ export default function App() {
     } catch (error) { setBookkeepingMessage(error.message); }
   }
 
+  async function reconcileBookkeepingStatement(document) {
+    setBookkeepingBusy(true);
+    try {
+      const result = await apiRequest(`/bookkeeping/documents/${document.id}/reconcile`, { method: "POST" });
+      setBookkeepingMessage(`Reconciliation complete: ${result.matched.length} matched, ${result.possibleMatches.length} possible matches, ${result.unmatchedStatement.length} statement items without receipts.`);
+      const transactions = await apiRequest(`/bookkeeping/transactions?status=${encodeURIComponent(bookkeepingTransactionFilter)}`);
+      setBookkeepingTransactions(transactions.transactions || []);
+    } catch (error) { setBookkeepingMessage(error.message); }
+    finally { setBookkeepingBusy(false); }
+  }
+
   const visibleBookkeepingDocuments = bookkeepingDocuments.filter((document) =>
-    (bookkeepingDocumentStatusFilter === "all" || document.processing_status === bookkeepingDocumentStatusFilter) &&
+    (bookkeepingDocumentStatusFilter === "all" || (bookkeepingDocumentStatusFilter === "needs_processing" ? ["uploaded", "queued", "failed"].includes(document.processing_status) : document.processing_status === bookkeepingDocumentStatusFilter)) &&
     (bookkeepingDocumentTypeFilter === "all" || document.document_type === bookkeepingDocumentTypeFilter)
   );
   const visibleBookkeepingTransactions = bookkeepingTransactions.filter((transaction) => {
@@ -13586,12 +13601,13 @@ export default function App() {
             </div>
             {bookkeepingMessage ? <Alert severity="info" sx={{ mb: 2 }}>{bookkeepingMessage}</Alert> : null}
             <div className="result-panel">
-              <div className="page-section-header"><h3>Documents</h3><div className="button-row"><select value={bookkeepingDocumentStatusFilter} onChange={(event) => setBookkeepingDocumentStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="queued">Queued</option><option value="needs_review">Needs review</option><option value="failed">Failed</option></select><select value={bookkeepingDocumentTypeFilter} onChange={(event) => setBookkeepingDocumentTypeFilter(event.target.value)}><option value="all">All types</option><option value="receipt">Receipts</option><option value="bank_statement">Bank statements</option><option value="credit_card_statement">Credit cards</option><option value="invoice">Invoices</option><option value="tax_document">Tax documents</option><option value="other">Other</option></select></div></div>
+              <div className="page-section-header"><h3>Documents</h3><div className="button-row"><select value={bookkeepingDocumentStatusFilter} onChange={(event) => setBookkeepingDocumentStatusFilter(event.target.value)}><option value="needs_processing">Needs processing</option><option value="all">All statuses</option><option value="queued">Queued</option><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="failed">Failed</option></select><select value={bookkeepingDocumentTypeFilter} onChange={(event) => setBookkeepingDocumentTypeFilter(event.target.value)}><option value="all">All types</option><option value="receipt">Receipts</option><option value="bank_statement">Bank statements</option><option value="credit_card_statement">Credit cards</option><option value="invoice">Invoices</option><option value="tax_document">Tax documents</option><option value="other">Other</option></select></div></div>
               {visibleBookkeepingDocuments.length ? visibleBookkeepingDocuments.map((document) => (
                 <div className="payment-summary-row" key={document.id}>
                   <span><strong>{document.original_filename}</strong><br /><small>{document.document_type} · {document.processing_status}</small></span>
                   <span className="button-row">
                     <button type="button" className="ghost-button" disabled={bookkeepingBusy || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => setBookkeepingProcessDocument(document)}>Process</button>
+                    {["bank_statement", "credit_card_statement"].includes(document.document_type) && ["needs_review", "approved"].includes(document.processing_status) ? <button type="button" className="ghost-button" disabled={bookkeepingBusy} onClick={() => reconcileBookkeepingStatement(document)}>Compare receipts</button> : null}
                     {["uploaded", "queued", "failed", "rejected", "needs_review"].includes(document.processing_status) ? <button type="button" className="ghost-button" disabled={bookkeepingBusy} onClick={() => deleteBookkeepingDocument(document)}>Remove</button> : null}
                   </span>
                 </div>
@@ -13612,7 +13628,7 @@ export default function App() {
                         <TextField label="Date" type="date" value={String(draft.transaction_date || "").slice(0, 10)} onChange={(event) => set("transaction_date", event.target.value)} InputLabelProps={{ shrink: true }} />
                         <TextField label="Vendor" value={draft.vendor || ""} onChange={(event) => set("vendor", event.target.value)} />
                         <TextField label="Description" value={draft.description || ""} onChange={(event) => set("description", event.target.value)} />
-                        <TextField select label="Category" value={draft.category || ""} onChange={async (event) => { if (event.target.value === "__add_category__") { const name = window.prompt("New expense category name:"); if (name?.trim()) { try { const result = await apiRequest("/bookkeeping/categories", { method: "POST", body: JSON.stringify({ name: name.trim(), category_type: "expense" }) }); setBookkeepingCategories((current) => [...current, result.category].sort((a, b) => a.name.localeCompare(b.name))); set("category", result.category.name); } catch (error) { setBookkeepingMessage(error.message); } } } else { set("category", event.target.value); } }} SelectProps={{ native: true }}><option value="">Select category</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}<option value="__add_category__">＋ Add category…</option></TextField>
+                        <label className="bookkeeping-category-field">Category<select className="bookkeeping-category-select" value={draft.category || ""} onChange={async (event) => { if (event.target.value === "__add_category__") { const name = window.prompt("New expense category name:"); if (name?.trim()) { try { const result = await apiRequest("/bookkeeping/categories", { method: "POST", body: JSON.stringify({ name: name.trim(), category_type: "expense" }) }); setBookkeepingCategories((current) => [...current, result.category].sort((a, b) => a.name.localeCompare(b.name))); set("category", result.category.name); } catch (error) { setBookkeepingMessage(error.message); } } } else { set("category", event.target.value); } }}><option value="">Select category</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}<option value="__add_category__">＋ Add category…</option></select></label>
                         <TextField label="Subtotal" type="number" value={draft.subtotal ?? ""} onChange={(event) => set("subtotal", event.target.value)} />
                         <TextField label="Tax" type="number" value={draft.tax ?? ""} onChange={(event) => set("tax", event.target.value)} />
                         <TextField label="Total" type="number" value={draft.total ?? ""} onChange={(event) => set("total", event.target.value)} />

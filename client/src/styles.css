@@ -3302,6 +3302,24 @@ select option {
 
 .bookkeeping-review-card p { margin: .35rem 0; }
 
+.bookkeeping-category-field {
+  display: grid;
+  gap: .35rem;
+  color: var(--admin-pine);
+  font-size: .78rem;
+  font-weight: 800;
+}
+
+.bookkeeping-category-select {
+  min-height: 56px;
+  padding: .75rem;
+  border: 1px solid rgba(18, 63, 52, 0.25);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--admin-pine);
+  font: inherit;
+}
+
 .admin-shell .app-header.compact {
   padding: 16px 22px;
   box-shadow: 0 16px 30px rgba(23, 55, 47, 0.1);
@@ -3595,6 +3613,7 @@ select option {
 }
 
 .admin-shell .modal-backdrop {
+  z-index: 1000;
   background: rgba(16, 29, 24, 0.5);
   backdrop-filter: blur(8px);
 }

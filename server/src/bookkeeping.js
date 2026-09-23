@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from "multer";
 import OpenAI from "openai";
@@ -40,6 +40,27 @@ function normalizeTransactionType(value) {
   return aliases[normalized] || ["income", "expense", "transfer", "refund", "adjustment"].includes(normalized)
     ? (aliases[normalized] || normalized)
     : "expense";
+}
+
+function normalizedWords(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((word) => word.length > 2);
+}
+
+function daysBetween(left, right) {
+  if (!left || !right) return 999;
+  return Math.abs((new Date(left).getTime() - new Date(right).getTime()) / 86400000);
+}
+
+function vendorSimilarity(left, right) {
+  const a = new Set(normalizedWords(left));
+  const b = new Set(normalizedWords(right));
+  if (!a.size || !b.size) return 0;
+  return [...a].filter((word) => b.has(word)).length / Math.max(a.size, b.size);
+}
+
+function safeFilenamePart(value, fallback) {
+  const part = String(value || fallback).trim().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return part || fallback;
 }
 
 async function extractDocument(file, note = "") {
@@ -137,13 +158,21 @@ export function registerBookkeepingRoutes(app, { pool }) {
       const chunks = [];
       for await (const chunk of storageObject.Body) chunks.push(chunk);
       const extracted = await extractDocument({ buffer: Buffer.concat(chunks), mimetype: document.mime_type, originalname: document.original_filename }, document.metadata?.note || "");
+      const firstTransaction = Array.isArray(extracted.transactions) ? extracted.transactions[0] : null;
+      const extension = document.original_filename.includes(".") ? document.original_filename.slice(document.original_filename.lastIndexOf(".")) : "";
+      const renamedFilename = `${safeFilenamePart(extracted.documentType, "document")}-${safeFilenamePart(firstTransaction?.vendor, "unknown-vendor")}-${safeFilenamePart(firstTransaction?.transactionDate, new Date().toISOString().slice(0, 10))}${extension}`;
+      const renamedKey = `${document.storage_key.slice(0, document.storage_key.lastIndexOf("/") + 1)}${document.id}-${renamedFilename}`;
+      if (renamedKey !== document.storage_key) {
+        await storage.send(new CopyObjectCommand({ Bucket: bucket, CopySource: `${bucket}/${document.storage_key}`, Key: renamedKey, ContentType: document.mime_type, MetadataDirective: "REPLACE" }));
+        await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: document.storage_key }));
+      }
       await client.query("BEGIN");
       await client.query("INSERT INTO bookkeeping_extractions (document_id, model, extracted_json, confidence) VALUES ($1,$2,$3,$4)", [document.id, process.env.OPENAI_BOOKKEEPING_MODEL || "gpt-5", extracted, extracted.confidence || null]);
       for (const item of Array.isArray(extracted.transactions) ? extracted.transactions : []) {
         const tx = await client.query(`INSERT INTO bookkeeping_transactions (document_id, uploaded_by_admin_user_id, transaction_date, vendor, description, subtotal, tax, total, currency, category, payment_account, transaction_type, ai_confidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`, [document.id, req.adminUser.id, item.transactionDate || null, item.vendor || null, item.description || null, item.subtotal ?? null, item.tax ?? null, item.total ?? 0, item.currency || "USD", item.category || null, item.paymentAccount || null, normalizeTransactionType(item.transactionType), item.confidence || extracted.confidence || null]);
         for (const line of Array.isArray(item.lineItems) ? item.lineItems : []) await client.query("INSERT INTO bookkeeping_line_items (transaction_id, description, quantity, unit_price, amount, category) VALUES ($1,$2,$3,$4,$5,$6)", [tx.rows[0].id, line.description || "Item", line.quantity ?? null, line.unitPrice ?? null, line.amount ?? 0, line.category || null]);
       }
-      await client.query("UPDATE bookkeeping_documents SET document_type=$2, processing_status='needs_review', processed_at=NOW(), error_message=NULL WHERE id=$1", [document.id, extracted.documentType || "other"]);
+      await client.query("UPDATE bookkeeping_documents SET original_filename=$2, storage_key=$3, document_type=$4, processing_status='needs_review', processed_at=NOW(), error_message=NULL WHERE id=$1", [document.id, renamedFilename, renamedKey, extracted.documentType || "other"]);
       await client.query("COMMIT");
       return res.json({ extracted });
     } catch (error) {
@@ -161,11 +190,47 @@ export function registerBookkeepingRoutes(app, { pool }) {
     return res.json({ transactions: result.rows });
   });
 
+  app.post("/api/bookkeeping/documents/:id/reconcile", async (req, res) => {
+    const statement = await pool.query("SELECT id, document_type FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
+    if (!statement.rowCount) return res.status(404).json({ message: "Statement document not found." });
+    if (!["bank_statement", "credit_card_statement"].includes(statement.rows[0].document_type)) return res.status(400).json({ message: "Only bank and credit-card statements can be reconciled." });
+    const statementTransactions = await pool.query("SELECT * FROM bookkeeping_transactions WHERE document_id = $1 ORDER BY transaction_date, id", [req.params.id]);
+    const receiptTransactions = await pool.query(`SELECT t.*, d.original_filename AS source_filename FROM bookkeeping_transactions t JOIN bookkeeping_documents d ON d.id = t.document_id WHERE d.document_type IN ('receipt', 'invoice') AND t.document_id <> $1 AND t.status <> 'void'`, [req.params.id]);
+    const usedReceipts = new Set();
+    const matches = [];
+    for (const bankTransaction of statementTransactions.rows) {
+      let best = null;
+      for (const receipt of receiptTransactions.rows) {
+        if (usedReceipts.has(receipt.id)) continue;
+        const amountDifference = Math.abs(Number(bankTransaction.total || 0) - Number(receipt.total || 0));
+        const dateDistance = daysBetween(bankTransaction.transaction_date, receipt.transaction_date);
+        const vendorScore = vendorSimilarity(bankTransaction.vendor, receipt.vendor);
+        const amountScore = amountDifference <= 0.01 ? 1 : 0;
+        const dateScore = dateDistance <= 3 ? 1 : 0;
+        const score = amountScore * 0.6 + dateScore * 0.2 + vendorScore * 0.2;
+        if (!best || score > best.score) best = { receipt, score, amountDifference, dateDistance, vendorScore };
+      }
+      if (best && best.score >= 0.8) {
+        usedReceipts.add(best.receipt.id);
+        matches.push({ statementTransaction: bankTransaction, receiptTransaction: best.receipt, status: "matched", score: best.score, details: best });
+      } else {
+        matches.push({ statementTransaction: bankTransaction, receiptTransaction: null, status: best && best.score >= 0.4 ? "possible_match" : "unmatched_statement", score: best?.score || 0, details: best || {} });
+      }
+    }
+    const unmatchedReceipts = receiptTransactions.rows.filter((receipt) => !usedReceipts.has(receipt.id));
+    const run = await pool.query("INSERT INTO bookkeeping_reconciliation_runs (statement_document_id, created_by_admin_user_id, summary_json) VALUES ($1,$2,$3) RETURNING id", [req.params.id, req.adminUser.id, JSON.stringify({ matched: matches.filter((item) => item.status === "matched").length, possible: matches.filter((item) => item.status === "possible_match").length, unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement").length, unmatchedReceipts: unmatchedReceipts.length })]);
+    for (const match of matches) await pool.query("INSERT INTO bookkeeping_reconciliation_matches (run_id, statement_transaction_id, receipt_transaction_id, match_status, match_score, details) VALUES ($1,$2,$3,$4,$5,$6)", [run.rows[0].id, match.statementTransaction.id, match.receiptTransaction?.id || null, match.status, match.score, JSON.stringify({ amountDifference: match.details.amountDifference, dateDistance: match.details.dateDistance, vendorScore: match.details.vendorScore })]);
+    return res.json({ runId: run.rows[0].id, matched: matches.filter((item) => item.status === "matched"), possibleMatches: matches.filter((item) => item.status === "possible_match"), unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement"), unmatchedReceipts });
+  });
+
   app.patch("/api/bookkeeping/transactions/:id", async (req, res) => {
     const fields = ["transaction_date", "vendor", "description", "subtotal", "tax", "total", "category", "payment_account", "notes", "status"];
     const values = fields.map((field) => req.body[field]);
     const result = await pool.query(`UPDATE bookkeeping_transactions SET transaction_date=$1,vendor=$2,description=$3,subtotal=$4,tax=$5,total=$6,category=$7,payment_account=$8,notes=$9,status=COALESCE($10,status),approved_by_admin_user_id=CASE WHEN $10='approved' THEN $11 ELSE approved_by_admin_user_id END,approved_at=CASE WHEN $10='approved' THEN NOW() ELSE approved_at END WHERE id=$12 RETURNING *`, [...values, req.adminUser.id, req.params.id]);
     if (!result.rowCount) return res.status(404).json({ message: "Transaction not found." });
+    if (req.body.status === "approved") {
+      await pool.query("UPDATE bookkeeping_documents SET processing_status='approved' WHERE id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1) AND NOT EXISTS (SELECT 1 FROM bookkeeping_transactions WHERE document_id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1) AND status = 'pending')", [req.params.id]);
+    }
     return res.json({ transaction: result.rows[0] });
   });
 
