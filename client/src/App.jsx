@@ -13857,25 +13857,6 @@ export default function App() {
                               </div>
                             ))}
                           </details>
-                          <div className="admin-text-history-footer">
-                            <span>Status: {message.status || "unknown"}</span>
-                            <button
-                              type="button"
-                              className="text-button"
-                              onClick={() => {
-                                setTextMessageForm({
-                                  to: formatPhoneNumber(guestNumber),
-                                  body: "",
-                                });
-                                window.requestAnimationFrame(() =>
-                                  document
-                                    .querySelector(".admin-text-composer textarea")
-                                    ?.focus()
-                                );
-                              }}>
-                              Message this guest
-                            </button>
-                          </div>
                         </article>
                       );
                     })}
@@ -13883,6 +13864,10 @@ export default function App() {
                 ) : (
                   <p className="muted">No saved messages yet. Send a text or sync recent Twilio history.</p>
                 )}
+                {selectedConversation ? <form className="admin-inline-reply" onSubmit={sendTextMessage}>
+                  <textarea rows="1" maxLength="1500" placeholder="iMessage" value={textMessageForm.to === formatPhoneNumber(selectedConversation.number) ? textMessageForm.body : ""} onChange={event => setTextMessageForm({ to: formatPhoneNumber(selectedConversation.number), body: event.target.value })} />
+                  <button type="submit" className="primary-button" disabled={isSendingTextMessage || !textMessageForm.body.trim() || isTextMessagingConfigured === false}>{isSendingTextMessage ? "Sending…" : "Send"}</button>
+                </form> : null}
                 {hasMoreTextMessages ? <button type="button" className="text-button" disabled={isLoadingTextMessages} onClick={() => loadTextMessageHistory(true)}>Load older messages</button> : null}
               </section>
             </div>

@@ -6398,6 +6398,9 @@ select option {
 .admin-message-stay-info { display: grid; gap: 8px; margin-bottom: 14px; padding: 13px 15px; border-radius: 14px; background: #e6f0e7; }
 .admin-message-stay-info div { display: grid; gap: 2px; font-size: .82rem; }
 .admin-message-stay-info span { color: #5f7168; }
+.admin-inline-reply { display: flex; align-items: end; gap: 10px; padding: 12px 20px 16px; border-top: 1px solid rgba(18,63,52,.1); background: rgba(255,255,255,.95); }
+.admin-inline-reply textarea { flex: 1; min-height: 42px; max-height: 130px; resize: vertical; border-radius: 22px; padding: 10px 15px; }
+.admin-inline-reply .primary-button { min-height: 42px; padding: 10px 16px; border-radius: 22px; }
 
 @media (min-width: 760px) {
   .admin-text-history { display: grid; grid-template-columns: minmax(240px, .78fr) minmax(0, 1.4fr); grid-template-rows: auto auto 1fr auto; gap: 0 20px; padding: 0; overflow: hidden; background: #fff; }
@@ -6415,6 +6418,7 @@ select option {
   .admin-text-history-item .admin-text-history-meta, .admin-text-history-item .admin-text-history-footer, .admin-text-history-item details { font-size: .7rem; }
   .admin-text-history-item.outbound .admin-text-history-meta, .admin-text-history-item.outbound .admin-text-history-footer, .admin-text-history-item.outbound .muted { color: rgba(255,255,255,.8); }
   .admin-text-history-item .sms-booking-details { display: none; }
+  .admin-inline-reply { grid-column: 2; grid-row: 5; }
   .admin-text-composer.is-open { position: fixed; inset: 50% auto auto 50%; z-index: 30; display: grid; width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; transform: translate(-50%, -50%); box-shadow: 0 20px 60px rgba(18,45,38,.3); }
 }
 
@@ -6426,6 +6430,7 @@ select option {
   .admin-message-back { display: inline-block; }
   .admin-message-thread-header { margin-top: 0; }
   .admin-message-thread-header .ghost-button { padding: 8px 10px; font-size: .72rem; }
+  .admin-inline-reply { padding: 10px 0 0; }
   .admin-text-composer.is-open { position: fixed; inset: 12px; z-index: 30; overflow: auto; box-shadow: 0 20px 60px rgba(18,45,38,.3); }
 }
 
