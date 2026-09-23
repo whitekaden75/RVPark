@@ -112,11 +112,12 @@ export function registerBookkeepingRoutes(app, { pool }) {
   app.delete("/api/bookkeeping/documents/:id", async (req, res) => {
     const result = await pool.query("SELECT storage_key, processing_status FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
     if (!result.rowCount) return res.status(404).json({ message: "Document not found." });
-    if (!["uploaded", "queued", "failed", "rejected"].includes(result.rows[0].processing_status)) {
+    if (!["uploaded", "queued", "failed", "rejected", "needs_review"].includes(result.rows[0].processing_status)) {
       return res.status(409).json({ message: "Processed documents cannot be deleted from here." });
     }
     if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
     await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: result.rows[0].storage_key }));
+    await pool.query("DELETE FROM bookkeeping_transactions WHERE document_id = $1 AND status = 'pending'", [req.params.id]);
     await pool.query("DELETE FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
     return res.status(204).end();
   });
@@ -166,6 +167,12 @@ export function registerBookkeepingRoutes(app, { pool }) {
     const result = await pool.query(`UPDATE bookkeeping_transactions SET transaction_date=$1,vendor=$2,description=$3,subtotal=$4,tax=$5,total=$6,category=$7,payment_account=$8,notes=$9,status=COALESCE($10,status),approved_by_admin_user_id=CASE WHEN $10='approved' THEN $11 ELSE approved_by_admin_user_id END,approved_at=CASE WHEN $10='approved' THEN NOW() ELSE approved_at END WHERE id=$12 RETURNING *`, [...values, req.adminUser.id, req.params.id]);
     if (!result.rowCount) return res.status(404).json({ message: "Transaction not found." });
     return res.json({ transaction: result.rows[0] });
+  });
+
+  app.delete("/api/bookkeeping/transactions/:id", async (req, res) => {
+    const result = await pool.query("DELETE FROM bookkeeping_transactions WHERE id = $1 RETURNING id", [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ message: "Transaction not found." });
+    return res.status(204).end();
   });
 
   app.get("/api/bookkeeping/reports/profit-loss", async (req, res) => {

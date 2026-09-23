@@ -34,6 +34,12 @@ const adminClientId =
     ? crypto.randomUUID()
     : `admin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const openEndedStayDate = "9999-12-31";
+const defaultBookkeepingCategories = [
+  "Revenue", "Cost of Goods Sold", "Advertising & Marketing", "Bank & Payment Fees",
+  "Insurance", "Interest Expense", "Legal & Professional Services", "Office & Administrative",
+  "Payroll & Benefits", "Repairs & Maintenance", "Rent & Lease", "Supplies",
+  "Taxes & Licenses", "Travel & Meals", "Utilities", "Vehicle & Fuel", "Other Expense"
+];
 const cardElementOptions = {
   style: {
     base: {
@@ -6111,7 +6117,7 @@ export default function App() {
       label: "Reservations",
       pages: [
         { key: "availability", label: "Availability" },
-        { key: "reservation", label: "Reservations" },
+        { key: "reservation", label: "Manage reservations" },
         { key: "schedule", label: "Schedule" },
         { key: "history", label: "History" },
       ],
@@ -6128,6 +6134,7 @@ export default function App() {
   ];
   const stripeReturnState = getStripeReturnState();
   const [isUnlocked, setIsUnlocked] = useState(false);
+  const [isMobileAdminNav, setIsMobileAdminNav] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches);
   const [isCheckingAdminSession, setIsCheckingAdminSession] = useState(false);
   const [adminLoginForm, setAdminLoginForm] = useState({
     username: "",
@@ -6148,6 +6155,14 @@ export default function App() {
   const [bookkeepingDocumentStatusFilter, setBookkeepingDocumentStatusFilter] = useState("all");
   const [bookkeepingDocumentTypeFilter, setBookkeepingDocumentTypeFilter] = useState("all");
   const [isSigningInAdmin, setIsSigningInAdmin] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 900px)");
+    const update = () => setIsMobileAdminNav(mediaQuery.matches);
+    update();
+    mediaQuery.addEventListener?.("change", update);
+    return () => mediaQuery.removeEventListener?.("change", update);
+  }, []);
   const [bookingNotificationStatus, setBookingNotificationStatus] =
     useState("checking");
   const [bookingNotificationMessage, setBookingNotificationMessage] =
@@ -6646,11 +6661,11 @@ export default function App() {
           const [documents, transactions, categories] = await Promise.all([
             apiRequest("/bookkeeping/documents"),
             apiRequest(`/bookkeeping/transactions?status=${encodeURIComponent(bookkeepingTransactionFilter)}`),
-            apiRequest("/bookkeeping/categories"),
+            apiRequest("/bookkeeping/categories").catch(() => ({ categories: [] })),
           ]);
           setBookkeepingDocuments(documents.documents || []);
           setBookkeepingTransactions(transactions.transactions || []);
-          setBookkeepingCategories(categories.categories || []);
+          setBookkeepingCategories(categories.categories?.length ? categories.categories : defaultBookkeepingCategories.map((name, index) => ({ id: `default-${index}`, name, category_type: name === "Revenue" ? "income" : "expense" })));
         }
       } catch (error) {
         setErrorMessage(error.message);
@@ -10899,7 +10914,7 @@ export default function App() {
               Switch between pages from the top navigation.
             </Typography>
           </div>
-          <div className="admin-navigation-row" aria-label="Primary">
+          {!isMobileAdminNav ? <div className="admin-navigation-row" aria-label="Primary">
             <button
               type="button"
               className={`admin-navigation-tab ${activePage === "checkin" ? "active" : ""}`}
@@ -10910,7 +10925,7 @@ export default function App() {
                 <select
                   value={dropdown.pages.some((page) => page.key === activePage) ? activePage : ""}
                   onChange={(event) => event.target.value && setActivePage(event.target.value)}>
-                  <option value="">{dropdown.label}</option>
+                  <option value="" aria-label={dropdown.label}>{dropdown.label}</option>
                   {dropdown.pages.map((page) => (
                     <option key={page.key} value={page.key}>{page.label}</option>
                   ))}
@@ -10921,8 +10936,8 @@ export default function App() {
               type="button"
               className={`admin-navigation-tab ${activePage === "messages" ? "active" : ""}`}
               onClick={() => setActivePage("messages")}>Text Messages</button>
-          </div>
-          {isAdminMobileMenuOpen ? (
+          </div> : null}
+          {isMobileAdminNav && isAdminMobileMenuOpen ? (
             <div className="admin-mobile-menu-panel" id="admin-mobile-menu">
               {appPages.map((page) => (
                 <button
@@ -10945,7 +10960,7 @@ export default function App() {
                         setIsAdminMobileMenuOpen(false);
                       }
                     }}>
-                    <option value="">{dropdown.label}</option>
+                    <option value="" aria-label={dropdown.label}>{dropdown.label}</option>
                     {dropdown.pages.map((page) => (
                       <option key={page.key} value={page.key}>{page.label}</option>
                     ))}
@@ -13558,7 +13573,7 @@ export default function App() {
                   <span><strong>{document.original_filename}</strong><br /><small>{document.document_type} · {document.processing_status}</small></span>
                   <span className="button-row">
                     <button type="button" className="ghost-button" disabled={bookkeepingBusy || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => setBookkeepingProcessDocument(document)}>Process</button>
-                    {["uploaded", "queued", "failed", "rejected"].includes(document.processing_status) ? <button type="button" className="ghost-button" disabled={bookkeepingBusy} onClick={() => deleteBookkeepingDocument(document)}>Remove</button> : null}
+                    {["uploaded", "queued", "failed", "rejected", "needs_review"].includes(document.processing_status) ? <button type="button" className="ghost-button" disabled={bookkeepingBusy} onClick={() => deleteBookkeepingDocument(document)}>Remove</button> : null}
                   </span>
                 </div>
               )) : <p className="muted">No bookkeeping documents uploaded yet.</p>}
@@ -13577,7 +13592,7 @@ export default function App() {
                         <TextField label="Date" type="date" value={String(draft.transaction_date || "").slice(0, 10)} onChange={(event) => set("transaction_date", event.target.value)} InputLabelProps={{ shrink: true }} />
                         <TextField label="Vendor" value={draft.vendor || ""} onChange={(event) => set("vendor", event.target.value)} />
                         <TextField label="Description" value={draft.description || ""} onChange={(event) => set("description", event.target.value)} />
-                        <TextField select label="Category" value={draft.category || ""} onChange={(event) => set("category", event.target.value)} SelectProps={{ native: true }}><option value="">Select category</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}</TextField>
+                        <TextField select label="Category" value={draft.category || ""} onChange={async (event) => { if (event.target.value === "__add_category__") { const name = window.prompt("New expense category name:"); if (name?.trim()) { try { const result = await apiRequest("/bookkeeping/categories", { method: "POST", body: JSON.stringify({ name: name.trim(), category_type: "expense" }) }); setBookkeepingCategories((current) => [...current, result.category].sort((a, b) => a.name.localeCompare(b.name))); set("category", result.category.name); } catch (error) { setBookkeepingMessage(error.message); } } } else { set("category", event.target.value); } }} SelectProps={{ native: true }}><option value="">Select category</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}<option value="__add_category__">＋ Add category…</option></TextField>
                         <TextField label="Subtotal" type="number" value={draft.subtotal ?? ""} onChange={(event) => set("subtotal", event.target.value)} />
                         <TextField label="Tax" type="number" value={draft.tax ?? ""} onChange={(event) => set("tax", event.target.value)} />
                         <TextField label="Total" type="number" value={draft.total ?? ""} onChange={(event) => set("total", event.target.value)} />
@@ -13586,8 +13601,7 @@ export default function App() {
                       <p><strong>Source file:</strong> {transaction.source_filename || "Not available"}</p>
                       <button type="button" className="ghost-button" onClick={() => viewBookkeepingSource(transaction)}>View original file</button>
                       <p><strong>AI confidence:</strong> {transaction.ai_confidence == null ? "Not provided" : `${Math.round(Number(transaction.ai_confidence) * 100)}%`}</p>
-                      <div className="button-row"><TextField size="small" label="Add category" value={bookkeepingNewCategory} onChange={(event) => setBookkeepingNewCategory(event.target.value)} /><button type="button" className="ghost-button" onClick={addBookkeepingCategory}>Add category</button></div>
-                      <div className="button-row"><button type="button" className="ghost-button" onClick={() => saveBookkeepingTransaction(transaction)}>Save changes</button>{transaction.status === "pending" ? <button type="button" className="primary-button" onClick={() => saveBookkeepingTransaction(transaction, "approved")}>Save and approve</button> : <span className="status-badge">Approved</span>}</div>
+                      <div className="button-row"><button type="button" className="ghost-button" onClick={() => saveBookkeepingTransaction(transaction)}>Save changes</button>{transaction.status === "pending" ? <button type="button" className="primary-button" onClick={() => saveBookkeepingTransaction(transaction, "approved")}>Save and approve</button> : <span className="status-badge">Approved</span>}<button type="button" className="ghost-button" onClick={async () => { if (!window.confirm("Delete this transaction?")) return; await apiRequest(`/bookkeeping/transactions/${transaction.id}`, { method: "DELETE" }); setBookkeepingTransactions((current) => current.filter((item) => item.id !== transaction.id)); setBookkeepingReviewId(null); setBookkeepingMessage("Transaction deleted."); }}>Delete</button></div>
                     </>; })()}
                   </div> : null}
                 </article>
