@@ -9485,7 +9485,7 @@ app.delete("/api/reservations/:id", async (req, res) => {
   }
 });
 
-registerBookkeepingRoutes(app, { pool });
+registerBookkeepingRoutes(app, { pool, notify: broadcastAdminDataChange });
 
 app.listen(port, () => {
   console.log(`RV Park server listening on port ${port}`);

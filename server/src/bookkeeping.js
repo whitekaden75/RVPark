@@ -4,6 +4,7 @@ import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, PutObjectComm
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from "multer";
 import OpenAI from "openai";
+import { extractBookkeepingDocument } from "./bookkeeping-extraction.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -22,12 +23,6 @@ function createStorageClient() {
     forcePathStyle: true,
     credentials: { accessKeyId: process.env.RAILWAY_BUCKET_ACCESS_KEY, secretAccessKey: process.env.RAILWAY_BUCKET_SECRET_KEY }
   });
-}
-
-function jsonObject(text) {
-  const match = String(text || "").match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("AI did not return structured bookkeeping data.");
-  return JSON.parse(match[0]);
 }
 
 function normalizeTransactionType(value) {
@@ -63,24 +58,16 @@ function safeFilenamePart(value, fallback) {
   return part || fallback;
 }
 
-async function extractDocument(file, note = "") {
+async function extractDocument(file, note = "", categories = []) {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const base64 = file.buffer.toString("base64");
-  const input = file.mimetype === "application/pdf" || file.mimetype === "text/csv"
-    ? { type: "input_file", filename: file.originalname, file_data: `data:${file.mimetype};base64,${base64}` }
-    : { type: "input_image", detail: "high", image_url: `data:${file.mimetype};base64,${base64}` };
-      const response = await client.responses.create({
+  return extractBookkeepingDocument(client, file, {
     model: process.env.OPENAI_BOOKKEEPING_MODEL || "gpt-5",
-    input: [{ role: "user", content: [
-      { type: "input_text", text: `Extract bookkeeping data. Return JSON only with documentType, transactions (array), and confidence. Each transaction must include transactionDate, vendor, description, subtotal, tax, total, currency, category, paymentAccount, transactionType, and lineItems. transactionType MUST be exactly one of: income, expense, transfer, refund, adjustment. Use null when unknown; never invent values. Additional information from the admin: ${String(note || "No additional information provided.")}` },
-      input
-    ] }]
+    note, categories,
   });
-  return jsonObject(response.output_text);
 }
 
-export function registerBookkeepingRoutes(app, { pool }) {
+export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   const bucket = process.env.RAILWAY_BUCKET_NAME || process.env.RAILWAY_BUCKET;
   const storage = createStorageClient();
 
@@ -95,6 +82,7 @@ export function registerBookkeepingRoutes(app, { pool }) {
     if (!name) return res.status(400).json({ message: "Category name is required." });
     try {
       const result = await pool.query("INSERT INTO bookkeeping_categories (name, category_type) VALUES ($1, $2) RETURNING id, name, category_type", [name, categoryType]);
+      notify({ reason: "bookkeeping_changed" });
       return res.status(201).json({ category: result.rows[0] });
     } catch (error) {
       if (error.code === "23505") return res.status(409).json({ message: "That category already exists." });
@@ -114,6 +102,7 @@ export function registerBookkeepingRoutes(app, { pool }) {
     await storage.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: req.file.buffer, ContentType: req.file.mimetype }));
     const note = String(req.body?.note || "").trim().slice(0, 4000);
     const result = await pool.query(`INSERT INTO bookkeeping_documents (id, uploaded_by_admin_user_id, original_filename, mime_type, file_size_bytes, storage_key, sha256_hash, document_type, processing_status, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,'other','queued',$8) RETURNING *`, [id, req.adminUser.id, req.file.originalname, req.file.mimetype, req.file.size, key, hash, JSON.stringify({ note })]);
+    notify({ reason: "bookkeeping_changed" });
     return res.status(201).json({ document: result.rows[0] });
   });
 
@@ -140,15 +129,22 @@ export function registerBookkeepingRoutes(app, { pool }) {
     await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: result.rows[0].storage_key }));
     await pool.query("DELETE FROM bookkeeping_transactions WHERE document_id = $1 AND status = 'pending'", [req.params.id]);
     await pool.query("DELETE FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
+    notify({ reason: "bookkeeping_changed" });
     return res.status(204).end();
   });
 
   app.post("/api/bookkeeping/documents/:id/process", async (req, res) => {
+    if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
     const client = await pool.connect();
+    let claimed = false;
     try {
-      const documentResult = await client.query("SELECT * FROM bookkeeping_documents WHERE id = $1 FOR UPDATE", [req.params.id]);
+      const documentResult = await client.query("SELECT * FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
       if (!documentResult.rowCount) return res.status(404).json({ message: "Document not found." });
       const document = documentResult.rows[0];
+      const claim = await client.query("UPDATE bookkeeping_documents SET processing_status='processing', error_message=NULL WHERE id=$1 AND processing_status IN ('uploaded','queued','failed') RETURNING id", [document.id]);
+      if (!claim.rowCount) return res.status(409).json({ message: "This document is already processing or has been processed." });
+      claimed = true;
+      notify({ reason: "bookkeeping_changed" });
       const adminNote = String(req.body?.note || document.metadata?.note || "").trim().slice(0, 4000);
       if (adminNote && JSON.stringify(document.metadata?.note || "") !== JSON.stringify(adminNote)) {
         await client.query("UPDATE bookkeeping_documents SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{note}', to_jsonb($2::text)) WHERE id = $1", [document.id, adminNote]);
@@ -157,7 +153,8 @@ export function registerBookkeepingRoutes(app, { pool }) {
       const storageObject = await storage.send(new GetObjectCommand({ Bucket: bucket, Key: document.storage_key }));
       const chunks = [];
       for await (const chunk of storageObject.Body) chunks.push(chunk);
-      const extracted = await extractDocument({ buffer: Buffer.concat(chunks), mimetype: document.mime_type, originalname: document.original_filename }, document.metadata?.note || "");
+      const categories = await client.query("SELECT name, category_type FROM bookkeeping_categories WHERE is_active = TRUE ORDER BY category_type, name");
+      const extracted = await extractDocument({ buffer: Buffer.concat(chunks), mimetype: document.mime_type, originalname: document.original_filename }, document.metadata?.note || "", categories.rows);
       const firstTransaction = Array.isArray(extracted.transactions) ? extracted.transactions[0] : null;
       const extension = document.original_filename.includes(".") ? document.original_filename.slice(document.original_filename.lastIndexOf(".")) : "";
       const renamedFilename = `${safeFilenamePart(extracted.documentType, "document")}-${safeFilenamePart(firstTransaction?.vendor, "unknown-vendor")}-${safeFilenamePart(firstTransaction?.transactionDate, new Date().toISOString().slice(0, 10))}${extension}`;
@@ -174,10 +171,14 @@ export function registerBookkeepingRoutes(app, { pool }) {
       }
       await client.query("UPDATE bookkeeping_documents SET original_filename=$2, storage_key=$3, document_type=$4, processing_status='needs_review', processed_at=NOW(), error_message=NULL WHERE id=$1", [document.id, renamedFilename, renamedKey, extracted.documentType || "other"]);
       await client.query("COMMIT");
+      notify({ reason: "bookkeeping_changed" });
       return res.json({ extracted });
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
-      await pool.query("UPDATE bookkeeping_documents SET processing_status='failed', error_message=$2 WHERE id=$1", [req.params.id, error.message]);
+      if (claimed) {
+        await pool.query("UPDATE bookkeeping_documents SET processing_status='failed', error_message=$2 WHERE id=$1", [req.params.id, error.message]);
+        notify({ reason: "bookkeeping_changed" });
+      }
       return res.status(500).json({ message: error.message });
     } finally { client.release(); }
   });
@@ -220,6 +221,7 @@ export function registerBookkeepingRoutes(app, { pool }) {
     const unmatchedReceipts = receiptTransactions.rows.filter((receipt) => !usedReceipts.has(receipt.id));
     const run = await pool.query("INSERT INTO bookkeeping_reconciliation_runs (statement_document_id, created_by_admin_user_id, summary_json) VALUES ($1,$2,$3) RETURNING id", [req.params.id, req.adminUser.id, JSON.stringify({ matched: matches.filter((item) => item.status === "matched").length, possible: matches.filter((item) => item.status === "possible_match").length, unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement").length, unmatchedReceipts: unmatchedReceipts.length })]);
     for (const match of matches) await pool.query("INSERT INTO bookkeeping_reconciliation_matches (run_id, statement_transaction_id, receipt_transaction_id, match_status, match_score, details) VALUES ($1,$2,$3,$4,$5,$6)", [run.rows[0].id, match.statementTransaction.id, match.receiptTransaction?.id || null, match.status, match.score, JSON.stringify({ amountDifference: match.details.amountDifference, dateDistance: match.details.dateDistance, vendorScore: match.details.vendorScore })]);
+    notify({ reason: "bookkeeping_changed" });
     return res.json({ runId: run.rows[0].id, matched: matches.filter((item) => item.status === "matched"), possibleMatches: matches.filter((item) => item.status === "possible_match"), unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement"), unmatchedReceipts });
   });
 
@@ -231,12 +233,14 @@ export function registerBookkeepingRoutes(app, { pool }) {
     if (req.body.status === "approved") {
       await pool.query("UPDATE bookkeeping_documents SET processing_status='approved' WHERE id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1) AND NOT EXISTS (SELECT 1 FROM bookkeeping_transactions WHERE document_id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1) AND status = 'pending')", [req.params.id]);
     }
+    notify({ reason: "bookkeeping_changed" });
     return res.json({ transaction: result.rows[0] });
   });
 
   app.delete("/api/bookkeeping/transactions/:id", async (req, res) => {
     const result = await pool.query("DELETE FROM bookkeeping_transactions WHERE id = $1 RETURNING id", [req.params.id]);
     if (!result.rowCount) return res.status(404).json({ message: "Transaction not found." });
+    notify({ reason: "bookkeeping_changed" });
     return res.status(204).end();
   });
 

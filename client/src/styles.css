@@ -3301,6 +3301,24 @@ select option {
 }
 
 .bookkeeping-review-card p { margin: .35rem 0; }
+.bookkeeping-live-status { margin: 0 0 12px; color: #61736a; font-size: .8rem; }
+
+.bookkeeping-page-card, .bookkeeping-page-card .result-panel,
+.bookkeeping-page-card .field-grid > *, .bookkeeping-page-card .MuiFormControl-root { min-width: 0; }
+.bookkeeping-page-card .page-section-header > div { min-width: 0; }
+.bookkeeping-page-card .result-panel { overflow-wrap: anywhere; }
+.bookkeeping-transaction-summary { display: flex; align-items: start; justify-content: space-between; gap: 14px; width: 100%; min-width: 0; min-height: 48px; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.bookkeeping-transaction-summary > span { display: grid; gap: 5px; min-width: 0; }
+.bookkeeping-transaction-summary small { color: #61736a; font-size: .8rem; }
+.bookkeeping-transaction-amount { flex: 0 0 auto; text-align: right; }
+.bookkeeping-process-filename { overflow-wrap: anywhere; color: #61736a; }
+.bookkeeping-page-card select, .bookkeeping-page-card .MuiInputBase-input,
+.bookkeeping-process-dialog .MuiInputBase-input { font-size: 16px; }
+.bookkeeping-page-card select { min-width: 0; }
+.bookkeeping-page-card .bookkeeping-review-card { padding-inline: 0; overflow-wrap: anywhere; }
+.bookkeeping-page-card .bookkeeping-upload-actions { flex-shrink: 0; }
+.bookkeeping-page-card .bookkeeping-upload-actions label { min-height: 48px; white-space: nowrap; }
+.bookkeeping-page-card .bookkeeping-upload-actions .primary-button { color: #fff; }
 
 .bookkeeping-category-field {
   display: grid;
@@ -3358,6 +3376,7 @@ select option {
 
 @media (max-width: 900px) {
   .bookkeeping-page-card .page-section-header {
+    flex-direction: column;
     align-items: stretch;
     gap: .8rem;
   }
@@ -3380,13 +3399,15 @@ select option {
 
   .bookkeeping-document-row > .button-row,
   .bookkeeping-review-card .button-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
     flex-wrap: wrap;
   }
 
   .bookkeeping-document-row > .button-row button,
   .bookkeeping-review-card .button-row button {
-    flex: 1 1 130px;
+    flex: 0 0 auto;
     min-height: 44px;
   }
 
@@ -3422,6 +3443,22 @@ select option {
   .bookkeeping-page-card .modal-card .button-row button {
     min-height: 46px;
   }
+}
+
+@media (max-width: 600px) {
+  .admin-shell .bookkeeping-page-card .result-panel { padding: 14px 10px; }
+  .bookkeeping-page-card .page-section-header .button-row { display: grid; grid-template-columns: 1fr; width: 100%; }
+  .bookkeeping-page-card .page-section-header .bookkeeping-upload-actions { grid-template-columns: 1fr 1fr; }
+  .bookkeeping-page-card .bookkeeping-transaction-summary { flex-direction: column; gap: 8px; }
+  .bookkeeping-page-card .bookkeeping-transaction-amount { display: flex; justify-content: space-between; width: 100%; text-align: left; }
+  .bookkeeping-page-card .bookkeeping-review-card .field-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .bookkeeping-page-card .bookkeeping-review-card .button-row { grid-template-columns: minmax(0, 1fr); }
+  .bookkeeping-page-card .bookkeeping-category-select { font-size: 16px; }
+  .bookkeeping-process-dialog .MuiDialog-paper { margin: 12px; width: calc(100% - 24px); max-height: calc(100dvh - 24px); }
+  .bookkeeping-process-dialog .MuiDialogTitle-root { font-size: 1.3rem; padding: 18px 16px 8px; }
+  .bookkeeping-process-dialog .MuiDialogContent-root { padding-inline: 16px; }
+  .bookkeeping-process-dialog .MuiDialogActions-root { flex-wrap: wrap; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); }
+  .bookkeeping-process-dialog .MuiDialogActions-root button { min-height: 44px; }
 }
 
 .admin-shell .app-header.compact {
@@ -6281,201 +6318,12 @@ select option {
   background: #fffaf2;
 }
 
-.admin-text-message-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.2fr);
-  gap: 24px;
-  align-items: start;
-}
-
-.admin-text-composer,
-.admin-text-history {
-  display: grid;
-  gap: 18px;
-  border: 1px solid rgba(18, 63, 52, 0.12);
-  border-radius: 22px;
-  padding: 22px;
-  background: rgba(255, 252, 246, 0.78);
-}
-
-.admin-text-history { min-height: 620px; }
-.admin-text-message-layout { display: block; }
-.admin-text-history { width: 100%; }
-.admin-text-composer.is-hidden { display: none; }
-.admin-new-message-button { margin-left: auto; border: 0; background: transparent; color: #52645d; font-size: 1.45rem; line-height: 1; cursor: pointer; }
-
-.admin-text-composer label {
-  display: grid;
-  gap: 8px;
-  font-weight: 800;
-}
-
-.admin-text-composer textarea {
-  resize: vertical;
-}
-
-.admin-text-message-meta,
-.admin-text-history-meta,
-.admin-text-history-footer,
-.admin-text-history-heading {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.admin-text-message-meta {
-  flex-wrap: wrap;
-  color: rgba(23, 55, 47, 0.68);
-  font-size: 0.76rem;
-}
-
-.admin-text-history-heading {
-  align-items: end;
-}
-
-.admin-text-history-heading h3 {
-  margin: 3px 0 0;
-}
-
-.admin-text-history-heading > span {
-  color: rgba(23, 55, 47, 0.65);
-  font-size: 0.78rem;
-}
-
-.admin-text-history-list {
-  display: grid;
-  gap: 12px;
-  max-height: 650px;
-  overflow: auto;
-  padding-right: 4px;
-}
-.admin-text-history-list.no-selected-thread { display: none; }
-
-.admin-message-contacts {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 18px;
-  padding: 8px;
-  border: 1px solid rgba(18, 63, 52, 0.1);
-  border-radius: 18px;
-  background: #f5f7f1;
-}
-
-.admin-message-contacts-heading {
-  display: flex;
-  justify-content: space-between;
-  padding: 5px 8px;
-  color: #355449;
-  font-size: .82rem;
-  text-transform: uppercase;
-  letter-spacing: .08em;
-}
-
-.admin-message-contact {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 10px;
-  border: 0;
-  border-radius: 13px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.admin-message-contact:hover, .admin-message-contact.selected { background: #dfeee4; }
-.admin-message-avatar { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 38px; border-radius: 50%; background: #28664f; color: white; font-weight: 800; }
-.admin-message-contact-copy { display: grid; min-width: 0; flex: 1; }
-.admin-message-contact-copy strong, .admin-message-contact-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.admin-message-contact-copy small, .admin-message-contact time { color: #718078; font-size: .76rem; }
-.admin-message-contact time { white-space: nowrap; }
-.admin-message-thread-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 14px; padding: 10px 12px; border-bottom: 1px solid rgba(18,63,52,.1); }
-.admin-message-thread-header > div { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.admin-message-thread-header small { color: #718078; }
-.admin-message-back { display: none; border: 0; background: transparent; color: #28664f; font-size: 2rem; cursor: pointer; }
-.admin-message-unread-badge { display: grid; place-items: center; min-width: 22px; height: 22px; border-radius: 50%; color: white; background: #b14f3c; font-size: .72rem; }
-.admin-message-stay-info { display: grid; gap: 8px; margin-bottom: 14px; padding: 13px 15px; border-radius: 14px; background: #e6f0e7; }
-.admin-message-stay-info div { display: grid; gap: 2px; font-size: .82rem; }
-.admin-message-stay-info span { color: #5f7168; }
-.admin-inline-reply { display: flex; align-items: end; gap: 10px; padding: 12px 20px 16px; border-top: 1px solid rgba(18,63,52,.1); background: rgba(255,255,255,.95); }
-.admin-inline-reply textarea { flex: 1; min-height: 42px; max-height: 130px; resize: vertical; border-radius: 22px; padding: 10px 15px; }
-.admin-inline-reply .primary-button { min-height: 42px; padding: 10px 16px; border-radius: 22px; }
-
-@media (min-width: 760px) {
-  .admin-text-history { display: grid; grid-template-columns: minmax(240px, .78fr) minmax(0, 1.4fr); grid-template-rows: auto auto 1fr auto; gap: 0 20px; padding: 0; overflow: hidden; background: #fff; }
-  .admin-text-history-heading { grid-column: 1 / -1; padding: 20px 22px 14px; border-bottom: 1px solid rgba(18,63,52,.1); }
-  .admin-message-contacts { grid-column: 1; grid-row: 2 / 5; align-content: start; margin: 0; min-height: 0; max-height: none; overflow: auto; border: 0; border-right: 1px solid rgba(18,63,52,.1); border-radius: 0; background: #f4f5f2; }
-  .admin-message-contacts-heading { position: sticky; top: 0; z-index: 1; background: #f4f5f2; }
-  .admin-message-thread-header { grid-column: 2; grid-row: 2; margin: 0; padding: 14px 20px; }
-  .admin-message-stay-info { grid-column: 2; grid-row: 3; margin: 0 20px 10px; align-self: start; }
-  .admin-text-history-list { grid-column: 2; grid-row: 3 / 5; align-self: end; max-height: none; min-height: 0; padding: 24px 20px; overflow: auto; }
-  .admin-message-stay-info + .admin-text-history-list { grid-row: 4; }
-  .admin-text-history-item { width: fit-content; max-width: 78%; border: 0; border-radius: 20px; padding: 11px 15px; box-shadow: none; background: #e9e9ed; }
-  .admin-text-history-item.outbound { margin-left: auto; background: #1684ff; color: white; }
-  .admin-text-history-item.inbound { margin-right: auto; }
-  .admin-text-history-item p { font-size: 1rem; line-height: 1.35; }
-  .admin-text-history-item .admin-text-history-meta, .admin-text-history-item .admin-text-history-footer, .admin-text-history-item details { font-size: .7rem; }
-  .admin-text-history-item.outbound .admin-text-history-meta, .admin-text-history-item.outbound .admin-text-history-footer, .admin-text-history-item.outbound .muted { color: rgba(255,255,255,.8); }
-  .admin-text-history-item .sms-booking-details { display: none; }
-  .admin-inline-reply { grid-column: 2; grid-row: 5; }
-  .admin-text-composer.is-open { position: fixed; inset: 50% auto auto 50%; z-index: 30; display: grid; width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; transform: translate(-50%, -50%); box-shadow: 0 20px 60px rgba(18,45,38,.3); }
-}
-
-@media (max-width: 759px) {
-  .admin-text-history { padding: 14px; }
-  .admin-message-contacts.conversation-open { display: none; }
-  .admin-message-contacts:not(.conversation-open) + .admin-text-history-list,
-  .admin-text-history-list.no-selected-thread { display: none; }
-  .admin-message-back { display: inline-block; }
-  .admin-message-thread-header { margin-top: 0; }
-  .admin-message-thread-header .ghost-button { padding: 8px 10px; font-size: .72rem; }
-  .admin-inline-reply { padding: 10px 0 0; }
-  .admin-text-composer.is-open { position: fixed; inset: 12px; z-index: 30; overflow: auto; box-shadow: 0 20px 60px rgba(18,45,38,.3); }
-}
-
+.arrival-reminders { margin-bottom: 16px; }
+.arrival-reminders > summary { padding: 12px 0; cursor: pointer; font-weight: 700; min-height: 44px; }
 .arrival-message-drafts { display: grid; gap: 12px; margin-top: 14px; }
 .arrival-message-draft { display: grid; gap: 8px; padding: 14px; border: 1px solid rgba(18, 63, 52, .1); border-radius: 14px; background: rgba(255,255,255,.65); }
-.arrival-message-draft textarea { width: 100%; min-height: 150px; resize: vertical; }
-
-@media (min-width: 760px) {
-  .admin-message-contacts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); align-items: center; }
-  .admin-message-contacts-heading { grid-column: 1 / -1; }
-}
-
-.admin-text-history-item {
-  display: grid;
-  gap: 10px;
-  border: 1px solid rgba(18, 63, 52, 0.1);
-  border-left: 4px solid var(--admin-river);
-  border-radius: 16px;
-  padding: 16px;
-  background: #fff;
-}
-
-.admin-text-history-item.inbound {
-  border-left-color: var(--admin-clay);
-  background: #fff9ef;
-}
-
-.admin-text-history-item p {
-  margin: 0;
-  white-space: pre-wrap;
-  line-height: 1.55;
-}
-
-.admin-text-history-meta,
-.admin-text-history-footer {
-  align-items: center;
-  flex-wrap: wrap;
-  color: rgba(23, 55, 47, 0.66);
-  font-size: 0.75rem;
-}
-
-.admin-text-history-meta strong {
-  color: var(--admin-pine);
-  text-transform: uppercase;
-}
+.arrival-message-draft textarea { width: 100%; min-height: 150px; resize: vertical; font-size: 16px; }
+.admin-text-history-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: .8rem; color: #52675b; }
 
 .generated-payment-link-card {
   display: grid;
@@ -6663,10 +6511,6 @@ select option {
   .compact-grid,
   .site-filter-bar,
   .timeline-controls {
-    grid-template-columns: 1fr;
-  }
-
-  .admin-text-message-layout {
     grid-template-columns: 1fr;
   }
 

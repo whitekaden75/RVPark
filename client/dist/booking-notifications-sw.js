@@ -22,7 +22,30 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const destination = new URL(event.notification.data?.url || "/?admin=reservation", self.location.origin).href;
+  const requestedUrl = event.notification.data?.url || "/?admin=reservation";
+  let destinationUrl;
+
+  try {
+    destinationUrl = new URL(requestedUrl, self.location.origin);
+  } catch {
+    destinationUrl = new URL("/?admin=reservation", self.location.origin);
+  }
+
+  // Notifications can outlive a deployment, and an old server may have
+  // generated an absolute localhost URL. Keep the click inside the app that
+  // received the notification instead of sending a deployed admin to localhost.
+  if (
+    destinationUrl.hostname === "localhost" ||
+    destinationUrl.hostname === "127.0.0.1" ||
+    destinationUrl.hostname === "::1"
+  ) {
+    destinationUrl = new URL(
+      `${destinationUrl.pathname}${destinationUrl.search}${destinationUrl.hash}`,
+      self.location.origin
+    );
+  }
+
+  const destination = destinationUrl.href;
 
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {

@@ -1,10 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Alert,
   Box,
   Button,
   Container,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Paper,
   Stack,
   Tab,
@@ -20,6 +24,7 @@ import {
 } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
 import CheckInPage from "./CheckInPage.jsx";
+import MessageInbox from "./MessageInbox.jsx";
 
 const apiBaseUrl = (
   import.meta.env.VITE_API_BASE_URL ||
@@ -34,12 +39,6 @@ const adminClientId =
     ? crypto.randomUUID()
     : `admin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const openEndedStayDate = "9999-12-31";
-const defaultBookkeepingCategories = [
-  "Revenue", "Cost of Goods Sold", "Advertising & Marketing", "Bank & Payment Fees",
-  "Insurance", "Interest Expense", "Legal & Professional Services", "Office & Administrative",
-  "Payroll & Benefits", "Repairs & Maintenance", "Rent & Lease", "Supplies",
-  "Taxes & Licenses", "Travel & Meals", "Utilities", "Vehicle & Fuel", "Other Expense"
-];
 const cardElementOptions = {
   style: {
     base: {
@@ -1020,15 +1019,6 @@ function normalizePhoneForSms(value) {
   return (
     digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits
   ).slice(0, 10);
-}
-
-function formatTextMessageTimestamp(value) {
-  if (!value) {
-    return "Pending";
-  }
-
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Pending" : date.toLocaleString();
 }
 
 function formatArrivalReference(dateString) {
@@ -6153,6 +6143,32 @@ export default function App() {
   const [bookkeepingCategories, setBookkeepingCategories] = useState([]);
   const [bookkeepingNewCategory, setBookkeepingNewCategory] = useState("");
   const [bookkeepingTransactionFilter, setBookkeepingTransactionFilter] = useState("pending");
+  const [bookkeepingRefreshError, setBookkeepingRefreshError] = useState("");
+  const [isRefreshingBookkeeping, setIsRefreshingBookkeeping] = useState(false);
+  const bookkeepingRefreshVersion = useRef(0);
+  const bookkeepingStatusRef = useRef(bookkeepingTransactionFilter);
+  bookkeepingStatusRef.current = bookkeepingTransactionFilter;
+  const refreshBookkeepingData = useCallback(async () => {
+    const version = ++bookkeepingRefreshVersion.current;
+    const status = bookkeepingStatusRef.current;
+    setIsRefreshingBookkeeping(true);
+    try {
+      const [documents, transactions, categories] = await Promise.all([
+        apiRequest("/bookkeeping/documents"),
+        apiRequest(`/bookkeeping/transactions?status=${encodeURIComponent(status)}`),
+        apiRequest("/bookkeeping/categories"),
+      ]);
+      if (version !== bookkeepingRefreshVersion.current || status !== bookkeepingStatusRef.current) return;
+      setBookkeepingDocuments(documents.documents || []);
+      setBookkeepingTransactions(transactions.transactions || []);
+      setBookkeepingCategories(categories.categories || []);
+      setBookkeepingRefreshError("");
+    } catch (error) {
+      if (version === bookkeepingRefreshVersion.current) setBookkeepingRefreshError(`Live update failed: ${error.message} Retrying automatically.`);
+    } finally {
+      if (version === bookkeepingRefreshVersion.current) setIsRefreshingBookkeeping(false);
+    }
+  }, []);
   const [bookkeepingTypeFilter, setBookkeepingTypeFilter] = useState("all");
   const [bookkeepingPaymentFilter, setBookkeepingPaymentFilter] = useState("all");
   const [bookkeepingCategoryFilter, setBookkeepingCategoryFilter] = useState("all");
@@ -6179,7 +6195,6 @@ export default function App() {
   });
   const [textMessages, setTextMessages] = useState([]);
   const [selectedConversationNumber, setSelectedConversationNumber] = useState("");
-  const [showStayInformation, setShowStayInformation] = useState(false);
   const [isNewMessageOpen, setIsNewMessageOpen] = useState(false);
   const [arrivalTextPreview, setArrivalTextPreview] = useState(null);
   const [arrivalTextDrafts, setArrivalTextDrafts] = useState({});
@@ -6193,6 +6208,7 @@ export default function App() {
   const [missingTextMessageConfig, setMissingTextMessageConfig] = useState([]);
   const [isLoadingTextMessages, setIsLoadingTextMessages] = useState(false);
   const [isSendingTextMessage, setIsSendingTextMessage] = useState(false);
+  const textSendInFlight = useRef(false);
   const [textMessageError, setTextMessageError] = useState("");
   const [textMessageSuccess, setTextMessageSuccess] = useState("");
   const [sites, setSites] = useState([]);
@@ -6496,7 +6512,12 @@ export default function App() {
 
     function handleDataChanged(event) {
       try {
-        if (JSON.parse(event.data).reason === "messages_changed") {
+        const reason = JSON.parse(event.data).reason;
+        if (reason === "bookkeeping_changed") {
+          window.dispatchEvent(new Event("rvpark-bookkeeping-changed"));
+          return;
+        }
+        if (reason === "messages_changed") {
           window.dispatchEvent(new Event("rvpark-messages-changed"));
           return;
         }
@@ -6598,6 +6619,10 @@ export default function App() {
 
   useEffect(() => {
     setIsAdminMobileMenuOpen(false);
+    if (activePage !== "messages") {
+      setSelectedConversationNumber("");
+      setIsNewMessageOpen(false);
+    }
   }, [activePage]);
 
   useEffect(() => {
@@ -6663,23 +6688,36 @@ export default function App() {
           await ensureSitesLoaded();
         }
 
-        if (activePage === "bookkeeping") {
-          const [documents, transactions, categories] = await Promise.all([
-            apiRequest("/bookkeeping/documents"),
-            apiRequest(`/bookkeeping/transactions?status=${encodeURIComponent(bookkeepingTransactionFilter)}`),
-            apiRequest("/bookkeeping/categories").catch(() => ({ categories: [] })),
-          ]);
-          setBookkeepingDocuments(documents.documents || []);
-          setBookkeepingTransactions(transactions.transactions || []);
-          setBookkeepingCategories(categories.categories?.length ? categories.categories : defaultBookkeepingCategories.map((name, index) => ({ id: `default-${index}`, name, category_type: name === "Revenue" ? "income" : "expense" })));
-        }
       } catch (error) {
         setErrorMessage(error.message);
       }
     }
 
     loadDataForActivePage();
-  }, [activePage, isUnlocked, bookkeepingTransactionFilter]);
+  }, [activePage, isUnlocked]);
+
+  useEffect(() => {
+    if (!isUnlocked || activePage !== "bookkeeping") return;
+    refreshBookkeepingData();
+    let timer;
+    const refresh = () => {
+      if (document.visibilityState === "hidden") return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(refreshBookkeepingData, 200);
+    };
+    window.addEventListener("rvpark-bookkeeping-changed", refresh);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const interval = window.setInterval(refresh, 15000);
+    return () => {
+      ++bookkeepingRefreshVersion.current;
+      window.clearTimeout(timer);
+      window.clearInterval(interval);
+      window.removeEventListener("rvpark-bookkeeping-changed", refresh);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [activePage, isUnlocked, bookkeepingTransactionFilter, refreshBookkeepingData]);
 
   async function uploadBookkeepingDocument(event) {
     const file = event.target.files?.[0];
@@ -6699,6 +6737,7 @@ export default function App() {
       setBookkeepingDocuments((current) => [result.document, ...current]);
       setBookkeepingNote("");
       setBookkeepingMessage("Uploaded. Click Process to extract transactions.");
+      await refreshBookkeepingData();
     } catch (error) { setBookkeepingMessage(error.message); }
     finally { setBookkeepingBusy(false); }
   }
@@ -6708,14 +6747,9 @@ export default function App() {
     setBookkeepingMessage("AI is reading the document…");
     try {
       await apiRequest(`/bookkeeping/documents/${id}/process`, { method: "POST", body: JSON.stringify({ note }) });
-      const [documents, transactions] = await Promise.all([
-        apiRequest("/bookkeeping/documents"), apiRequest("/bookkeeping/transactions")
-      ]);
-      setBookkeepingDocuments(documents.documents || []);
-      setBookkeepingTransactions(transactions.transactions || []);
       setBookkeepingMessage("Extraction complete. Review transactions before approving.");
     } catch (error) { setBookkeepingMessage(error.message); }
-    finally { setBookkeepingBusy(false); }
+    finally { setBookkeepingBusy(false); await refreshBookkeepingData(); }
   }
 
   async function approveBookkeepingTransaction(transaction) {
@@ -6734,20 +6768,19 @@ export default function App() {
       }) });
       setBookkeepingTransactions((current) => current.map((item) => item.id === transaction.id ? { ...item, status: "approved" } : item));
       setBookkeepingMessage("Transaction approved.");
+      await refreshBookkeepingData();
     } catch (error) { setBookkeepingMessage(error.message); }
   }
 
-  async function saveBookkeepingTransaction(transaction, status = "pending") {
+  async function saveBookkeepingTransaction(transaction, status = transaction.status || "pending") {
     const draft = bookkeepingReviewDraft || transaction;
     try {
       const result = await apiRequest(`/bookkeeping/transactions/${transaction.id}`, { method: "PATCH", body: JSON.stringify({ ...draft, status }) });
-      setBookkeepingTransactions((current) => current.map((item) => item.id === transaction.id ? result.transaction : item));
-      if (status === "approved") {
-        const documents = await apiRequest("/bookkeeping/documents");
-        setBookkeepingDocuments(documents.documents || []);
-      }
-      setBookkeepingReviewDraft(result.transaction);
+      setBookkeepingTransactions((current) => current.map((item) => item.id === transaction.id ? { ...item, ...result.transaction } : item));
+      setBookkeepingReviewDraft({ ...transaction, ...result.transaction });
+      if (status === "approved") setBookkeepingEditingId(null);
       setBookkeepingMessage(status === "approved" ? "Transaction approved." : "Transaction changes saved.");
+      await refreshBookkeepingData();
     } catch (error) { setBookkeepingMessage(error.message); }
   }
 
@@ -6776,14 +6809,13 @@ export default function App() {
     try {
       const result = await apiRequest(`/bookkeeping/documents/${document.id}/reconcile`, { method: "POST" });
       setBookkeepingMessage(`Reconciliation complete: ${result.matched.length} matched, ${result.possibleMatches.length} possible matches, ${result.unmatchedStatement.length} statement items without receipts.`);
-      const transactions = await apiRequest(`/bookkeeping/transactions?status=${encodeURIComponent(bookkeepingTransactionFilter)}`);
-      setBookkeepingTransactions(transactions.transactions || []);
+      await refreshBookkeepingData();
     } catch (error) { setBookkeepingMessage(error.message); }
     finally { setBookkeepingBusy(false); }
   }
 
   const visibleBookkeepingDocuments = bookkeepingDocuments.filter((document) =>
-    (bookkeepingDocumentStatusFilter === "all" || (bookkeepingDocumentStatusFilter === "needs_processing" ? ["uploaded", "queued", "failed"].includes(document.processing_status) : document.processing_status === bookkeepingDocumentStatusFilter)) &&
+    (bookkeepingDocumentStatusFilter === "all" || (bookkeepingDocumentStatusFilter === "needs_processing" ? ["uploaded", "queued", "processing", "failed"].includes(document.processing_status) : document.processing_status === bookkeepingDocumentStatusFilter)) &&
     (bookkeepingDocumentTypeFilter === "all" || document.document_type === bookkeepingDocumentTypeFilter)
   );
   const visibleBookkeepingTransactions = bookkeepingTransactions.filter((transaction) => {
@@ -6794,6 +6826,7 @@ export default function App() {
       (bookkeepingPaymentFilter === "check" && /(check|cheque)/.test(payment)) ||
       (bookkeepingPaymentFilter === "other" && payment && !/(card|visa|mastercard|amex|discover|cash|check|cheque)/.test(payment));
     return (bookkeepingTypeFilter === "all" || transaction.transaction_type === bookkeepingTypeFilter) &&
+      (bookkeepingTransactionFilter === "all" || transaction.status === bookkeepingTransactionFilter) &&
       paymentMatches && (bookkeepingCategoryFilter === "all" || transaction.category === bookkeepingCategoryFilter);
   });
 
@@ -6804,6 +6837,7 @@ export default function App() {
       await apiRequest(`/bookkeeping/documents/${document.id}`, { method: "DELETE" });
       setBookkeepingDocuments((current) => current.filter((item) => item.id !== document.id));
       setBookkeepingMessage("Document removed.");
+      await refreshBookkeepingData();
     } catch (error) { setBookkeepingMessage(error.message); }
     finally { setBookkeepingBusy(false); }
   }
@@ -8307,8 +8341,9 @@ export default function App() {
     }
   }
 
-  async function sendTextMessage(event) {
-    event.preventDefault();
+  async function sendTextMessage(draft) {
+    if (textSendInFlight.current || !draft.to.trim() || !draft.body.trim()) return null;
+    textSendInFlight.current = true;
     setIsSendingTextMessage(true);
     setTextMessageError("");
     setTextMessageSuccess("");
@@ -8316,43 +8351,30 @@ export default function App() {
     try {
       const sentMessage = await apiRequest("/messages", {
         method: "POST",
-        body: JSON.stringify(textMessageForm),
+        body: JSON.stringify(draft),
       });
 
       setTextMessages((current) => [
         sentMessage,
         ...current.filter((message) => message.sid !== sentMessage.sid),
       ]);
-      setTextMessageForm((current) => ({ ...current, body: "" }));
       setTextMessageSuccess(
         `Message queued for ${formatPhoneNumber(sentMessage.to)}.`
       );
       await loadTextMessageHistory();
       if (sentMessage.storageWarning) setTextMessageError(sentMessage.storageWarning);
+      return sentMessage;
     } catch (error) {
       setTextMessageError(error.message);
+      return null;
     } finally {
+      textSendInFlight.current = false;
       setIsSendingTextMessage(false);
     }
   }
 
-  const messageConversations = Object.values(textMessages.reduce((groups, message) => {
-    const outbound = String(message.direction || "").startsWith("outbound");
-    const number = outbound ? message.to : message.from;
-    if (!number) return groups;
-    const key = String(number);
-    if (!groups[key]) groups[key] = { number: key, messages: [], bookings: message.bookings || [] };
-    groups[key].messages.push(message);
-    if (!groups[key].bookings.length && message.bookings?.length) groups[key].bookings = message.bookings;
-    return groups;
-  }, {})).sort((a, b) => new Date(b.messages[0]?.dateSent || 0) - new Date(a.messages[0]?.dateSent || 0));
-  const selectedConversation = messageConversations.find(item => item.number === selectedConversationNumber);
-  const selectedMessages = selectedConversation ? [...selectedConversation.messages].sort((a, b) => new Date(a.dateSent || 0) - new Date(b.dateSent || 0)) : [];
-  const visibleTextMessages = selectedConversation ? selectedMessages : [];
-  const unreadConversations = messageConversations.filter(conversation => conversation.messages.some(message => !String(message.direction || "").startsWith("outbound") && message.status !== "read"));
   async function openMessageConversation(conversation) {
     setSelectedConversationNumber(conversation.number);
-    setShowStayInformation(false);
     setTextMessages(current => current.map(message => {
       const inbound = !String(message.direction || "").startsWith("outbound");
       return inbound && formatPhoneNumber(message.from) === formatPhoneNumber(conversation.number) ? { ...message, status: "read" } : message;
@@ -8360,9 +8382,6 @@ export default function App() {
     try { await apiRequest("/messages/read", { method: "POST", body: JSON.stringify({ phone: conversation.number }) }); }
     catch (error) { setTextMessageError(error.message); }
   }
-  const getConversationName = (conversation) => conversation?.bookings?.[0]
-    ? `${conversation.bookings[0].first_name || ""} ${conversation.bookings[0].last_name || ""}`.trim()
-    : formatPhoneNumber(conversation?.number || "Unknown contact");
 
   function updateSiteFilter(field, value) {
     setSiteFilters((current) => ({ ...current, [field]: value }));
@@ -9060,6 +9079,7 @@ export default function App() {
     try {
       const draft = await apiRequest(`/messages/arrival-reminders/${reservation.id}?date=${encodeURIComponent(arrivalDate)}`);
       setTextMessageForm({ to: draft.to, body: draft.body });
+      setIsNewMessageOpen(true);
       setActivePage("messages");
       setTextMessageSuccess(`Arrival reminder for booking #${reservation.id} is ready to review and send.`);
       setErrorMessage("");
@@ -9320,6 +9340,7 @@ export default function App() {
     ].join("\n");
 
     setTextMessageForm({ to: formatPhoneNumber(phoneNumber), body: message });
+    setIsNewMessageOpen(true);
     setActivePage("messages");
     setPaymentLinkSuccessMessage("Opened a text draft with the payment link.");
     setPaymentLinkErrorMessage("");
@@ -13599,10 +13620,10 @@ export default function App() {
         ) : null}
 
         {activePage === "bookkeeping" ? (
-          <Paper component="section" className="card" elevation={0}>
+          <Paper component="section" className="card bookkeeping-page-card" elevation={0}>
             <div className="page-section-header">
               <div><h2>Bookkeeping assistant</h2><p className="muted">Upload receipts, bank statements, and credit-card statements. AI suggestions remain pending until you approve them.</p></div>
-              <div className="button-row">
+              <div className="button-row bookkeeping-upload-actions">
                 <label className="primary-button" style={{ cursor: bookkeepingBusy ? "wait" : "pointer" }}>
                   {bookkeepingBusy ? "Working…" : "Take photo"}
                   <input type="file" hidden accept="image/jpeg,image/png,image/webp" capture="environment" disabled={bookkeepingBusy} onChange={uploadBookkeepingDocument} />
@@ -13613,56 +13634,67 @@ export default function App() {
                 </label>
               </div>
             </div>
+            <p className="bookkeeping-live-status">{isRefreshingBookkeeping ? "Updating bookkeeping…" : "Updates automatically"}</p>
+            {bookkeepingRefreshError ? <Alert severity="warning" sx={{ mb: 2 }}>{bookkeepingRefreshError}</Alert> : null}
             {bookkeepingMessage ? <Alert severity="info" sx={{ mb: 2 }}>{bookkeepingMessage}</Alert> : null}
             <div className="result-panel">
-              <div className="page-section-header"><h3>Documents</h3><div className="button-row"><select value={bookkeepingDocumentStatusFilter} onChange={(event) => setBookkeepingDocumentStatusFilter(event.target.value)}><option value="needs_processing">Needs processing</option><option value="all">All statuses</option><option value="queued">Queued</option><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="failed">Failed</option></select><select value={bookkeepingDocumentTypeFilter} onChange={(event) => setBookkeepingDocumentTypeFilter(event.target.value)}><option value="all">All types</option><option value="receipt">Receipts</option><option value="bank_statement">Bank statements</option><option value="credit_card_statement">Credit cards</option><option value="invoice">Invoices</option><option value="tax_document">Tax documents</option><option value="other">Other</option></select></div></div>
+              <div className="page-section-header"><h3>Documents</h3><div className="button-row"><select aria-label="Document status" value={bookkeepingDocumentStatusFilter} onChange={(event) => setBookkeepingDocumentStatusFilter(event.target.value)}><option value="needs_processing">Needs processing</option><option value="all">All statuses</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="failed">Failed</option></select><select aria-label="Document type" value={bookkeepingDocumentTypeFilter} onChange={(event) => setBookkeepingDocumentTypeFilter(event.target.value)}><option value="all">All types</option><option value="receipt">Receipts</option><option value="bank_statement">Bank statements</option><option value="credit_card_statement">Credit cards</option><option value="invoice">Invoices</option><option value="tax_document">Tax documents</option><option value="other">Other</option></select></div></div>
               {visibleBookkeepingDocuments.length ? visibleBookkeepingDocuments.map((document) => (
                 <div className="payment-summary-row bookkeeping-document-row" key={document.id}>
-                  <span><strong>{document.original_filename}</strong><br /><small>{document.document_type} · {document.processing_status}</small></span>
+                  <span><strong>{document.original_filename}</strong><br /><small>{document.document_type.replaceAll("_", " ")} · {document.processing_status.replaceAll("_", " ")}</small></span>
                   <span className="button-row">
-                    <button type="button" className="ghost-button" disabled={bookkeepingBusy || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => setBookkeepingProcessDocument(document)}>Process</button>
+                    <button type="button" className="ghost-button" disabled={bookkeepingBusy || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => { setBookkeepingNote(document.metadata?.note || ""); setBookkeepingProcessDocument(document); }}>Process</button>
                     {["bank_statement", "credit_card_statement"].includes(document.document_type) && ["needs_review", "approved"].includes(document.processing_status) ? <button type="button" className="ghost-button" disabled={bookkeepingBusy} onClick={() => reconcileBookkeepingStatement(document)}>Compare receipts</button> : null}
                     {["uploaded", "queued", "failed", "rejected", "needs_review"].includes(document.processing_status) ? <button type="button" className="ghost-button" disabled={bookkeepingBusy} onClick={() => deleteBookkeepingDocument(document)}>Remove</button> : null}
                   </span>
                 </div>
-              )) : <p className="muted">No bookkeeping documents uploaded yet.</p>}
+              )) : <p className="muted">{bookkeepingDocuments.length ? "No documents match these filters." : "No bookkeeping documents uploaded yet."}</p>}
             </div>
             <div className="result-panel" style={{ marginTop: "1rem" }}>
-              <div className="page-section-header"><h3>{bookkeepingTransactionFilter === "pending" ? "Transactions awaiting review" : bookkeepingTransactionFilter === "approved" ? "Approved transactions" : "All transactions"}</h3><select value={bookkeepingTransactionFilter} onChange={(event) => setBookkeepingTransactionFilter(event.target.value)}><option value="pending">Pending review</option><option value="approved">Approved</option><option value="all">All transactions</option></select></div>
-              <div className="button-row bookkeeping-transaction-filter-row" style={{ marginBottom: "1rem" }}><select value={bookkeepingTypeFilter} onChange={(event) => setBookkeepingTypeFilter(event.target.value)}><option value="all">All types</option><option value="income">Income</option><option value="expense">Expenses</option><option value="refund">Refunds</option><option value="transfer">Transfers</option></select><select value={bookkeepingPaymentFilter} onChange={(event) => setBookkeepingPaymentFilter(event.target.value)}><option value="all">All payment methods</option><option value="cash">Cash</option><option value="check">Check</option><option value="card">Card</option><option value="other">Other</option></select><select value={bookkeepingCategoryFilter} onChange={(event) => setBookkeepingCategoryFilter(event.target.value)}><option value="all">All categories</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}</select></div>
+              <div className="page-section-header"><h3>{bookkeepingTransactionFilter === "pending" ? "Transactions awaiting review" : bookkeepingTransactionFilter === "approved" ? "Approved transactions" : "All transactions"}</h3><select aria-label="Transaction status" value={bookkeepingTransactionFilter} onChange={(event) => setBookkeepingTransactionFilter(event.target.value)}><option value="pending">Pending review</option><option value="approved">Approved</option><option value="all">All transactions</option></select></div>
+              <div className="button-row bookkeeping-transaction-filter-row" style={{ marginBottom: "1rem" }}><select aria-label="Transaction type" value={bookkeepingTypeFilter} onChange={(event) => setBookkeepingTypeFilter(event.target.value)}><option value="all">All types</option><option value="income">Income</option><option value="expense">Expenses</option><option value="refund">Refunds</option><option value="transfer">Transfers</option></select><select aria-label="Payment method" value={bookkeepingPaymentFilter} onChange={(event) => setBookkeepingPaymentFilter(event.target.value)}><option value="all">All payment methods</option><option value="cash">Cash</option><option value="check">Check</option><option value="card">Card</option><option value="other">Other</option></select><select aria-label="Filter by category" value={bookkeepingCategoryFilter} onChange={(event) => setBookkeepingCategoryFilter(event.target.value)}><option value="all">All categories</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}</select></div>
               {visibleBookkeepingTransactions.length ? visibleBookkeepingTransactions.map((transaction) => (
-                <article className="result-panel" key={transaction.id} style={{ marginBottom: ".75rem" }}>
-                  <button type="button" className="payment-summary-row" style={{ width: "100%", border: 0, background: "transparent", cursor: "pointer", textAlign: "left" }} onClick={() => { const next = bookkeepingReviewId === transaction.id ? null : transaction.id; setBookkeepingReviewId(next); setBookkeepingReviewDraft(next ? { ...transaction } : null); setBookkeepingEditingId(next && transaction.status === "pending" ? transaction.id : null); }}>
-                    <span><strong>{transaction.vendor || "Unknown vendor"}</strong><br /><small>{transaction.transaction_date || "No date"} · {transaction.category || "Uncategorized"}</small></span>
-                    <strong>{transaction.currency} {Number(transaction.total || 0).toFixed(2)} · {transaction.status}</strong>
+                <article className="result-panel bookkeeping-transaction-card" key={transaction.id} style={{ marginBottom: ".75rem" }}>
+                  <button type="button" className="bookkeeping-transaction-summary" aria-expanded={bookkeepingReviewId === transaction.id} aria-controls={`bookkeeping-review-${transaction.id}`} onClick={() => { const next = bookkeepingReviewId === transaction.id ? null : transaction.id; setBookkeepingReviewId(next); setBookkeepingReviewDraft(next ? { ...transaction } : null); setBookkeepingEditingId(next && transaction.status === "pending" ? transaction.id : null); }}>
+                    <span><strong>{transaction.vendor || "Unknown vendor"}</strong><small>{String(transaction.transaction_date || "No date").slice(0, 10)} · {transaction.category || "Uncategorized"}</small></span>
+                    <span className="bookkeeping-transaction-amount"><strong>{transaction.currency} {Number(transaction.total || 0).toFixed(2)}</strong><small>{transaction.status === "pending" ? "Needs review" : transaction.status} <span aria-hidden="true">{bookkeepingReviewId === transaction.id ? "⌃" : "⌄"}</span></small></span>
                   </button>
-                  {bookkeepingReviewId === transaction.id ? <div className="bookkeeping-review-card">
+                  {bookkeepingReviewId === transaction.id ? <div className="bookkeeping-review-card" id={`bookkeeping-review-${transaction.id}`}>
                     {(() => { const draft = bookkeepingReviewDraft || transaction; const isEditing = bookkeepingEditingId === transaction.id; const set = (field, value) => setBookkeepingReviewDraft((current) => ({ ...(current || transaction), [field]: value })); return <>
                       <div className="field-grid">
-                        <TextField label="Date" type="date" value={String(draft.transaction_date || "").slice(0, 10)} onChange={(event) => set("transaction_date", event.target.value)} InputLabelProps={{ shrink: true }} InputProps={{ readOnly: !isEditing }} />
-                        <TextField label="Vendor" value={draft.vendor || ""} onChange={(event) => set("vendor", event.target.value)} InputProps={{ readOnly: !isEditing }} />
-                        <TextField label="Description" value={draft.description || ""} onChange={(event) => set("description", event.target.value)} InputProps={{ readOnly: !isEditing }} />
-                        <label className="bookkeeping-category-field">Category<select disabled={!isEditing} className="bookkeeping-category-select" value={draft.category || ""} onChange={async (event) => { if (event.target.value === "__add_category__") { const name = window.prompt("New expense category name:"); if (name?.trim()) { try { const result = await apiRequest("/bookkeeping/categories", { method: "POST", body: JSON.stringify({ name: name.trim(), category_type: "expense" }) }); setBookkeepingCategories((current) => [...current, result.category].sort((a, b) => a.name.localeCompare(b.name))); set("category", result.category.name); } catch (error) { setBookkeepingMessage(error.message); } } } else { set("category", event.target.value); } }}><option value="">Select category</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}<option value="__add_category__">＋ Add category…</option></select></label>
-                        <TextField label="Subtotal" type="number" value={draft.subtotal ?? ""} onChange={(event) => set("subtotal", event.target.value)} InputProps={{ readOnly: !isEditing }} />
-                        <TextField label="Tax" type="number" value={draft.tax ?? ""} onChange={(event) => set("tax", event.target.value)} InputProps={{ readOnly: !isEditing }} />
-                        <TextField label="Total" type="number" value={draft.total ?? ""} onChange={(event) => set("total", event.target.value)} InputProps={{ readOnly: !isEditing }} />
-                        <TextField label="Payment account" value={draft.payment_account || ""} onChange={(event) => set("payment_account", event.target.value)} InputProps={{ readOnly: !isEditing }} />
+                        <TextField label="Date" type="date" value={String(draft.transaction_date || "").slice(0, 10)} onChange={(event) => set("transaction_date", event.target.value)} slotProps={{ inputLabel: { shrink: true }, input: { readOnly: !isEditing } }} />
+                        <TextField label="Vendor" value={draft.vendor || ""} onChange={(event) => set("vendor", event.target.value)} slotProps={{ input: { readOnly: !isEditing } }} />
+                        <TextField label="Description" multiline minRows={2} value={draft.description || ""} onChange={(event) => set("description", event.target.value)} slotProps={{ input: { readOnly: !isEditing } }} />
+                        <label className="bookkeeping-category-field">Category<select disabled={!isEditing} className="bookkeeping-category-select" value={draft.category || ""} onChange={async (event) => { if (event.target.value === "__add_category__") { const name = window.prompt("New expense category name:"); if (name?.trim()) { try { const result = await apiRequest("/bookkeeping/categories", { method: "POST", body: JSON.stringify({ name: name.trim(), category_type: "expense" }) }); setBookkeepingCategories((current) => [...current, result.category].sort((a, b) => a.name.localeCompare(b.name))); set("category", result.category.name); } catch (error) { setBookkeepingMessage(error.message); } } } else { set("category", event.target.value); } }}><option value="">Select category</option>{draft.category && !bookkeepingCategories.some(category => category.name === draft.category) ? <option value={draft.category}>{draft.category}</option> : null}{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}<option value="__add_category__">＋ Add category…</option></select></label>
+                        <TextField label="Subtotal" type="number" value={draft.subtotal ?? ""} onChange={(event) => set("subtotal", event.target.value)} slotProps={{ input: { readOnly: !isEditing } }} />
+                        <TextField label="Tax" type="number" value={draft.tax ?? ""} onChange={(event) => set("tax", event.target.value)} slotProps={{ input: { readOnly: !isEditing } }} />
+                        <TextField label="Total" type="number" value={draft.total ?? ""} onChange={(event) => set("total", event.target.value)} slotProps={{ input: { readOnly: !isEditing } }} />
+                        <TextField label="Payment account" value={draft.payment_account || ""} onChange={(event) => set("payment_account", event.target.value)} slotProps={{ input: { readOnly: !isEditing } }} />
                       </div>
                       <p><strong>Source file:</strong> {transaction.source_filename || "Not available"}</p>
                       <button type="button" className="ghost-button" onClick={() => viewBookkeepingSource(transaction)}>View original file</button>
+                      {transaction.status === "pending" ? <p className="muted">AI suggests a category based on the document. You can change it before approving.</p> : null}
                       <p><strong>AI confidence:</strong> {transaction.ai_confidence == null ? "Not provided" : `${Math.round(Number(transaction.ai_confidence) * 100)}%`}</p>
-                      <div className="button-row">{transaction.status === "approved" && !isEditing ? <button type="button" className="ghost-button" onClick={() => setBookkeepingEditingId(transaction.id)}>Edit</button> : <><button type="button" className="ghost-button" onClick={() => saveBookkeepingTransaction(transaction)}>Save changes</button>{transaction.status === "pending" ? <button type="button" className="primary-button" onClick={() => saveBookkeepingTransaction(transaction, "approved")}>Save and approve</button> : null}</>}<button type="button" className="ghost-button" onClick={async () => { if (!window.confirm("Delete this transaction?")) return; await apiRequest(`/bookkeeping/transactions/${transaction.id}`, { method: "DELETE" }); setBookkeepingTransactions((current) => current.filter((item) => item.id !== transaction.id)); setBookkeepingReviewId(null); setBookkeepingMessage("Transaction deleted."); }}>Delete</button></div>
+                      <div className="button-row">{transaction.status === "approved" && !isEditing ? <button type="button" className="ghost-button" onClick={() => setBookkeepingEditingId(transaction.id)}>Edit</button> : <><button type="button" className="ghost-button" onClick={() => saveBookkeepingTransaction(transaction)}>Save changes</button>{transaction.status === "pending" ? <button type="button" className="primary-button" onClick={() => saveBookkeepingTransaction(transaction, "approved")}>Save and approve</button> : null}</>}<button type="button" className="ghost-button" onClick={async () => { if (!window.confirm("Delete this transaction?")) return; await apiRequest(`/bookkeeping/transactions/${transaction.id}`, { method: "DELETE" }); setBookkeepingTransactions((current) => current.filter((item) => item.id !== transaction.id)); setBookkeepingReviewId(null); setBookkeepingMessage("Transaction deleted."); await refreshBookkeepingData(); }}>Delete</button></div>
                     </>; })()}
                   </div> : null}
                 </article>
-              )) : <p className="muted">Processed transactions will appear here for review.</p>}
+              )) : <p className="muted">{bookkeepingTransactions.length ? "No transactions match these filters." : "Processed transactions will appear here for review."}</p>}
             </div>
-            {bookkeepingProcessDocument ? <div className="modal-backdrop" role="presentation" onClick={() => setBookkeepingProcessDocument(null)}><div className="modal-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><h3>Additional information for the AI</h3><p className="muted">Add context before this document is processed. This note will be saved with the document.</p><TextField autoFocus fullWidth multiline minRows={4} value={bookkeepingNote} onChange={(event) => setBookkeepingNote(event.target.value)} placeholder="Example: This is a business fuel receipt paid with the card ending in 1234." /><div className="button-row"><button type="button" className="ghost-button" onClick={() => setBookkeepingProcessDocument(null)}>Cancel</button><button type="button" className="primary-button" onClick={async () => { const document = bookkeepingProcessDocument; setBookkeepingProcessDocument(null); await processBookkeepingDocument(document.id, bookkeepingNote); setBookkeepingNote(""); }}>Process document</button></div></div></div> : null}
+            <Dialog open={Boolean(bookkeepingProcessDocument)} onClose={() => setBookkeepingProcessDocument(null)} fullWidth maxWidth="sm" aria-labelledby="bookkeeping-process-title" className="bookkeeping-process-dialog">
+              <DialogTitle id="bookkeeping-process-title">Process document</DialogTitle>
+              <DialogContent>
+                <p className="bookkeeping-process-filename">{bookkeepingProcessDocument?.original_filename}</p>
+                <p>Add any helpful context. AI will suggest its best category match for you to review.</p>
+                <TextField autoFocus fullWidth label="Additional information (optional)" multiline minRows={4} value={bookkeepingNote} onChange={(event) => setBookkeepingNote(event.target.value)} placeholder="Example: Fuel for the park maintenance truck, paid with the card ending in 1234." />
+              </DialogContent>
+              <DialogActions><Button onClick={() => setBookkeepingProcessDocument(null)}>Cancel</Button><Button variant="contained" onClick={async () => { const document = bookkeepingProcessDocument; if (!document) return; setBookkeepingProcessDocument(null); await processBookkeepingDocument(document.id, bookkeepingNote); setBookkeepingNote(""); }}>Process document</Button></DialogActions>
+            </Dialog>
           </Paper>
         ) : null}
 
         {activePage === "messages" ? (
-          <Paper component="section" className="card" elevation={0}>
+          <Paper component="section" className="card messaging-page" elevation={0}>
             <div className="page-section-header">
               <h2>Text Messages</h2>
               <div className="section-actions">
@@ -13676,8 +13708,8 @@ export default function App() {
                 <button
                   type="button"
                   className="ghost-button"
-                  onClick={() => clearSection("messages")}>
-                  Clear draft
+                  onClick={() => setIsNewMessageOpen(true)}>
+                  New message
                 </button>
               </div>
             </div>
@@ -13700,8 +13732,8 @@ export default function App() {
               </Alert>
             ) : null}
 
-            <section className="sms-booking-details" aria-label="Tomorrow’s arrival reminders">
-              <h3>Tomorrow’s arrival texts</h3>
+            <details className="sms-booking-details arrival-reminders" aria-label="Tomorrow’s arrival reminders">
+              <summary>Tomorrow’s arrival texts</summary>
               <p>Send a personalized reminder to each arriving booking for {arrivalTextPreview ? formatDisplayDate(arrivalTextPreview.date) : "tomorrow"} (Pacific time). Previously sent bulk reminders are skipped.</p>
               <div className="button-row">
                 <button type="button" className="primary-button" disabled={isSendingArrivalTexts || !isTextMessagingConfigured || !arrivalTextPreview?.recipients.some(guest => guest.eligible)} onClick={sendTomorrowArrivalTexts}>
@@ -13715,162 +13747,33 @@ export default function App() {
                 <div className="arrival-message-drafts">
                   {arrivalTextPreview.recipients.map(guest => <div className="arrival-message-draft" key={guest.id}>
                     <div className="admin-text-history-meta"><strong>{guest.first_name} {guest.last_name}</strong><span>{guest.phone || "No valid mobile number"}</span><span>{guest.eligible ? "Ready to send" : guest.state === "sent" ? "Queued previously" : "Skipped"}</span></div>
-                    {guest.eligible ? <textarea rows="8" value={arrivalTextDrafts[String(guest.id)] || ""} onChange={event => setArrivalTextDrafts(current => ({ ...current, [String(guest.id)]: event.target.value }))} /> : <p className="muted">This guest is not eligible for a reminder.</p>}
+                    {guest.eligible ? <textarea aria-label={`Arrival message for ${guest.first_name} ${guest.last_name}`} rows="8" value={arrivalTextDrafts[String(guest.id)] || ""} onChange={event => setArrivalTextDrafts(current => ({ ...current, [String(guest.id)]: event.target.value }))} /> : <p className="muted">This guest is not eligible for a reminder.</p>}
                   </div>)}
                 </div>
               </details> : arrivalTextPreview ? <p className="muted">No active bookings arrive tomorrow.</p> : null}
-            </section>
+            </details>
             {!smsWebhookConfigured ? <Alert severity="warning">Incoming messages require TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on the server.</Alert> : null}
-            <div className="admin-text-message-layout">
-              <form className={`admin-text-composer ${isNewMessageOpen ? "is-open" : "is-hidden"}`} onSubmit={sendTextMessage}>
-                <div className="section-heading">
-                  <button type="button" className="ghost-button" onClick={() => setIsNewMessageOpen(false)}>Close</button>
-                  <p>
-                    Send a reservation message or a park-wide operational
-                    update to a guest.
-                  </p>
-                </div>
-                <label>
-                  Guest mobile number
-                  <input
-                    type="tel"
-                    inputMode="tel"
-                    list="text-message-customer-phones"
-                    placeholder="(541) 555-1234"
-                    value={textMessageForm.to}
-                    onChange={(event) =>
-                      setTextMessageForm((current) => ({
-                        ...current,
-                        to: formatPhoneNumber(event.target.value),
-                      }))
-                    }
-                  />
-                </label>
-                <datalist id="text-message-customer-phones">
-                  {customers
-                    .filter((customer) => customer.phone_number)
-                    .map((customer) => (
-                      <option
-                        key={customer.id}
-                        value={formatPhoneNumber(customer.phone_number)}>
-                        {customer.first_name} {customer.last_name}
-                      </option>
-                    ))}
-                </datalist>
-                <label>
-                  Message
-                  <textarea
-                    rows="10"
-                    maxLength="1500"
-                    placeholder="Type the message to send..."
-                    value={textMessageForm.body}
-                    onChange={(event) =>
-                      setTextMessageForm((current) => ({
-                        ...current,
-                        body: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <div className="admin-text-message-meta">
-                  <span>{textMessageForm.body.length} / 1,500 characters</span>
-                  <span>
-                    STOP and HELP instructions are added automatically.
-                  </span>
-                </div>
-                <button
-                  type="submit"
-                  className="primary-button"
-                  disabled={
-                    isSendingTextMessage ||
-                    !textMessageForm.to.trim() ||
-                    !textMessageForm.body.trim() ||
-                    isTextMessagingConfigured === false
-                  }>
-                  {isSendingTextMessage ? "Sending..." : "Send text message"}
-                </button>
-              </form>
-
-              <section className="admin-text-history" aria-label="Recent text messages">
-                <div className="admin-text-history-heading">
-                  <div>
-                    <span className="eyebrow">Saved inbox · updates automatically</span>
-                    <h3>Contacts & unread messages</h3>
-                  </div>
-                  <span>{textMessages.length} shown</span>
-                  <button type="button" className="text-button" disabled={isLoadingTextMessages || !isTextMessagingConfigured} onClick={syncTextMessageHistory}>Sync recent Twilio history</button>
-                </div>
-                {messageConversations.length ? <div className={`admin-message-contacts ${selectedConversation ? "conversation-open" : ""}`} aria-label="Contacts">
-                  <div className="admin-message-contacts-heading"><strong>Contacts</strong><button type="button" className="admin-new-message-button" onClick={() => setIsNewMessageOpen(true)} aria-label="Start a new message">✎</button><span>{unreadConversations.length} unread</span></div>
-                  {messageConversations.map((conversation) => {
-                    const latest = [...conversation.messages].sort((a, b) => new Date(b.dateSent || 0) - new Date(a.dateSent || 0))[0];
-                    const unreadCount = conversation.messages.filter(message => !String(message.direction || "").startsWith("outbound") && message.status !== "read").length;
-                    return <button type="button" key={conversation.number} className={`admin-message-contact ${selectedConversation?.number === conversation.number ? "selected" : ""}`} onClick={() => openMessageConversation(conversation)}>
-                      <span className="admin-message-avatar">{getConversationName(conversation).slice(0, 1).toUpperCase()}</span>
-                      <span className="admin-message-contact-copy"><strong>{getConversationName(conversation)}</strong><small>{latest?.body || "Attachment"}</small></span>
-                      {unreadCount ? <b className="admin-message-unread-badge">{unreadCount}</b> : null}
-                      <time>{formatTextMessageTimestamp(latest?.dateSent)}</time>
-                    </button>;
-                  })}
-                </div> : null}
-                {selectedConversation ? <div className="admin-message-thread-header">
-                  <div><button type="button" className="admin-message-back" onClick={() => setSelectedConversationNumber("")} aria-label="Back to contacts">‹</button><span className="admin-message-avatar">{getConversationName(selectedConversation).slice(0, 1).toUpperCase()}</span><strong>{getConversationName(selectedConversation)}</strong><small>{formatPhoneNumber(selectedConversation.number)}</small></div>
-                  <button type="button" className="ghost-button" onClick={() => setShowStayInformation(current => !current)}>{showStayInformation ? "Hide stay information" : "Show stay information"}</button>
-                </div> : null}
-                {showStayInformation && selectedConversation?.bookings?.length ? <div className="admin-message-stay-info">
-                  {selectedConversation.bookings.map(booking => <div key={`${booking.customer_id}-${booking.reservation_id || "guest"}`}><strong>{booking.first_name} {booking.last_name}</strong>{booking.reservation_id ? <><span>Booking #{booking.reservation_id} · {booking.status}</span>{booking.stays?.map((stay, index) => <span key={index}>Site {stay.site} · {stay.arrival} – {stay.departure}</span>)}<span>Total: ${Number(booking.total_price || 0).toFixed(2)} · Paid: ${Number(booking.amount_paid || 0).toFixed(2)}</span></> : <span>No booking found.</span>}</div>)}
-                </div> : null}
-                {isLoadingTextMessages && !textMessages.length ? (
-                  <p className="muted">Loading text messages...</p>
-                ) : textMessages.length ? (
-                  <div className={`admin-text-history-list ${selectedConversation ? "has-selected-thread" : "no-selected-thread"}`}>
-                    {visibleTextMessages.map((message) => {
-                      const isOutbound = String(message.direction || "").startsWith(
-                        "outbound"
-                      );
-                      const guestNumber = isOutbound ? message.to : message.from;
-
-                      return (
-                        <article
-                          key={message.sid}
-                          className={`admin-text-history-item ${
-                            isOutbound ? "outbound" : "inbound"
-                          }`}>
-                          <div className="admin-text-history-meta">
-                            <strong>{isOutbound ? "Sent" : "Received"}</strong>
-                            <span>{formatPhoneNumber(guestNumber)}</span>
-                            <span>{formatTextMessageTimestamp(message.dateSent)}</span>
-                          </div>
-                          <p>{message.body}</p>
-                          {message.mediaCount > 0 ? <p className="muted">{message.mediaCount} media attachment(s). Media viewing is not available here yet.</p> : null}
-                          {message.errorCode ? <p role="status">Delivery error: {message.errorCode}</p> : null}
-                          <details className="sms-booking-details">
-                            <summary>{message.bookings?.length ? [...new Set(message.bookings.map(booking => `${booking.first_name || ""} ${booking.last_name || ""}`.trim()))].join(" / ") : "No matching guest found"} · Booking details</summary>
-                            {message.bookings?.map(booking => (
-                              <div key={`${booking.customer_id}-${booking.reservation_id || "guest"}`}>
-                                <strong>{booking.first_name} {booking.last_name}</strong>
-                                {booking.reservation_id ? <>
-                                  <p>Booking #{booking.reservation_id} · {booking.status}</p>
-                                  {booking.stays?.map((stay, index) => <p key={index}>Site {stay.site} · {stay.arrival} – {stay.departure}</p>)}
-                                  <p>Total: ${Number(booking.total_price || 0).toFixed(2)} · Paid: ${Number(booking.amount_paid || 0).toFixed(2)}</p>
-                                </> : <p>No bookings found.</p>}
-                              </div>
-                            ))}
-                          </details>
-                        </article>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="muted">No saved messages yet. Send a text or sync recent Twilio history.</p>
-                )}
-                {selectedConversation ? <form className="admin-inline-reply" onSubmit={sendTextMessage}>
-                  <textarea rows="1" maxLength="1500" placeholder="iMessage" value={textMessageForm.to === formatPhoneNumber(selectedConversation.number) ? textMessageForm.body : ""} onChange={event => setTextMessageForm({ to: formatPhoneNumber(selectedConversation.number), body: event.target.value })} />
-                  <button type="submit" className="primary-button" disabled={isSendingTextMessage || !textMessageForm.body.trim() || isTextMessagingConfigured === false}>{isSendingTextMessage ? "Sending…" : "Send"}</button>
-                </form> : null}
-                {hasMoreTextMessages ? <button type="button" className="text-button" disabled={isLoadingTextMessages} onClick={() => loadTextMessageHistory(true)}>Load older messages</button> : null}
-              </section>
-            </div>
+            <MessageInbox
+              messages={textMessages}
+              customers={customers}
+              selectedNumber={selectedConversationNumber}
+              onSelect={openMessageConversation}
+              onBack={() => setSelectedConversationNumber("")}
+              newMessageOpen={isNewMessageOpen}
+              onNewMessageOpen={() => setIsNewMessageOpen(true)}
+              onNewMessageClose={() => setIsNewMessageOpen(false)}
+              form={textMessageForm}
+              setForm={setTextMessageForm}
+              onSend={sendTextMessage}
+              isSending={isSendingTextMessage}
+              configured={isTextMessagingConfigured}
+              isLoading={isLoadingTextMessages}
+              hasMore={hasMoreTextMessages}
+              onLoadMore={() => loadTextMessageHistory(true)}
+              onSync={syncTextMessageHistory}
+              error={textMessageError}
+              formatPhone={formatPhoneNumber}
+            />
           </Paper>
         ) : null}
 
