@@ -43,7 +43,7 @@ export function createArrivalReminders({ pool, tomorrow, getReservation, normali
     return { to, body: arrivalReminderText(reservation, date, formatDate, date === tomorrow() ? 'tomorrow' : `on ${formatDate(date)}`) };
   }
 
-  async function sendBatch(date, requestedIds) {
+  async function sendBatch(date, requestedIds, customBodies = {}) {
     if (!configured()) throw new Error('Twilio is not configured.');
     if (date !== tomorrow()) throw new Error('The arrival date changed. Refresh tomorrow’s arrivals before sending.');
     // Ensure storage is available before accepting any sends.
@@ -57,7 +57,10 @@ export function createArrivalReminders({ pool, tomorrow, getReservation, normali
         continue;
       }
       let message;
-      try { message = await draft(recipient.id, date); }
+      try {
+        message = await draft(recipient.id, date);
+        if (typeof customBodies[String(recipient.id)] === 'string' && customBodies[String(recipient.id)].trim()) message.body = customBodies[String(recipient.id)].trim();
+      }
       catch (error) { results.push({ id: recipient.id, state: 'failed', message: error.message }); continue; }
       // A durable claim protects against double clicks and simultaneous staff sessions.
       const claim = await pool.query(`

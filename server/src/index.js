@@ -599,7 +599,7 @@ app.post("/api/messages/arrival-reminders", async (req, res) => {
   if (!Array.isArray(req.body.reservationIds) || req.body.reservationIds.length > 500 || !req.body.reservationIds.every(id => /^\d+$/.test(String(id)))) {
     return res.status(400).json({ message: "Select valid arrival reservations." });
   }
-  try { return res.json(await arrivalReminders.sendBatch(req.body.date, req.body.reservationIds)); }
+  try { return res.json(await arrivalReminders.sendBatch(req.body.date, req.body.reservationIds, req.body.customBodies || {})); }
   catch (error) { return res.status(503).json({ message: error.code === "42P01" ? "Run both SMS database migrations before sending arrival reminders." : error.message }); }
 });
 

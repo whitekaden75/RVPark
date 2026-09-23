@@ -6133,7 +6133,9 @@ export default function App() {
     body: "",
   });
   const [textMessages, setTextMessages] = useState([]);
+  const [selectedConversationNumber, setSelectedConversationNumber] = useState("");
   const [arrivalTextPreview, setArrivalTextPreview] = useState(null);
+  const [arrivalTextDrafts, setArrivalTextDrafts] = useState({});
   const [arrivalTextError, setArrivalTextError] = useState("");
   const [isSendingArrivalTexts, setIsSendingArrivalTexts] = useState(false);
   const arrivalSendInFlight = useRef(false);
@@ -8049,6 +8051,11 @@ export default function App() {
     try {
       const preview = await apiRequest("/messages/arrival-reminders");
       setArrivalTextPreview(preview);
+      const drafts = await Promise.all((preview.recipients || []).filter(guest => guest.eligible).map(async guest => {
+        try { return [String(guest.id), (await apiRequest(`/messages/arrival-reminders/${guest.id}?date=${encodeURIComponent(preview.date)}`)).body]; }
+        catch { return [String(guest.id), ""]; }
+      }));
+      setArrivalTextDrafts(Object.fromEntries(drafts));
       setArrivalTextError("");
     } catch (error) {
       setArrivalTextError(error.message);
@@ -8069,7 +8076,8 @@ export default function App() {
     try {
       const result = await apiRequest("/messages/arrival-reminders", {
         method: "POST", body: JSON.stringify({ date: arrivalTextPreview.date,
-          reservationIds: arrivalTextPreview.recipients.filter(guest => guest.eligible).map(guest => guest.id) })
+          reservationIds: arrivalTextPreview.recipients.filter(guest => guest.eligible).map(guest => guest.id),
+          customBodies: arrivalTextDrafts })
       });
       const sent = result.results.filter(item => item.state === "sent").length;
       const skipped = result.results.filter(item => item.state === "skipped").length;
@@ -8142,6 +8150,23 @@ export default function App() {
       setIsSendingTextMessage(false);
     }
   }
+
+  const messageConversations = Object.values(textMessages.reduce((groups, message) => {
+    const outbound = String(message.direction || "").startsWith("outbound");
+    const number = outbound ? message.to : message.from;
+    if (!number) return groups;
+    const key = String(number);
+    if (!groups[key]) groups[key] = { number: key, messages: [], bookings: message.bookings || [] };
+    groups[key].messages.push(message);
+    if (!groups[key].bookings.length && message.bookings?.length) groups[key].bookings = message.bookings;
+    return groups;
+  }, {})).sort((a, b) => new Date(b.messages[0]?.dateSent || 0) - new Date(a.messages[0]?.dateSent || 0));
+  const selectedConversation = messageConversations.find(item => item.number === selectedConversationNumber) || messageConversations[0];
+  const selectedMessages = selectedConversation ? [...selectedConversation.messages].sort((a, b) => new Date(a.dateSent || 0) - new Date(b.dateSent || 0)) : [];
+  const visibleTextMessages = selectedConversation ? selectedMessages : textMessages;
+  const getConversationName = (conversation) => conversation?.bookings?.[0]
+    ? `${conversation.bookings[0].first_name || ""} ${conversation.bookings[0].last_name || ""}`.trim()
+    : formatPhoneNumber(conversation?.number || "Unknown contact");
 
   function updateSiteFilter(field, value) {
     setSiteFilters((current) => ({ ...current, [field]: value }));
@@ -13397,12 +13422,14 @@ export default function App() {
                 <button type="button" className="text-button" disabled={isSendingArrivalTexts} onClick={loadArrivalTextPreview}>Refresh arrivals</button>
               </div>
               {arrivalTextError ? <Alert severity="warning">{arrivalTextError}</Alert> : null}
-              {arrivalTextPreview?.recipients.length ? <details>
-                <summary>View {arrivalTextPreview.recipients.length} arriving bookings</summary>
-                {arrivalTextPreview.recipients.map(guest => <p key={guest.id}>
-                  {guest.first_name} {guest.last_name} · Booking #{guest.id} · {guest.phone || "No valid mobile number"} · {guest.state === "sent" ? "Queued previously" : guest.state === "review" || guest.state === "sending" ? "Check Twilio history before retrying" : guest.eligible ? "Ready to send" : "Skipped"}
-                  {guest.error_message ? ` — ${guest.error_message}` : ""}
-                </p>)}
+              {arrivalTextPreview?.recipients.length ? <details open>
+                <summary>Edit messages for {arrivalTextPreview.recipients.length} arriving bookings</summary>
+                <div className="arrival-message-drafts">
+                  {arrivalTextPreview.recipients.map(guest => <div className="arrival-message-draft" key={guest.id}>
+                    <div className="admin-text-history-meta"><strong>{guest.first_name} {guest.last_name}</strong><span>{guest.phone || "No valid mobile number"}</span><span>{guest.eligible ? "Ready to send" : guest.state === "sent" ? "Queued previously" : "Skipped"}</span></div>
+                    {guest.eligible ? <textarea rows="8" value={arrivalTextDrafts[String(guest.id)] || ""} onChange={event => setArrivalTextDrafts(current => ({ ...current, [String(guest.id)]: event.target.value }))} /> : <p className="muted">This guest is not eligible for a reminder.</p>}
+                  </div>)}
+                </div>
               </details> : arrivalTextPreview ? <p className="muted">No active bookings arrive tomorrow.</p> : null}
             </section>
             {!smsWebhookConfigured ? <Alert severity="warning">Incoming messages require TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on the server.</Alert> : null}
@@ -13484,11 +13511,22 @@ export default function App() {
                   <span>{textMessages.length} shown</span>
                   <button type="button" className="text-button" disabled={isLoadingTextMessages || !isTextMessagingConfigured} onClick={syncTextMessageHistory}>Sync recent Twilio history</button>
                 </div>
+                {messageConversations.length ? <div className="admin-message-contacts" aria-label="Contacts">
+                  <div className="admin-message-contacts-heading"><strong>Contacts</strong><span>{messageConversations.length}</span></div>
+                  {messageConversations.map((conversation) => {
+                    const latest = [...conversation.messages].sort((a, b) => new Date(b.dateSent || 0) - new Date(a.dateSent || 0))[0];
+                    return <button type="button" key={conversation.number} className={`admin-message-contact ${selectedConversation?.number === conversation.number ? "selected" : ""}`} onClick={() => setSelectedConversationNumber(conversation.number)}>
+                      <span className="admin-message-avatar">{getConversationName(conversation).slice(0, 1).toUpperCase()}</span>
+                      <span className="admin-message-contact-copy"><strong>{getConversationName(conversation)}</strong><small>{latest?.body || "Attachment"}</small></span>
+                      <time>{formatTextMessageTimestamp(latest?.dateSent)}</time>
+                    </button>;
+                  })}
+                </div> : null}
                 {isLoadingTextMessages && !textMessages.length ? (
                   <p className="muted">Loading text messages...</p>
                 ) : textMessages.length ? (
                   <div className="admin-text-history-list">
-                    {textMessages.map((message) => {
+                    {visibleTextMessages.map((message) => {
                       const isOutbound = String(message.direction || "").startsWith(
                         "outbound"
                       );
