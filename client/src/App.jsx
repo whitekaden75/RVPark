@@ -6149,6 +6149,7 @@ export default function App() {
   const [bookkeepingProcessDocument, setBookkeepingProcessDocument] = useState(null);
   const [bookkeepingReviewId, setBookkeepingReviewId] = useState(null);
   const [bookkeepingReviewDraft, setBookkeepingReviewDraft] = useState(null);
+  const [bookkeepingEditingId, setBookkeepingEditingId] = useState(null);
   const [bookkeepingCategories, setBookkeepingCategories] = useState([]);
   const [bookkeepingNewCategory, setBookkeepingNewCategory] = useState("");
   const [bookkeepingTransactionFilter, setBookkeepingTransactionFilter] = useState("pending");
@@ -11070,7 +11071,7 @@ export default function App() {
           />
         ) : null}
         {activePage === "availability" ? (
-          <Paper component="section" className="card" elevation={0}>
+          <Paper component="section" className="card bookkeeping-page-card" elevation={0}>
             <div className="page-section-header">
               <h2>Availability Search</h2>
               <div className="section-actions">
@@ -12393,7 +12394,7 @@ export default function App() {
                   timeline for any date window.
                 </p>
               </div>
-              <div className="button-row">
+              <div className="button-row bookkeeping-upload-actions">
                 <span className="muted">
                   {isSchedulePageLoading && !hasLoadedReservations
                     ? "Loading schedule..."
@@ -13603,7 +13604,7 @@ export default function App() {
             <div className="result-panel">
               <div className="page-section-header"><h3>Documents</h3><div className="button-row"><select value={bookkeepingDocumentStatusFilter} onChange={(event) => setBookkeepingDocumentStatusFilter(event.target.value)}><option value="needs_processing">Needs processing</option><option value="all">All statuses</option><option value="queued">Queued</option><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="failed">Failed</option></select><select value={bookkeepingDocumentTypeFilter} onChange={(event) => setBookkeepingDocumentTypeFilter(event.target.value)}><option value="all">All types</option><option value="receipt">Receipts</option><option value="bank_statement">Bank statements</option><option value="credit_card_statement">Credit cards</option><option value="invoice">Invoices</option><option value="tax_document">Tax documents</option><option value="other">Other</option></select></div></div>
               {visibleBookkeepingDocuments.length ? visibleBookkeepingDocuments.map((document) => (
-                <div className="payment-summary-row" key={document.id}>
+                <div className="payment-summary-row bookkeeping-document-row" key={document.id}>
                   <span><strong>{document.original_filename}</strong><br /><small>{document.document_type} · {document.processing_status}</small></span>
                   <span className="button-row">
                     <button type="button" className="ghost-button" disabled={bookkeepingBusy || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => setBookkeepingProcessDocument(document)}>Process</button>
@@ -13615,29 +13616,29 @@ export default function App() {
             </div>
             <div className="result-panel" style={{ marginTop: "1rem" }}>
               <div className="page-section-header"><h3>{bookkeepingTransactionFilter === "pending" ? "Transactions awaiting review" : bookkeepingTransactionFilter === "approved" ? "Approved transactions" : "All transactions"}</h3><select value={bookkeepingTransactionFilter} onChange={(event) => setBookkeepingTransactionFilter(event.target.value)}><option value="pending">Pending review</option><option value="approved">Approved</option><option value="all">All transactions</option></select></div>
-              <div className="button-row" style={{ marginBottom: "1rem" }}><select value={bookkeepingTypeFilter} onChange={(event) => setBookkeepingTypeFilter(event.target.value)}><option value="all">All types</option><option value="income">Income</option><option value="expense">Expenses</option><option value="refund">Refunds</option><option value="transfer">Transfers</option></select><select value={bookkeepingPaymentFilter} onChange={(event) => setBookkeepingPaymentFilter(event.target.value)}><option value="all">All payment methods</option><option value="cash">Cash</option><option value="check">Check</option><option value="card">Card</option><option value="other">Other</option></select><select value={bookkeepingCategoryFilter} onChange={(event) => setBookkeepingCategoryFilter(event.target.value)}><option value="all">All categories</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}</select></div>
+              <div className="button-row bookkeeping-transaction-filter-row" style={{ marginBottom: "1rem" }}><select value={bookkeepingTypeFilter} onChange={(event) => setBookkeepingTypeFilter(event.target.value)}><option value="all">All types</option><option value="income">Income</option><option value="expense">Expenses</option><option value="refund">Refunds</option><option value="transfer">Transfers</option></select><select value={bookkeepingPaymentFilter} onChange={(event) => setBookkeepingPaymentFilter(event.target.value)}><option value="all">All payment methods</option><option value="cash">Cash</option><option value="check">Check</option><option value="card">Card</option><option value="other">Other</option></select><select value={bookkeepingCategoryFilter} onChange={(event) => setBookkeepingCategoryFilter(event.target.value)}><option value="all">All categories</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}</select></div>
               {visibleBookkeepingTransactions.length ? visibleBookkeepingTransactions.map((transaction) => (
                 <article className="result-panel" key={transaction.id} style={{ marginBottom: ".75rem" }}>
-                  <button type="button" className="payment-summary-row" style={{ width: "100%", border: 0, background: "transparent", cursor: "pointer", textAlign: "left" }} onClick={() => { const next = bookkeepingReviewId === transaction.id ? null : transaction.id; setBookkeepingReviewId(next); setBookkeepingReviewDraft(next ? { ...transaction } : null); }}>
+                  <button type="button" className="payment-summary-row" style={{ width: "100%", border: 0, background: "transparent", cursor: "pointer", textAlign: "left" }} onClick={() => { const next = bookkeepingReviewId === transaction.id ? null : transaction.id; setBookkeepingReviewId(next); setBookkeepingReviewDraft(next ? { ...transaction } : null); setBookkeepingEditingId(next && transaction.status === "pending" ? transaction.id : null); }}>
                     <span><strong>{transaction.vendor || "Unknown vendor"}</strong><br /><small>{transaction.transaction_date || "No date"} · {transaction.category || "Uncategorized"}</small></span>
                     <strong>{transaction.currency} {Number(transaction.total || 0).toFixed(2)} · {transaction.status}</strong>
                   </button>
                   {bookkeepingReviewId === transaction.id ? <div className="bookkeeping-review-card">
-                    {(() => { const draft = bookkeepingReviewDraft || transaction; const set = (field, value) => setBookkeepingReviewDraft((current) => ({ ...(current || transaction), [field]: value })); return <>
+                    {(() => { const draft = bookkeepingReviewDraft || transaction; const isEditing = bookkeepingEditingId === transaction.id; const set = (field, value) => setBookkeepingReviewDraft((current) => ({ ...(current || transaction), [field]: value })); return <>
                       <div className="field-grid">
-                        <TextField label="Date" type="date" value={String(draft.transaction_date || "").slice(0, 10)} onChange={(event) => set("transaction_date", event.target.value)} InputLabelProps={{ shrink: true }} />
-                        <TextField label="Vendor" value={draft.vendor || ""} onChange={(event) => set("vendor", event.target.value)} />
-                        <TextField label="Description" value={draft.description || ""} onChange={(event) => set("description", event.target.value)} />
-                        <label className="bookkeeping-category-field">Category<select className="bookkeeping-category-select" value={draft.category || ""} onChange={async (event) => { if (event.target.value === "__add_category__") { const name = window.prompt("New expense category name:"); if (name?.trim()) { try { const result = await apiRequest("/bookkeeping/categories", { method: "POST", body: JSON.stringify({ name: name.trim(), category_type: "expense" }) }); setBookkeepingCategories((current) => [...current, result.category].sort((a, b) => a.name.localeCompare(b.name))); set("category", result.category.name); } catch (error) { setBookkeepingMessage(error.message); } } } else { set("category", event.target.value); } }}><option value="">Select category</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}<option value="__add_category__">＋ Add category…</option></select></label>
-                        <TextField label="Subtotal" type="number" value={draft.subtotal ?? ""} onChange={(event) => set("subtotal", event.target.value)} />
-                        <TextField label="Tax" type="number" value={draft.tax ?? ""} onChange={(event) => set("tax", event.target.value)} />
-                        <TextField label="Total" type="number" value={draft.total ?? ""} onChange={(event) => set("total", event.target.value)} />
-                        <TextField label="Payment account" value={draft.payment_account || ""} onChange={(event) => set("payment_account", event.target.value)} />
+                        <TextField label="Date" type="date" value={String(draft.transaction_date || "").slice(0, 10)} onChange={(event) => set("transaction_date", event.target.value)} InputLabelProps={{ shrink: true }} InputProps={{ readOnly: !isEditing }} />
+                        <TextField label="Vendor" value={draft.vendor || ""} onChange={(event) => set("vendor", event.target.value)} InputProps={{ readOnly: !isEditing }} />
+                        <TextField label="Description" value={draft.description || ""} onChange={(event) => set("description", event.target.value)} InputProps={{ readOnly: !isEditing }} />
+                        <label className="bookkeeping-category-field">Category<select disabled={!isEditing} className="bookkeeping-category-select" value={draft.category || ""} onChange={async (event) => { if (event.target.value === "__add_category__") { const name = window.prompt("New expense category name:"); if (name?.trim()) { try { const result = await apiRequest("/bookkeeping/categories", { method: "POST", body: JSON.stringify({ name: name.trim(), category_type: "expense" }) }); setBookkeepingCategories((current) => [...current, result.category].sort((a, b) => a.name.localeCompare(b.name))); set("category", result.category.name); } catch (error) { setBookkeepingMessage(error.message); } } } else { set("category", event.target.value); } }}><option value="">Select category</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}<option value="__add_category__">＋ Add category…</option></select></label>
+                        <TextField label="Subtotal" type="number" value={draft.subtotal ?? ""} onChange={(event) => set("subtotal", event.target.value)} InputProps={{ readOnly: !isEditing }} />
+                        <TextField label="Tax" type="number" value={draft.tax ?? ""} onChange={(event) => set("tax", event.target.value)} InputProps={{ readOnly: !isEditing }} />
+                        <TextField label="Total" type="number" value={draft.total ?? ""} onChange={(event) => set("total", event.target.value)} InputProps={{ readOnly: !isEditing }} />
+                        <TextField label="Payment account" value={draft.payment_account || ""} onChange={(event) => set("payment_account", event.target.value)} InputProps={{ readOnly: !isEditing }} />
                       </div>
                       <p><strong>Source file:</strong> {transaction.source_filename || "Not available"}</p>
                       <button type="button" className="ghost-button" onClick={() => viewBookkeepingSource(transaction)}>View original file</button>
                       <p><strong>AI confidence:</strong> {transaction.ai_confidence == null ? "Not provided" : `${Math.round(Number(transaction.ai_confidence) * 100)}%`}</p>
-                      <div className="button-row"><button type="button" className="ghost-button" onClick={() => saveBookkeepingTransaction(transaction)}>Save changes</button>{transaction.status === "pending" ? <button type="button" className="primary-button" onClick={() => saveBookkeepingTransaction(transaction, "approved")}>Save and approve</button> : <span className="status-badge">Approved</span>}<button type="button" className="ghost-button" onClick={async () => { if (!window.confirm("Delete this transaction?")) return; await apiRequest(`/bookkeeping/transactions/${transaction.id}`, { method: "DELETE" }); setBookkeepingTransactions((current) => current.filter((item) => item.id !== transaction.id)); setBookkeepingReviewId(null); setBookkeepingMessage("Transaction deleted."); }}>Delete</button></div>
+                      <div className="button-row">{transaction.status === "approved" && !isEditing ? <button type="button" className="ghost-button" onClick={() => setBookkeepingEditingId(transaction.id)}>Edit</button> : <><button type="button" className="ghost-button" onClick={() => saveBookkeepingTransaction(transaction)}>Save changes</button>{transaction.status === "pending" ? <button type="button" className="primary-button" onClick={() => saveBookkeepingTransaction(transaction, "approved")}>Save and approve</button> : null}</>}<button type="button" className="ghost-button" onClick={async () => { if (!window.confirm("Delete this transaction?")) return; await apiRequest(`/bookkeeping/transactions/${transaction.id}`, { method: "DELETE" }); setBookkeepingTransactions((current) => current.filter((item) => item.id !== transaction.id)); setBookkeepingReviewId(null); setBookkeepingMessage("Transaction deleted."); }}>Delete</button></div>
                     </>; })()}
                   </div> : null}
                 </article>

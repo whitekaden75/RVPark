@@ -3320,6 +3320,110 @@ select option {
   font: inherit;
 }
 
+.bookkeeping-upload-actions {
+  flex-wrap: wrap;
+}
+
+.bookkeeping-upload-actions label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bookkeeping-document-row {
+  gap: .75rem;
+}
+
+.bookkeeping-document-row > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.bookkeeping-transaction-filter-row {
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.bookkeeping-transaction-filter-row select,
+.bookkeeping-page-card .page-section-header select {
+  min-height: 40px;
+  max-width: 100%;
+  padding: .5rem .7rem;
+  border: 1px solid #b8c9bf;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--admin-pine);
+  font: inherit;
+}
+
+@media (max-width: 900px) {
+  .bookkeeping-page-card .page-section-header {
+    align-items: stretch;
+    gap: .8rem;
+  }
+
+  .bookkeeping-upload-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+
+  .bookkeeping-upload-actions label {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .bookkeeping-document-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .bookkeeping-document-row > .button-row,
+  .bookkeeping-review-card .button-row {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .bookkeeping-document-row > .button-row button,
+  .bookkeeping-review-card .button-row button {
+    flex: 1 1 130px;
+    min-height: 44px;
+  }
+
+  .bookkeeping-transaction-filter-row {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .bookkeeping-transaction-filter-row select,
+  .bookkeeping-page-card .page-section-header select {
+    width: 100%;
+  }
+
+  .bookkeeping-page-card .modal-backdrop {
+    align-items: start;
+    overflow-y: auto;
+    padding: 12px;
+  }
+
+  .bookkeeping-page-card .modal-card {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+    margin-top: 8px;
+    padding: 18px;
+    border-radius: 18px;
+  }
+
+  .bookkeeping-page-card .modal-card .button-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .bookkeeping-page-card .modal-card .button-row button {
+    min-height: 46px;
+  }
+}
+
 .admin-shell .app-header.compact {
   padding: 16px 22px;
   box-shadow: 0 16px 30px rgba(23, 55, 47, 0.1);
