@@ -2386,6 +2386,7 @@ function PublicPaymentPage({ token }) {
         ) : paymentDetails ? (
           <>
             <div className="public-payment-reservation">
+              {paymentDetails.description ? <div className="public-payment-message"><strong>{paymentDetails.description}</strong></div> : null}
               <div>
                 <span>Guest</span>
                 <strong>{paymentDetails.guestName}</strong>
@@ -6107,7 +6108,7 @@ export default function App() {
       label: "Reservations",
       pages: [
         { key: "availability", label: "Availability" },
-        { key: "reservation", label: "Manage reservations" },
+        { key: "reservation", label: "Create new reservation" },
         { key: "schedule", label: "Schedule" },
         { key: "history", label: "History" },
       ],
@@ -6197,6 +6198,9 @@ export default function App() {
   const [selectedConversationNumber, setSelectedConversationNumber] = useState("");
   const [isNewMessageOpen, setIsNewMessageOpen] = useState(false);
   const [arrivalTextPreview, setArrivalTextPreview] = useState(null);
+  const [arrivalTextMode, setArrivalTextMode] = useState("tomorrow");
+  const [lateArrivalPreview, setLateArrivalPreview] = useState(null);
+  const [lateArrivalDrafts, setLateArrivalDrafts] = useState({});
   const [arrivalTextDrafts, setArrivalTextDrafts] = useState({});
   const [arrivalTextError, setArrivalTextError] = useState("");
   const [isSendingArrivalTexts, setIsSendingArrivalTexts] = useState(false);
@@ -6208,6 +6212,10 @@ export default function App() {
   const [missingTextMessageConfig, setMissingTextMessageConfig] = useState([]);
   const [isLoadingTextMessages, setIsLoadingTextMessages] = useState(false);
   const [isSendingTextMessage, setIsSendingTextMessage] = useState(false);
+  const [messageMode, setMessageMode] = useState("text");
+  const [emailSearch, setEmailSearch] = useState("");
+  const [emailResults, setEmailResults] = useState([]);
+  const [isSearchingEmails, setIsSearchingEmails] = useState(false);
   const textSendInFlight = useRef(false);
   const [textMessageError, setTextMessageError] = useState("");
   const [textMessageSuccess, setTextMessageSuccess] = useState("");
@@ -8268,7 +8276,7 @@ export default function App() {
 
   async function loadArrivalTextPreview() {
     try {
-      const preview = await apiRequest("/messages/arrival-reminders");
+      const preview = await apiRequest(`/messages/arrival-reminders${arrivalTextMode === "today" ? `?date=${getParkDateFromTimestamp(new Date())}` : ""}`);
       setArrivalTextPreview(preview);
       const drafts = await Promise.all((preview.recipients || []).filter(guest => guest.eligible).map(async guest => {
         try { return [String(guest.id), (await apiRequest(`/messages/arrival-reminders/${guest.id}?date=${encodeURIComponent(preview.date)}`)).body]; }
@@ -8282,9 +8290,29 @@ export default function App() {
     }
   }
 
+  async function loadLateArrivalPreview() {
+    try {
+      const preview = await apiRequest("/messages/late-arrivals");
+      setLateArrivalPreview(preview);
+      setLateArrivalDrafts(Object.fromEntries((preview.recipients || []).map(guest => [String(guest.id), guest.body])));
+    } catch (error) { setArrivalTextError(error.message); }
+  }
+
   useEffect(() => {
-    if (isUnlocked && activePage === "messages") loadArrivalTextPreview();
-  }, [isUnlocked, activePage]);
+    if (isUnlocked && activePage === "messages") { loadArrivalTextPreview(); loadLateArrivalPreview(); }
+  }, [isUnlocked, activePage, arrivalTextMode]);
+
+  async function sendLateArrivalTexts() {
+    const recipients = (lateArrivalPreview?.recipients || []).filter(guest => guest.eligible);
+    for (const guest of recipients) {
+      await sendTextMessage({ to: guest.phone, body: lateArrivalDrafts[String(guest.id)] || guest.body });
+      if (guest.payment?.url) {
+        await sendTextMessage({ to: guest.phone, body: `Riverpark RV Resort\nYour remaining balance is ${formatCurrency(guest.payment.amount)}. Pay securely here: ${guest.payment.url}\nReply STOP to unsubscribe or HELP for assistance.` });
+      }
+    }
+    setTextMessageSuccess(`Sent late-arrival information to ${recipients.length} guest${recipients.length === 1 ? "" : "s"}, including payment links where needed.`);
+    await loadLateArrivalPreview();
+  }
 
   async function sendTomorrowArrivalTexts() {
     if (arrivalSendInFlight.current || !arrivalTextPreview) return;
@@ -8371,6 +8399,21 @@ export default function App() {
       textSendInFlight.current = false;
       setIsSendingTextMessage(false);
     }
+  }
+
+  async function searchEmails() {
+    if (emailSearch.trim().length < 2) return setEmailResults([]);
+    setIsSearchingEmails(true);
+    try { setEmailResults((await apiRequest(`/emails/search?q=${encodeURIComponent(emailSearch.trim())}`)).reservations || []); }
+    catch (error) { setTextMessageError(error.message); }
+    finally { setIsSearchingEmails(false); }
+  }
+
+  async function resendEmail(reservation, type) {
+    try {
+      const result = await apiRequest("/emails/resend", { method: "POST", body: JSON.stringify({ reservationId: reservation.id, type }) });
+      setTextMessageSuccess(result.message);
+    } catch (error) { setTextMessageError(error.message); }
   }
 
   async function openMessageConversation(conversation) {
@@ -9272,7 +9315,7 @@ export default function App() {
     }
   }
 
-  async function generatePaymentLink(reservation, label = "Payment link") {
+  async function generatePaymentLink(reservation, label = "Payment link", options = {}) {
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
 
@@ -9287,6 +9330,8 @@ export default function App() {
           method: "POST",
           body: JSON.stringify({
             baseUrl: window.location.origin,
+            customAmount: options.customAmount,
+            description: options.description,
           }),
         }
       );
@@ -10678,9 +10723,14 @@ export default function App() {
     const electricCharge = Math.max(usage * 0.17 - 75, 0);
     if (!Number.isFinite(currentReading) || !window.confirm(`Save meter reading ${currentReading}?\n\nPrevious reading: ${previousReading}\nUsage: ${usage} kWh\nElectric charge: ${formatCurrency(electricCharge)}`)) return;
     try {
-      const reading = await apiRequest(`/reservations/${reservation.id}/monthly-meter-readings`, { method: "POST", body: JSON.stringify({ reading: value.meter, readingDate: value.meterDate, sendBillingMessage: true }) });
+      const reading = await apiRequest(`/reservations/${reservation.id}/monthly-meter-readings`, { method: "POST", body: JSON.stringify({ reading: value.meter, readingDate: value.meterDate, prepareBillingMessage: true }) });
       setMonthlyMeterHistory((current) => ({ ...current, [reservation.id]: [reading, ...(current[reservation.id] || [])] }));
-      setAdminSaveNotice(reading.billingMessage ? "Meter reading saved and billing text sent." : "Meter reading saved.");
+      if (reading.billingMessage) {
+        setTextMessageForm({ to: formatPhoneNumber(reading.billingMessage.to), body: reading.billingMessage.body });
+        setAdminSaveNotice("Meter reading saved. Review the billing text before sending, or leave it unsent.");
+        setIsNewMessageOpen(true);
+        setActivePage("messages");
+      } else setAdminSaveNotice("Meter reading saved.");
       await ensureReservationsLoaded({ force: true });
     } catch (error) { setAdminSaveNotice(error.message); }
   }
@@ -10982,7 +11032,7 @@ export default function App() {
               type="button"
               className={`admin-navigation-tab ${activePage === "checkin" ? "active" : ""}`}
               onClick={() => setActivePage("checkin")}>Check In</button>
-            {adminDropdowns.map((dropdown) => (
+            {adminDropdowns.filter((dropdown) => !(dropdown.label === "Finance & Setup" && dropdown.pages.some((page) => page.key === activePage))).map((dropdown) => (
               <label key={dropdown.label} className="admin-navigation-dropdown">
                 <span className="sr-only">{dropdown.label}</span>
                 <select
@@ -11013,7 +11063,7 @@ export default function App() {
                   {page.label}
                 </button>
               ))}
-              {adminDropdowns.map((dropdown) => (
+              {adminDropdowns.filter((dropdown) => !(dropdown.label === "Finance & Setup" && dropdown.pages.some((page) => page.key === activePage))).map((dropdown) => (
                 <label key={dropdown.label} className="admin-mobile-menu-dropdown">
                   <select
                     value={dropdown.pages.some((page) => page.key === activePage) ? activePage : ""}
@@ -13441,6 +13491,17 @@ export default function App() {
                         <div className="button-row monthly-charge-actions">
                           <button
                             type="button"
+                            className="ghost-button"
+                            disabled={Number(chargeAmount || 0) <= 0}
+                            onClick={() => generatePaymentLink(
+                              reservation,
+                              "Monthly payment link",
+                              { customAmount: chargeAmount, description: monthlyChargeForms[reservation.id]?.description || "Monthly charges" }
+                            )}>
+                            Create payment link
+                          </button>
+                          <button
+                            type="button"
                             className="primary-button terminal-send-button"
                             disabled={
                               terminalReader?.status !== "online" ||
@@ -13487,6 +13548,12 @@ export default function App() {
                             Charge by phone
                           </button>
                         </div>
+                        {generatedPaymentLink?.reservationId === reservation.id ? (
+                          <label className="payment-link-inline-field">
+                            Payment link ({generatedPaymentLink.label})
+                            <input readOnly value={generatedPaymentLink.checkoutUrl} onFocus={(event) => event.target.select()} />
+                          </label>
+                        ) : null}
                         {terminalReader?.status !== "online" ? (
                           <p className="muted small-text">Connect the office Terminal, then refresh its status above to collect payment.</p>
                         ) : null}
@@ -13696,8 +13763,10 @@ export default function App() {
         {activePage === "messages" ? (
           <Paper component="section" className="card messaging-page" elevation={0}>
             <div className="page-section-header">
-              <h2>Text Messages</h2>
+              <h2>{messageMode === "text" ? "Text Messages" : "Emails"}</h2>
               <div className="section-actions">
+                <button type="button" className={messageMode === "text" ? "primary-button" : "ghost-button"} onClick={() => setMessageMode("text")}>Texts</button>
+                <button type="button" className={messageMode === "email" ? "primary-button" : "ghost-button"} onClick={() => setMessageMode("email")}>Emails</button>
                 <button
                   type="button"
                   className="ghost-button"
@@ -13732,12 +13801,35 @@ export default function App() {
               </Alert>
             ) : null}
 
-            <details className="sms-booking-details arrival-reminders" aria-label="Tomorrow’s arrival reminders">
-              <summary>Tomorrow’s arrival texts</summary>
-              <p>Send a personalized reminder to each arriving booking for {arrivalTextPreview ? formatDisplayDate(arrivalTextPreview.date) : "tomorrow"} (Pacific time). Previously sent bulk reminders are skipped.</p>
+            {messageMode === "email" ? (
+              <div className="sms-booking-details arrival-reminders">
+                <h3>Find a guest or reservation</h3>
+                <div className="button-row">
+                  <input aria-label="Search guests or reservations" placeholder="Name, email, or reservation #" value={emailSearch} onChange={event => setEmailSearch(event.target.value)} onKeyDown={event => event.key === "Enter" && searchEmails()} />
+                  <button type="button" className="primary-button" onClick={searchEmails}>{isSearchingEmails ? "Searching…" : "Search"}</button>
+                </div>
+                {emailResults.length ? <div className="arrival-message-drafts">
+                  {emailResults.map(reservation => <div className="arrival-message-draft" key={reservation.id}>
+                    <div className="admin-text-history-meta"><strong>{reservation.first_name} {reservation.last_name}</strong><span>Reservation #{reservation.id}</span><span>{reservation.email || "No email"}</span><span>{reservation.status}</span></div>
+                    <div className="button-row">
+                      <button type="button" className="ghost-button" disabled={!reservation.email || reservation.status === "canceled"} onClick={() => resendEmail(reservation, "confirmation")}>Resend confirmation</button>
+                      <button type="button" className="ghost-button" disabled={!reservation.email || reservation.status !== "canceled"} onClick={() => resendEmail(reservation, "cancellation")}>Resend cancellation</button>
+                    </div>
+                  </div>)}
+                </div> : emailSearch.length >= 2 && !isSearchingEmails ? <p className="muted">No matching reservations found.</p> : null}
+              </div>
+            ) : null}
+            {messageMode === "text" ? <>
+            <details className="sms-booking-details arrival-reminders" aria-label="Arrival reminders">
+              <summary>Arrival texts</summary>
+              <div className="button-row">
+                <button type="button" className={arrivalTextMode === "tomorrow" ? "primary-button" : "ghost-button"} onClick={() => setArrivalTextMode("tomorrow")}>Tomorrow’s arrivals</button>
+                <button type="button" className={arrivalTextMode === "today" ? "primary-button" : "ghost-button"} onClick={() => setArrivalTextMode("today")}>Today’s arrivals</button>
+              </div>
+              <p>Send a personalized reminder to each arriving booking for {arrivalTextPreview ? formatDisplayDate(arrivalTextPreview.date) : arrivalTextMode} (Pacific time). Previously sent reminders are skipped.</p>
               <div className="button-row">
                 <button type="button" className="primary-button" disabled={isSendingArrivalTexts || !isTextMessagingConfigured || !arrivalTextPreview?.recipients.some(guest => guest.eligible)} onClick={sendTomorrowArrivalTexts}>
-                  {isSendingArrivalTexts ? "Sending arrival texts…" : `Send all tomorrow’s reminders (${arrivalTextPreview?.recipients.filter(guest => guest.eligible).length || 0})`}
+                  {isSendingArrivalTexts ? "Sending arrival texts…" : `Send all ${arrivalTextMode === "today" ? "today’s" : "tomorrow’s"} reminders (${arrivalTextPreview?.recipients.filter(guest => guest.eligible).length || 0})`}
                 </button>
                 <button type="button" className="text-button" disabled={isSendingArrivalTexts} onClick={loadArrivalTextPreview}>Refresh arrivals</button>
               </div>
@@ -13752,8 +13844,28 @@ export default function App() {
                 </div>
               </details> : arrivalTextPreview ? <p className="muted">No active bookings arrive tomorrow.</p> : null}
             </details>
+            <details className="sms-booking-details arrival-reminders" aria-label="Late arrival messages">
+              <summary>Late arrival texts</summary>
+              <p>Guests scheduled to arrive today who do not have a check-in recorded yet. Guests with an unpaid balance also receive a separate secure payment-link text.</p>
+              <div className="button-row">
+                <button type="button" className="primary-button" disabled={isSendingTextMessage || !isTextMessagingConfigured || !lateArrivalPreview?.recipients.some(guest => guest.eligible)} onClick={sendLateArrivalTexts}>
+                  Send late-arrival texts ({lateArrivalPreview?.recipients.filter(guest => guest.eligible).length || 0})
+                </button>
+                <button type="button" className="text-button" disabled={isSendingTextMessage} onClick={loadLateArrivalPreview}>Refresh late arrivals</button>
+              </div>
+              {lateArrivalPreview?.recipients.length ? <details open>
+                <summary>Edit late-arrival messages</summary>
+                <div className="arrival-message-drafts">
+                  {lateArrivalPreview.recipients.map(guest => <div className="arrival-message-draft" key={guest.id}>
+                    <div className="admin-text-history-meta"><strong>{guest.first_name} {guest.last_name}</strong><span>{guest.phone || "No valid mobile number"}</span><span>{guest.payment ? `Payment link: ${formatCurrency(guest.payment.amount)}` : "Paid in full"}</span></div>
+                    {guest.eligible ? <textarea aria-label={`Late arrival message for ${guest.first_name} ${guest.last_name}`} rows="12" value={lateArrivalDrafts[String(guest.id)] || ""} onChange={event => setLateArrivalDrafts(current => ({ ...current, [String(guest.id)]: event.target.value }))} /> : <p className="muted">This guest is missing a valid phone number.</p>}
+                  </div>)}
+                </div>
+              </details> : lateArrivalPreview ? <p className="muted">No late arrivals found for today.</p> : null}
+            </details>
+            </> : null}
             {!smsWebhookConfigured ? <Alert severity="warning">Incoming messages require TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on the server.</Alert> : null}
-            <MessageInbox
+            {messageMode === "text" ? <MessageInbox
               messages={textMessages}
               customers={customers}
               selectedNumber={selectedConversationNumber}
@@ -13773,7 +13885,7 @@ export default function App() {
               onSync={syncTextMessageHistory}
               error={textMessageError}
               formatPhone={formatPhoneNumber}
-            />
+            /> : null}
           </Paper>
         ) : null}
 

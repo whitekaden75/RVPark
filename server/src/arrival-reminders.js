@@ -8,16 +8,36 @@ export function arrivalReminderText(reservation, date, formatDate, reference = '
     `Arrival: ${formatDate(date)}`, `Departure: ${departure === '9999-12-31' ? 'Open-ended' : departure ? formatDate(departure) : 'Not set'}`,
     'Check-in: 1:00 PM',
     ...(Number(reservation.unpaidStayNights) > 0 ? [`${reservation.unpaidStayNights} ${Number(reservation.unpaidStayNights) === 1 ? 'night remains' : 'nights remain'} to be paid`] : []),
-    '', 'Payment Information', 'Card payments use the displayed card price.',
-    'Cash and checks use the displayed bank price.', '',
+    '',
     'Please reply to this message to confirm your arrival and provide your approximate arrival time. Any questions? Call (541) 295-1269',
     '', 'Thank you!', '', 'Makayla', 'Riverpark RV Resort', '2956 Rogue River Hwy', 'Grants Pass, OR 97527'
   ].join('\n');
 }
 
-export function createArrivalReminders({ pool, tomorrow, getReservation, normalizePhone, formatDate, send, configured }) {
-  async function preview() {
-    const date = tomorrow();
+export function lateArrivalText(reservation) {
+  const name = `${reservation.first_name || ''} ${reservation.last_name || ''}`.trim() || 'Guest';
+  const site = reservation.siteStays?.find(stay => stay.arrival_date === reservation.lateArrivalDate)?.site_number || 'your assigned site';
+  return [
+    'Riverpark RV Resort – Late Arrival Information', `Welcome ${name} - Site #${site},`, '',
+    'If you arrive after the office has closed, please follow these instructions:', '',
+    '-Stop at the office before proceeding to your site.',
+    '-Your map will be in the gray bin located to the left of the office door. It will be clearly labeled with your name and site number.',
+    '-If you are a motorhome that is towing, please unhook your tow vehicle near the office before driving to your site.', '',
+    'WiFi Network: Riverpark E or Riverpark W', 'Password: 0123456R',
+    'Please do not stream video or other high-bandwidth content. Wi-Fi is intended for email, web browsing, and social media so all guests can enjoy reliable service.',
+    'Restroom Code: 1234', 'If the door does not open, press C (bottom right of the keypad) to clear it, then re-enter the code.', '',
+    'For questions or assistance, please call or text 541-295-1269. Thank you for choosing Riverpark RV Resort. We hope you enjoy your stay!', '',
+    'Makayla', '', 'Riverpark RV Resort', '2956 Rogue River Hwy', 'Grants Pass, OR 97527'
+  ].join('\n');
+}
+
+export function createArrivalReminders({ pool, today = () => tomorrow(), tomorrow, getReservation, normalizePhone, formatDate, send, configured, createPaymentLink }) {
+  function validDate(date) {
+    return date === today() || date === tomorrow();
+  }
+
+  async function preview(requestedDate = tomorrow()) {
+    const date = validDate(requestedDate) ? requestedDate : tomorrow();
     const result = await pool.query(`
       SELECT r.id,c.first_name,c.last_name,c.phone_number,
         log.state,log.message_sid,log.error_message
@@ -45,10 +65,10 @@ export function createArrivalReminders({ pool, tomorrow, getReservation, normali
 
   async function sendBatch(date, requestedIds, customBodies = {}) {
     if (!configured()) throw new Error('Twilio is not configured.');
-    if (date !== tomorrow()) throw new Error('The arrival date changed. Refresh tomorrow’s arrivals before sending.');
+    if (!validDate(date)) throw new Error('The arrival date changed. Refresh today’s or tomorrow’s arrivals before sending.');
     // Ensure storage is available before accepting any sends.
     await pool.query('SELECT sid FROM text_messages LIMIT 0');
-    const current = await preview();
+    const current = await preview(date);
     const ids = new Set(requestedIds.map(String));
     const results = [];
     for (const recipient of current.recipients.filter(row => ids.has(String(row.id)))) {
@@ -86,5 +106,27 @@ export function createArrivalReminders({ pool, tomorrow, getReservation, normali
     }
     return { date, results };
   }
-  return { preview, draft, sendBatch };
+
+  async function latePreview() {
+    const date = today();
+    const result = await pool.query(`
+      SELECT r.id, c.first_name, c.last_name, c.phone_number
+      FROM reservations r JOIN customers c ON c.id=r.customer_id
+      WHERE r.status='active'
+        AND (SELECT min(st.arrival_date) FROM reservation_site_stays st WHERE st.reservation_id=r.id)=$1::date
+        AND NOT EXISTS (SELECT 1 FROM reservation_check_ins ci WHERE ci.reservation_id=r.id)
+      ORDER BY c.last_name,c.first_name,r.id`, [date]);
+    const recipients = [];
+    for (const row of result.rows) {
+      const reservation = await getReservation(row.id);
+      reservation.lateArrivalDate = date;
+      const payment = Number(reservation.remainingBalance || 0) > 0 && createPaymentLink
+        ? await createPaymentLink(reservation, date)
+        : null;
+      recipients.push({ ...row, phone: normalizePhone(row.phone_number), body: lateArrivalText(reservation), payment, eligible: Boolean(normalizePhone(row.phone_number)) });
+    }
+    return { date, recipients };
+  }
+
+  return { preview, draft, sendBatch, latePreview };
 }
