@@ -118,6 +118,7 @@ Required values:
 - `DATABASE_URL`
 - `PORT`
 - `CLIENT_ORIGIN`
+- `PUBLIC_APP_URL` (the public HTTPS frontend URL used in guest-facing payment links; never use localhost)
 - `ADMIN_SESSION_SECRET`
 - `AFTER_HOURS_ACCESS_TOKEN` (secret value used in the QR-only drive-up URL)
 - `STRIPE_SECRET_KEY`
@@ -250,9 +251,11 @@ Use the Railway Postgres query window or your own SQL client and run [sql/001_rv
 
 ### CORS
 
-After the frontend deploys, update the backend `CLIENT_ORIGIN` variable to the exact frontend URL, for example:
+After the frontend deploys, update the backend `CLIENT_ORIGIN` and `PUBLIC_APP_URL` variables to the exact public frontend URL, for example:
 
 - `https://your-frontend.up.railway.app`
+
+`PUBLIC_APP_URL` is used for guest-facing payment links and must never be a localhost URL.
 
 Then redeploy the backend.
 

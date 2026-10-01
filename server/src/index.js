@@ -583,11 +583,17 @@ const arrivalReminders = createArrivalReminders({
   formatDate: formatDisplayDate,
   configured: () => isTwilioConfigured,
   createPaymentLink: async (reservation, date) => {
-    const baseUrl = String(process.env.CLIENT_ORIGIN || "").split(",")[0].trim().replace(/\/+$/, "");
-    if (!baseUrl || !guestAuthSecret || Number(reservation.remainingBalance || 0) <= 0) return null;
-    const amount = roundCurrency(reservation.remainingBalance);
-    const token = createGuestPaymentLinkToken(reservation.id, amount, "Late arrival balance");
-    return { url: `${baseUrl}/?pay=${encodeURIComponent(token)}`, amount, description: "Late arrival balance" };
+    const baseUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/+$/, "");
+    const { bankAmount, cardAmount } = getRemainingBalancePaymentAmounts(reservation);
+    if (!baseUrl || /^https?:\/\/(localhost|127\.0\.0\.1)(?::\d+)?$/i.test(baseUrl) || !guestAuthSecret || bankAmount <= 0) return null;
+    const token = createGuestPaymentLinkToken(reservation.id, null, "Late arrival balance");
+    return {
+      url: `${baseUrl}/?pay=${encodeURIComponent(token)}`,
+      amount: bankAmount,
+      bankAmount,
+      cardAmount,
+      description: "Late arrival balance"
+    };
   },
   send: ({ to, body }) => makeTwilioRequest(`/2010-04-01/Accounts/${encodeURIComponent(twilioAccountSid)}/Messages.json`, {
     method: "POST", form: { To: to, Body: addSmsComplianceFooter(body),

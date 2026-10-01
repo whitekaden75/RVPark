@@ -8299,7 +8299,11 @@ export default function App() {
       setLateArrivalPreview(preview);
       setLateArrivalDrafts(Object.fromEntries((preview.recipients || []).map(guest => [String(guest.id), [
         guest.body,
-        guest.payment?.url ? `Riverpark RV Resort\nYour remaining balance is ${formatCurrency(guest.payment.amount)}. Pay securely here: ${guest.payment.url}\nReply STOP to unsubscribe or HELP for assistance.` : ""
+        guest.payment?.url ? [
+          `Card payment (secure link): ${formatCurrency(guest.payment.cardAmount)} — ${guest.payment.url}`,
+          `Cash or check: ${formatCurrency(guest.payment.bankAmount)} (lower price). Put cash or check in an envelope and leave it at the office.`,
+          "Reply STOP to unsubscribe or HELP for assistance."
+        ].join("\n") : ""
       ].filter(Boolean).join("\n\n")])));
       setLateArrivalSelected(Object.fromEntries((preview.recipients || []).map(guest => [String(guest.id), guest.eligible])));
     } catch (error) { setArrivalTextError(error.message); }
