@@ -6202,6 +6202,8 @@ export default function App() {
   const [lateArrivalPreview, setLateArrivalPreview] = useState(null);
   const [lateArrivalDrafts, setLateArrivalDrafts] = useState({});
   const [arrivalTextDrafts, setArrivalTextDrafts] = useState({});
+  const [lateArrivalSelected, setLateArrivalSelected] = useState({});
+  const [arrivalTextSelected, setArrivalTextSelected] = useState({});
   const [arrivalTextError, setArrivalTextError] = useState("");
   const [isSendingArrivalTexts, setIsSendingArrivalTexts] = useState(false);
   const arrivalSendInFlight = useRef(false);
@@ -8283,6 +8285,7 @@ export default function App() {
         catch { return [String(guest.id), ""]; }
       }));
       setArrivalTextDrafts(Object.fromEntries(drafts));
+      setArrivalTextSelected(Object.fromEntries((preview.recipients || []).map(guest => [String(guest.id), guest.eligible])));
       setArrivalTextError("");
     } catch (error) {
       setArrivalTextError(error.message);
@@ -8294,7 +8297,11 @@ export default function App() {
     try {
       const preview = await apiRequest("/messages/late-arrivals");
       setLateArrivalPreview(preview);
-      setLateArrivalDrafts(Object.fromEntries((preview.recipients || []).map(guest => [String(guest.id), guest.body])));
+      setLateArrivalDrafts(Object.fromEntries((preview.recipients || []).map(guest => [String(guest.id), [
+        guest.body,
+        guest.payment?.url ? `Riverpark RV Resort\nYour remaining balance is ${formatCurrency(guest.payment.amount)}. Pay securely here: ${guest.payment.url}\nReply STOP to unsubscribe or HELP for assistance.` : ""
+      ].filter(Boolean).join("\n\n")])));
+      setLateArrivalSelected(Object.fromEntries((preview.recipients || []).map(guest => [String(guest.id), guest.eligible])));
     } catch (error) { setArrivalTextError(error.message); }
   }
 
@@ -8303,12 +8310,9 @@ export default function App() {
   }, [isUnlocked, activePage, arrivalTextMode]);
 
   async function sendLateArrivalTexts() {
-    const recipients = (lateArrivalPreview?.recipients || []).filter(guest => guest.eligible);
+    const recipients = (lateArrivalPreview?.recipients || []).filter(guest => guest.eligible && lateArrivalSelected[String(guest.id)]);
     for (const guest of recipients) {
       await sendTextMessage({ to: guest.phone, body: lateArrivalDrafts[String(guest.id)] || guest.body });
-      if (guest.payment?.url) {
-        await sendTextMessage({ to: guest.phone, body: `Riverpark RV Resort\nYour remaining balance is ${formatCurrency(guest.payment.amount)}. Pay securely here: ${guest.payment.url}\nReply STOP to unsubscribe or HELP for assistance.` });
-      }
     }
     setTextMessageSuccess(`Sent late-arrival information to ${recipients.length} guest${recipients.length === 1 ? "" : "s"}, including payment links where needed.`);
     await loadLateArrivalPreview();
@@ -8323,7 +8327,7 @@ export default function App() {
     try {
       const result = await apiRequest("/messages/arrival-reminders", {
         method: "POST", body: JSON.stringify({ date: arrivalTextPreview.date,
-          reservationIds: arrivalTextPreview.recipients.filter(guest => guest.eligible).map(guest => guest.id),
+          reservationIds: arrivalTextPreview.recipients.filter(guest => guest.eligible && arrivalTextSelected[String(guest.id)]).map(guest => guest.id),
           customBodies: arrivalTextDrafts })
       });
       const sent = result.results.filter(item => item.state === "sent").length;
@@ -13828,8 +13832,8 @@ export default function App() {
               </div>
               <p>Send a personalized reminder to each arriving booking for {arrivalTextPreview ? formatDisplayDate(arrivalTextPreview.date) : arrivalTextMode} (Pacific time). Previously sent reminders are skipped.</p>
               <div className="button-row">
-                <button type="button" className="primary-button" disabled={isSendingArrivalTexts || !isTextMessagingConfigured || !arrivalTextPreview?.recipients.some(guest => guest.eligible)} onClick={sendTomorrowArrivalTexts}>
-                  {isSendingArrivalTexts ? "Sending arrival texts…" : `Send all ${arrivalTextMode === "today" ? "today’s" : "tomorrow’s"} reminders (${arrivalTextPreview?.recipients.filter(guest => guest.eligible).length || 0})`}
+                <button type="button" className="primary-button" disabled={isSendingArrivalTexts || !isTextMessagingConfigured || !arrivalTextPreview?.recipients.some(guest => guest.eligible && arrivalTextSelected[String(guest.id)])} onClick={sendTomorrowArrivalTexts}>
+                  {isSendingArrivalTexts ? "Sending arrival texts…" : `Send selected ${arrivalTextMode === "today" ? "today’s" : "tomorrow’s"} reminders (${arrivalTextPreview?.recipients.filter(guest => guest.eligible && arrivalTextSelected[String(guest.id)]).length || 0})`}
                 </button>
                 <button type="button" className="text-button" disabled={isSendingArrivalTexts} onClick={loadArrivalTextPreview}>Refresh arrivals</button>
               </div>
@@ -13838,7 +13842,7 @@ export default function App() {
                 <summary>Edit messages for {arrivalTextPreview.recipients.length} arriving bookings</summary>
                 <div className="arrival-message-drafts">
                   {arrivalTextPreview.recipients.map(guest => <div className="arrival-message-draft" key={guest.id}>
-                    <div className="admin-text-history-meta"><strong>{guest.first_name} {guest.last_name}</strong><span>{guest.phone || "No valid mobile number"}</span><span>{guest.eligible ? "Ready to send" : guest.state === "sent" ? "Queued previously" : "Skipped"}</span></div>
+                    <label className="arrival-message-recipient"><input type="checkbox" checked={Boolean(arrivalTextSelected[String(guest.id)])} disabled={!guest.eligible || isSendingArrivalTexts} onChange={event => setArrivalTextSelected(current => ({ ...current, [String(guest.id)]: event.target.checked }))} /><strong>{guest.first_name} {guest.last_name}</strong></label><div className="admin-text-history-meta"><span>{guest.phone || "No valid mobile number"}</span><span>{guest.eligible ? "Ready to send" : guest.state === "sent" ? "Queued previously" : "Skipped"}</span></div>
                     {guest.eligible ? <textarea aria-label={`Arrival message for ${guest.first_name} ${guest.last_name}`} rows="8" value={arrivalTextDrafts[String(guest.id)] || ""} onChange={event => setArrivalTextDrafts(current => ({ ...current, [String(guest.id)]: event.target.value }))} /> : <p className="muted">This guest is not eligible for a reminder.</p>}
                   </div>)}
                 </div>
@@ -13848,8 +13852,8 @@ export default function App() {
               <summary>Late arrival texts</summary>
               <p>Guests scheduled to arrive today who do not have a check-in recorded yet. Guests with an unpaid balance also receive a separate secure payment-link text.</p>
               <div className="button-row">
-                <button type="button" className="primary-button" disabled={isSendingTextMessage || !isTextMessagingConfigured || !lateArrivalPreview?.recipients.some(guest => guest.eligible)} onClick={sendLateArrivalTexts}>
-                  Send late-arrival texts ({lateArrivalPreview?.recipients.filter(guest => guest.eligible).length || 0})
+                <button type="button" className="primary-button" disabled={isSendingTextMessage || !isTextMessagingConfigured || !lateArrivalPreview?.recipients.some(guest => guest.eligible && lateArrivalSelected[String(guest.id)])} onClick={sendLateArrivalTexts}>
+                  Send selected late-arrival texts ({lateArrivalPreview?.recipients.filter(guest => guest.eligible && lateArrivalSelected[String(guest.id)]).length || 0})
                 </button>
                 <button type="button" className="text-button" disabled={isSendingTextMessage} onClick={loadLateArrivalPreview}>Refresh late arrivals</button>
               </div>
@@ -13857,7 +13861,7 @@ export default function App() {
                 <summary>Edit late-arrival messages</summary>
                 <div className="arrival-message-drafts">
                   {lateArrivalPreview.recipients.map(guest => <div className="arrival-message-draft" key={guest.id}>
-                    <div className="admin-text-history-meta"><strong>{guest.first_name} {guest.last_name}</strong><span>{guest.phone || "No valid mobile number"}</span><span>{guest.payment ? `Payment link: ${formatCurrency(guest.payment.amount)}` : "Paid in full"}</span></div>
+                    <label className="arrival-message-recipient"><input type="checkbox" checked={Boolean(lateArrivalSelected[String(guest.id)])} disabled={!guest.eligible || isSendingTextMessage} onChange={event => setLateArrivalSelected(current => ({ ...current, [String(guest.id)]: event.target.checked }))} /><strong>{guest.first_name} {guest.last_name}</strong></label><div className="admin-text-history-meta"><span>{guest.phone || "No valid mobile number"}</span><span>{guest.payment ? `Payment link: ${formatCurrency(guest.payment.amount)}` : "Paid in full"}</span></div>
                     {guest.eligible ? <textarea aria-label={`Late arrival message for ${guest.first_name} ${guest.last_name}`} rows="12" value={lateArrivalDrafts[String(guest.id)] || ""} onChange={event => setLateArrivalDrafts(current => ({ ...current, [String(guest.id)]: event.target.value }))} /> : <p className="muted">This guest is missing a valid phone number.</p>}
                   </div>)}
                 </div>

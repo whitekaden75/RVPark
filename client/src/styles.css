@@ -6323,6 +6323,8 @@ select option {
 .arrival-message-drafts { display: grid; gap: 12px; margin-top: 14px; }
 .arrival-message-draft { display: grid; gap: 8px; padding: 14px; border: 1px solid rgba(18, 63, 52, .1); border-radius: 14px; background: rgba(255,255,255,.65); }
 .arrival-message-draft textarea { width: 100%; min-height: 150px; resize: vertical; font-size: 16px; }
+.arrival-message-recipient { display: flex; align-items: center; gap: 10px; font-size: 1rem; }
+.arrival-message-recipient input { width: 20px; height: 20px; accent-color: #357a84; }
 .admin-text-history-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: .8rem; color: #52675b; }
 
 .generated-payment-link-card {
