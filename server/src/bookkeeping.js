@@ -137,7 +137,13 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
     const client = await pool.connect();
     let claimed = false;
+    let processingLockHeld = false;
     try {
+      const lockResult = await client.query("SELECT pg_try_advisory_lock(2147483001) AS locked");
+      if (!lockResult.rows[0].locked) {
+        return res.status(409).json({ message: "Another bookkeeping document is being processed. This document can be retried shortly." });
+      }
+      processingLockHeld = true;
       const documentResult = await client.query("SELECT * FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
       if (!documentResult.rowCount) return res.status(404).json({ message: "Document not found." });
       const document = documentResult.rows[0];
@@ -180,7 +186,10 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
         notify({ reason: "bookkeeping_changed" });
       }
       return res.status(500).json({ message: error.message });
-    } finally { client.release(); }
+    } finally {
+      if (processingLockHeld) await client.query("SELECT pg_advisory_unlock(2147483001)").catch(() => {});
+      client.release();
+    }
   });
 
   app.get("/api/bookkeeping/transactions", async (req, res) => {
@@ -197,11 +206,34 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     if (!["bank_statement", "credit_card_statement"].includes(statement.rows[0].document_type)) return res.status(400).json({ message: "Only bank and credit-card statements can be reconciled." });
     const statementTransactions = await pool.query("SELECT * FROM bookkeeping_transactions WHERE document_id = $1 ORDER BY transaction_date, id", [req.params.id]);
     const receiptTransactions = await pool.query(`SELECT t.*, d.original_filename AS source_filename FROM bookkeeping_transactions t JOIN bookkeeping_documents d ON d.id = t.document_id WHERE d.document_type IN ('receipt', 'invoice') AND t.document_id <> $1 AND t.status <> 'void'`, [req.params.id]);
+    const duplicateKey = (transaction) => `${String(transaction.transaction_date || "").slice(0, 10)}|${Number(transaction.total || 0).toFixed(2)}|${String(transaction.vendor || transaction.description || "").trim().toLowerCase().replace(/\s+/g, " ")}`;
+    const findDuplicates = (transactions, source) => {
+      const groups = new Map();
+      for (const transaction of transactions) {
+        const key = duplicateKey(transaction);
+        if (!key.startsWith("|")) groups.set(key, [...(groups.get(key) || []), transaction]);
+      }
+      return [...groups.entries()].flatMap(([key, group]) => group.length < 2 ? [] : group.slice(1).map((duplicate) => ({
+        source,
+        duplicate,
+        original: group[0],
+        reason: "Same date, amount, and vendor/description"
+      })));
+    };
+    const duplicateStatementCandidates = findDuplicates(statementTransactions.rows, "statement");
+    const duplicateReceiptCandidates = findDuplicates(receiptTransactions.rows, "receipt");
+    const duplicateStatementIds = new Set(duplicateStatementCandidates.map((item) => item.duplicate.id));
+    const duplicateReceiptIds = new Set(duplicateReceiptCandidates.map((item) => item.duplicate.id));
     const usedReceipts = new Set();
     const matches = [];
     for (const bankTransaction of statementTransactions.rows) {
+      if (duplicateStatementIds.has(bankTransaction.id)) {
+        matches.push({ statementTransaction: bankTransaction, receiptTransaction: null, status: "duplicate", score: 1, details: { reason: "Duplicate statement record" } });
+        continue;
+      }
       let best = null;
       for (const receipt of receiptTransactions.rows) {
+        if (duplicateReceiptIds.has(receipt.id)) continue;
         if (usedReceipts.has(receipt.id)) continue;
         const amountDifference = Math.abs(Number(bankTransaction.total || 0) - Number(receipt.total || 0));
         const dateDistance = daysBetween(bankTransaction.transaction_date, receipt.transaction_date);
@@ -218,11 +250,14 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
         matches.push({ statementTransaction: bankTransaction, receiptTransaction: null, status: best && best.score >= 0.4 ? "possible_match" : "unmatched_statement", score: best?.score || 0, details: best || {} });
       }
     }
-    const unmatchedReceipts = receiptTransactions.rows.filter((receipt) => !usedReceipts.has(receipt.id));
-    const run = await pool.query("INSERT INTO bookkeeping_reconciliation_runs (statement_document_id, created_by_admin_user_id, summary_json) VALUES ($1,$2,$3) RETURNING id", [req.params.id, req.adminUser.id, JSON.stringify({ matched: matches.filter((item) => item.status === "matched").length, possible: matches.filter((item) => item.status === "possible_match").length, unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement").length, unmatchedReceipts: unmatchedReceipts.length })]);
-    for (const match of matches) await pool.query("INSERT INTO bookkeeping_reconciliation_matches (run_id, statement_transaction_id, receipt_transaction_id, match_status, match_score, details) VALUES ($1,$2,$3,$4,$5,$6)", [run.rows[0].id, match.statementTransaction.id, match.receiptTransaction?.id || null, match.status, match.score, JSON.stringify({ amountDifference: match.details.amountDifference, dateDistance: match.details.dateDistance, vendorScore: match.details.vendorScore })]);
+    const unmatchedReceipts = receiptTransactions.rows.filter((receipt) => !usedReceipts.has(receipt.id) && !duplicateReceiptIds.has(receipt.id));
+    const run = await pool.query("INSERT INTO bookkeeping_reconciliation_runs (statement_document_id, created_by_admin_user_id, summary_json) VALUES ($1,$2,$3) RETURNING id", [req.params.id, req.adminUser.id, JSON.stringify({ matched: matches.filter((item) => item.status === "matched").length, possible: matches.filter((item) => item.status === "possible_match").length, unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement").length, unmatchedReceipts: unmatchedReceipts.length, duplicates: duplicateStatementCandidates.length + duplicateReceiptCandidates.length })]);
+    for (const match of matches) {
+      const persistedStatus = match.status === "duplicate" ? "possible_match" : match.status;
+      await pool.query("INSERT INTO bookkeeping_reconciliation_matches (run_id, statement_transaction_id, receipt_transaction_id, match_status, match_score, details) VALUES ($1,$2,$3,$4,$5,$6)", [run.rows[0].id, match.statementTransaction.id, match.receiptTransaction?.id || null, persistedStatus, match.score, JSON.stringify({ ...(match.details || {}), displayStatus: match.status })]);
+    }
     notify({ reason: "bookkeeping_changed" });
-    return res.json({ runId: run.rows[0].id, matched: matches.filter((item) => item.status === "matched"), possibleMatches: matches.filter((item) => item.status === "possible_match"), unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement"), unmatchedReceipts });
+    return res.json({ runId: run.rows[0].id, matched: matches.filter((item) => item.status === "matched"), possibleMatches: matches.filter((item) => item.status === "possible_match"), unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement"), duplicates: [...duplicateStatementCandidates, ...duplicateReceiptCandidates], unmatchedReceipts, consolidated: matches.filter((item) => item.status !== "duplicate").map((item) => ({ statementTransaction: item.statementTransaction, receiptTransaction: item.receiptTransaction, status: item.status, score: item.score })) });
   });
 
   app.patch("/api/bookkeeping/transactions/:id", async (req, res) => {

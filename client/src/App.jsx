@@ -6274,7 +6274,9 @@ export default function App() {
   const [bookkeepingDocuments, setBookkeepingDocuments] = useState([]);
   const [bookkeepingTransactions, setBookkeepingTransactions] = useState([]);
   const [bookkeepingBusy, setBookkeepingBusy] = useState(false);
+  const [bookkeepingQueueIds, setBookkeepingQueueIds] = useState([]);
   const [bookkeepingMessage, setBookkeepingMessage] = useState("");
+  const [bookkeepingReconciliation, setBookkeepingReconciliation] = useState(null);
   const [bookkeepingNote, setBookkeepingNote] = useState("");
   const [bookkeepingProcessDocument, setBookkeepingProcessDocument] = useState(null);
   const [bookkeepingReviewId, setBookkeepingReviewId] = useState(null);
@@ -6286,6 +6288,8 @@ export default function App() {
   const [bookkeepingRefreshError, setBookkeepingRefreshError] = useState("");
   const [isRefreshingBookkeeping, setIsRefreshingBookkeeping] = useState(false);
   const bookkeepingRefreshVersion = useRef(0);
+  const bookkeepingQueueRef = useRef([]);
+  const bookkeepingQueueRunningRef = useRef(false);
   const bookkeepingStatusRef = useRef(bookkeepingTransactionFilter);
   bookkeepingStatusRef.current = bookkeepingTransactionFilter;
   const refreshBookkeepingData = useCallback(async () => {
@@ -6894,14 +6898,47 @@ export default function App() {
     finally { setBookkeepingBusy(false); }
   }
 
-  async function processBookkeepingDocument(id, note = "") {
+  async function runBookkeepingQueue() {
+    if (bookkeepingQueueRunningRef.current) return;
+    bookkeepingQueueRunningRef.current = true;
     setBookkeepingBusy(true);
-    setBookkeepingMessage("AI is reading the document…");
     try {
-      await apiRequest(`/bookkeeping/documents/${id}/process`, { method: "POST", body: JSON.stringify({ note }) });
-      setBookkeepingMessage("Extraction complete. Review transactions before approving.");
-    } catch (error) { setBookkeepingMessage(error.message); }
-    finally { setBookkeepingBusy(false); await refreshBookkeepingData(); }
+      while (bookkeepingQueueRef.current.length) {
+        const next = bookkeepingQueueRef.current.shift();
+        setBookkeepingQueueIds((current) => current.filter((id) => id !== next.id));
+        setBookkeepingMessage(`AI is reading ${next.filename || "the next document"}…`);
+        try {
+          await apiRequest(`/bookkeeping/documents/${next.id}/process`, {
+            method: "POST",
+            body: JSON.stringify({ note: next.note || "" }),
+          });
+          setBookkeepingMessage(`${next.filename || "Document"} processed. Continuing the queue…`);
+        } catch (error) {
+          setBookkeepingMessage(`${next.filename || "Document"} failed: ${error.message}`);
+        }
+        await refreshBookkeepingData();
+      }
+    } finally {
+      bookkeepingQueueRunningRef.current = false;
+      setBookkeepingBusy(false);
+      setBookkeepingQueueIds([]);
+      await refreshBookkeepingData();
+    }
+  }
+
+  function queueBookkeepingDocument(document, note = "") {
+    if (!document || ["processing", "needs_review", "approved"].includes(document.processing_status)) return;
+    if (bookkeepingQueueRef.current.some((item) => item.id === document.id)) return;
+    bookkeepingQueueRef.current.push({ id: document.id, note, filename: document.original_filename });
+    setBookkeepingQueueIds((current) => [...current, document.id]);
+    setBookkeepingMessage(`${document.original_filename} added to the AI queue.`);
+    runBookkeepingQueue();
+  }
+
+  function queueAllBookkeepingDocuments() {
+    visibleBookkeepingDocuments
+      .filter((document) => ["uploaded", "queued", "failed"].includes(document.processing_status))
+      .forEach((document) => queueBookkeepingDocument(document, document.metadata?.note || ""));
   }
 
   async function approveBookkeepingTransaction(transaction) {
@@ -6960,6 +6997,7 @@ export default function App() {
     setBookkeepingBusy(true);
     try {
       const result = await apiRequest(`/bookkeeping/documents/${document.id}/reconcile`, { method: "POST" });
+      setBookkeepingReconciliation({ document, ...result });
       setBookkeepingMessage(`Reconciliation complete: ${result.matched.length} matched, ${result.possibleMatches.length} possible matches, ${result.unmatchedStatement.length} statement items without receipts.`);
       await refreshBookkeepingData();
     } catch (error) { setBookkeepingMessage(error.message); }
@@ -13968,18 +14006,60 @@ export default function App() {
             {bookkeepingRefreshError ? <Alert severity="warning" sx={{ mb: 2 }}>{bookkeepingRefreshError}</Alert> : null}
             {bookkeepingMessage ? <Alert severity="info" sx={{ mb: 2 }}>{bookkeepingMessage}</Alert> : null}
             <div className="result-panel">
-              <div className="page-section-header"><h3>Documents</h3><div className="button-row"><select aria-label="Document status" value={bookkeepingDocumentStatusFilter} onChange={(event) => setBookkeepingDocumentStatusFilter(event.target.value)}><option value="needs_processing">Needs processing</option><option value="all">All statuses</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="failed">Failed</option></select><select aria-label="Document type" value={bookkeepingDocumentTypeFilter} onChange={(event) => setBookkeepingDocumentTypeFilter(event.target.value)}><option value="all">All types</option><option value="receipt">Receipts</option><option value="bank_statement">Bank statements</option><option value="credit_card_statement">Credit cards</option><option value="invoice">Invoices</option><option value="tax_document">Tax documents</option><option value="other">Other</option></select></div></div>
+              <div className="page-section-header"><h3>Documents</h3><div className="button-row"><button type="button" className="primary-button" disabled={bookkeepingBusy || !visibleBookkeepingDocuments.some((document) => ["uploaded", "queued", "failed"].includes(document.processing_status))} onClick={queueAllBookkeepingDocuments}>Queue all for AI</button><select aria-label="Document status" value={bookkeepingDocumentStatusFilter} onChange={(event) => setBookkeepingDocumentStatusFilter(event.target.value)}><option value="needs_processing">Needs processing</option><option value="all">All statuses</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="failed">Failed</option></select><select aria-label="Document type" value={bookkeepingDocumentTypeFilter} onChange={(event) => setBookkeepingDocumentTypeFilter(event.target.value)}><option value="all">All types</option><option value="receipt">Receipts</option><option value="bank_statement">Bank statements</option><option value="credit_card_statement">Credit cards</option><option value="invoice">Invoices</option><option value="tax_document">Tax documents</option><option value="other">Other</option></select></div></div>
               {visibleBookkeepingDocuments.length ? visibleBookkeepingDocuments.map((document) => (
                 <div className="payment-summary-row bookkeeping-document-row" key={document.id}>
                   <span><strong>{document.original_filename}</strong><br /><small>{document.document_type.replaceAll("_", " ")} · {document.processing_status.replaceAll("_", " ")}</small></span>
                   <span className="button-row">
-                    <button type="button" className="ghost-button" disabled={bookkeepingBusy || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => { setBookkeepingNote(document.metadata?.note || ""); setBookkeepingProcessDocument(document); }}>Process</button>
+                    <button type="button" className="ghost-button" disabled={bookkeepingQueueIds.includes(document.id) || ["processing", "needs_review", "approved"].includes(document.processing_status)} onClick={() => { setBookkeepingNote(document.metadata?.note || ""); setBookkeepingProcessDocument(document); }}>{bookkeepingQueueIds.includes(document.id) ? "Queued" : "Queue"}</button>
                     {["bank_statement", "credit_card_statement"].includes(document.document_type) && ["needs_review", "approved"].includes(document.processing_status) ? <button type="button" className="ghost-button" disabled={bookkeepingBusy} onClick={() => reconcileBookkeepingStatement(document)}>Compare receipts</button> : null}
                     {["uploaded", "queued", "failed", "rejected", "needs_review"].includes(document.processing_status) ? <button type="button" className="ghost-button" disabled={bookkeepingBusy} onClick={() => deleteBookkeepingDocument(document)}>Remove</button> : null}
                   </span>
                 </div>
               )) : <p className="muted">{bookkeepingDocuments.length ? "No documents match these filters." : "No bookkeeping documents uploaded yet."}</p>}
             </div>
+            {bookkeepingReconciliation ? (
+              <div className="result-panel bookkeeping-reconciliation-panel" style={{ marginTop: "1rem" }}>
+                <div className="page-section-header">
+                  <div>
+                    <h3>Reconciliation: {bookkeepingReconciliation.document.original_filename}</h3>
+                    <p className="muted">Matched statement transactions are consolidated with their receipts. Duplicate candidates are kept visible for review instead of being silently deleted.</p>
+                  </div>
+                  <button type="button" className="ghost-button" onClick={() => setBookkeepingReconciliation(null)}>Close report</button>
+                </div>
+                <div className="bookkeeping-reconciliation-summary">
+                  <span><strong>{bookkeepingReconciliation.matched.length}</strong> matched</span>
+                  <span><strong>{bookkeepingReconciliation.possibleMatches.length}</strong> possible</span>
+                  <span><strong>{bookkeepingReconciliation.unmatchedStatement.length}</strong> statement items unaccounted for</span>
+                  <span><strong>{bookkeepingReconciliation.unmatchedReceipts.length}</strong> receipts unaccounted for</span>
+                  <span><strong>{bookkeepingReconciliation.duplicates.length}</strong> duplicate candidates</span>
+                </div>
+                <div className="bookkeeping-reconciliation-table" role="table" aria-label="Bookkeeping reconciliation">
+                  <div className="bookkeeping-reconciliation-row bookkeeping-reconciliation-header" role="row"><strong>Statement transaction</strong><strong>Receipt / invoice</strong><strong>Result</strong></div>
+                  {bookkeepingReconciliation.consolidated.map((match, index) => (
+                    <div className="bookkeeping-reconciliation-row" role="row" key={`consolidated-${match.statementTransaction.id}-${index}`}>
+                      <span>{match.statementTransaction.transaction_date || "No date"} · {match.statementTransaction.vendor || match.statementTransaction.description || "Unknown"}<strong>{formatCurrency(match.statementTransaction.total)}</strong></span>
+                      <span>{match.receiptTransaction ? `${match.receiptTransaction.source_filename || "Receipt"} · ${match.receiptTransaction.vendor || match.receiptTransaction.description || "Unknown"}` : "—"}{match.receiptTransaction ? <strong>{formatCurrency(match.receiptTransaction.total)}</strong> : null}</span>
+                      <span className={`bookkeeping-reconciliation-status ${match.status}`}>{match.status.replaceAll("_", " ")}</span>
+                    </div>
+                  ))}
+                  {bookkeepingReconciliation.unmatchedReceipts.map((receipt) => (
+                    <div className="bookkeeping-reconciliation-row" role="row" key={`receipt-${receipt.id}`}>
+                      <span>—</span>
+                      <span>{receipt.source_filename || "Receipt / invoice"} · {receipt.vendor || receipt.description || "Unknown"}<strong>{formatCurrency(receipt.total)}</strong></span>
+                      <span className="bookkeeping-reconciliation-status unmatched_receipt">receipt not on statement</span>
+                    </div>
+                  ))}
+                  {bookkeepingReconciliation.duplicates.map((duplicate, index) => (
+                    <div className="bookkeeping-reconciliation-row" role="row" key={`duplicate-${duplicate.source}-${duplicate.duplicate.id}-${index}`}>
+                      <span>{duplicate.source === "statement" ? `${duplicate.duplicate.transaction_date || "No date"} · ${duplicate.duplicate.vendor || duplicate.duplicate.description || "Unknown"}` : "—"}<strong>{duplicate.source === "statement" ? formatCurrency(duplicate.duplicate.total) : ""}</strong></span>
+                      <span>{duplicate.source === "receipt" ? `${duplicate.duplicate.source_filename || "Receipt / invoice"} · ${duplicate.duplicate.vendor || duplicate.duplicate.description || "Unknown"}` : "—"}<strong>{duplicate.source === "receipt" ? formatCurrency(duplicate.duplicate.total) : ""}</strong></span>
+                      <span className="bookkeeping-reconciliation-status duplicate">possible duplicate</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="result-panel" style={{ marginTop: "1rem" }}>
               <div className="page-section-header"><h3>{bookkeepingTransactionFilter === "pending" ? "Transactions awaiting review" : bookkeepingTransactionFilter === "approved" ? "Approved transactions" : "All transactions"}</h3><select aria-label="Transaction status" value={bookkeepingTransactionFilter} onChange={(event) => setBookkeepingTransactionFilter(event.target.value)}><option value="pending">Pending review</option><option value="approved">Approved</option><option value="all">All transactions</option></select></div>
               <div className="button-row bookkeeping-transaction-filter-row" style={{ marginBottom: "1rem" }}><select aria-label="Transaction type" value={bookkeepingTypeFilter} onChange={(event) => setBookkeepingTypeFilter(event.target.value)}><option value="all">All types</option><option value="income">Income</option><option value="expense">Expenses</option><option value="refund">Refunds</option><option value="transfer">Transfers</option></select><select aria-label="Payment method" value={bookkeepingPaymentFilter} onChange={(event) => setBookkeepingPaymentFilter(event.target.value)}><option value="all">All payment methods</option><option value="cash">Cash</option><option value="check">Check</option><option value="card">Card</option><option value="other">Other</option></select><select aria-label="Filter by category" value={bookkeepingCategoryFilter} onChange={(event) => setBookkeepingCategoryFilter(event.target.value)}><option value="all">All categories</option>{bookkeepingCategories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}</select></div>
@@ -14018,7 +14098,7 @@ export default function App() {
                 <p>Add any helpful context. AI will suggest its best category match for you to review.</p>
                 <TextField autoFocus fullWidth label="Additional information (optional)" multiline minRows={4} value={bookkeepingNote} onChange={(event) => setBookkeepingNote(event.target.value)} placeholder="Example: Fuel for the park maintenance truck, paid with the card ending in 1234." />
               </DialogContent>
-              <DialogActions><Button onClick={() => setBookkeepingProcessDocument(null)}>Cancel</Button><Button variant="contained" onClick={async () => { const document = bookkeepingProcessDocument; if (!document) return; setBookkeepingProcessDocument(null); await processBookkeepingDocument(document.id, bookkeepingNote); setBookkeepingNote(""); }}>Process document</Button></DialogActions>
+              <DialogActions><Button onClick={() => setBookkeepingProcessDocument(null)}>Cancel</Button><Button variant="contained" onClick={() => { const document = bookkeepingProcessDocument; if (!document) return; setBookkeepingProcessDocument(null); queueBookkeepingDocument(document, bookkeepingNote); setBookkeepingNote(""); }}>Add to AI queue</Button></DialogActions>
             </Dialog>
           </Paper>
         ) : null}

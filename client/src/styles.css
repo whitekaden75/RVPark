@@ -8119,6 +8119,76 @@ select option {
   background: rgba(239, 246, 242, 0.72);
 }
 
+.bookkeeping-reconciliation-summary {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+
+.bookkeeping-reconciliation-summary span {
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: #eef5ef;
+  color: #52675b;
+  font-size: 0.85rem;
+}
+
+.bookkeeping-reconciliation-table {
+  overflow-x: auto;
+  border: 1px solid rgba(39, 64, 50, 0.14);
+  border-radius: 12px;
+}
+
+.bookkeeping-reconciliation-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr 0.8fr;
+  gap: 14px;
+  align-items: start;
+  min-width: 680px;
+  padding: 12px 14px;
+  border-top: 1px solid rgba(39, 64, 50, 0.1);
+  color: #52675b;
+  font-size: 0.88rem;
+}
+
+.bookkeeping-reconciliation-row:first-child {
+  border-top: 0;
+}
+
+.bookkeeping-reconciliation-row span {
+  display: grid;
+  gap: 3px;
+}
+
+.bookkeeping-reconciliation-row span strong {
+  color: #17372f;
+}
+
+.bookkeeping-reconciliation-header {
+  color: #17372f;
+  background: #f4f0e7;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bookkeeping-reconciliation-status {
+  color: #26714f;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.bookkeeping-reconciliation-status.possible_match,
+.bookkeeping-reconciliation-status.duplicate {
+  color: #a35c25;
+}
+
+.bookkeeping-reconciliation-status.unmatched_receipt,
+.bookkeeping-reconciliation-status.unmatched_statement {
+  color: #9a2c2c;
+}
+
 .payment-link-generator-card > div:first-child {
   display: grid;
   gap: 4px;
