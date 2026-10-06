@@ -8109,6 +8109,88 @@ select option {
   background: linear-gradient(135deg, rgba(255, 248, 235, 0.96), rgba(250, 246, 237, 0.92));
 }
 
+.payment-link-generator-card {
+  display: grid;
+  gap: 14px;
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid rgba(53, 122, 132, 0.25);
+  border-radius: 14px;
+  background: rgba(239, 246, 242, 0.72);
+}
+
+.payment-link-generator-card > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.payment-link-generator-controls {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.payment-link-generator-controls label {
+  min-width: 170px;
+}
+
+.payment-link-generator-total {
+  display: grid;
+  gap: 3px;
+  min-width: 130px;
+}
+
+.payment-link-generator-total span {
+  color: #52675b;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 760px) {
+  .payment-link-generator-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .payment-link-generator-controls label,
+  .payment-link-generator-controls button {
+    width: 100%;
+  }
+}
+
+.resume-booking-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(53, 122, 132, 0.35);
+  border-radius: 14px;
+  background: rgba(239, 246, 242, 0.95);
+}
+
+.resume-booking-card > div {
+  display: grid;
+  gap: 3px;
+  flex: 1 1 260px;
+}
+
+.resume-booking-card span {
+  color: #52675b;
+  font-size: 0.9rem;
+}
+
+.resume-booking-card button {
+  flex: 0 0 auto;
+}
+
+.after-hours-resume-card {
+  margin-top: 22px;
+  color: #17372f;
+  background: rgba(255, 252, 246, 0.94);
+}
+
 .pending-bookings-card .result-header {
   align-items: flex-start;
   gap: 16px;

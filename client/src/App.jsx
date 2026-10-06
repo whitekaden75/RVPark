@@ -34,6 +34,8 @@ const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
 const lastBookedSiteStorageKey = "rvpark-last-booked-site";
 const guestAccessTokenStorageKey = "rvpark-guest-access-token";
 const pendingTerminalWorkflowStorageKey = "rvpark-pending-terminal-workflow";
+const publicBookingDraftStorageKey = "rvpark-public-booking-draft";
+const afterHoursBookingDraftStorageKey = "rvpark-after-hours-booking-draft";
 const adminClientId =
   typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
@@ -54,6 +56,20 @@ const cardElementOptions = {
 };
 
 let cachedStripePromise = null;
+
+function readBookingDraft(storageKey) {
+  if (typeof window === "undefined") return null;
+  try {
+    const draft = JSON.parse(window.localStorage.getItem(storageKey) || "null");
+    if (draft?.checkoutExpiresAt && Date.now() >= Number(draft.checkoutExpiresAt)) {
+      window.localStorage.removeItem(storageKey);
+      return null;
+    }
+    return draft;
+  } catch {
+    return null;
+  }
+}
 
 function readPendingTerminalWorkflow() {
   if (typeof window === "undefined") return null;
@@ -2477,6 +2493,7 @@ function PublicPaymentPage({ token }) {
 
 function AfterHoursDriveUpPage({ accessToken }) {
   const today = getParkDateFromTimestamp(new Date());
+  const savedAfterHoursDraft = useState(() => readBookingDraft(afterHoursBookingDraftStorageKey))[0];
   const [leaveDate, setLeaveDate] = useState(addDays(today, 1));
   const [sites, setSites] = useState([]);
   const [selectedSite, setSelectedSite] = useState(null);
@@ -2485,7 +2502,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [confirmation, setConfirmation] = useState(null);
-  const [form, setForm] = useState({
+  const [form, setForm] = useState(() => savedAfterHoursDraft?.form || {
     firstName: "",
     lastName: "",
     email: "",
@@ -2561,7 +2578,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
       ? selectedSite.availableUntil
       : afterHoursMaximumLeaveDate;
 
-  async function loadAvailableSites(event) {
+  async function loadAvailableSites(event, requestedLeaveDate = leaveDate) {
     event?.preventDefault();
     setIsLoading(true);
     setErrorMessage("");
@@ -2573,10 +2590,18 @@ function AfterHoursDriveUpPage({ accessToken }) {
         body: JSON.stringify({
           accessToken,
           arrivalDate: today,
-          leaveDate,
+          leaveDate: requestedLeaveDate,
         }),
       });
-      setSites(ensureArray(result.sites, "After-hours availability"));
+      const nextSites = ensureArray(result.sites, "After-hours availability");
+      setSites(nextSites);
+      if (savedAfterHoursDraft?.selectedSiteId) {
+        const resumedSite = nextSites.find((site) => String(site.id) === String(savedAfterHoursDraft.selectedSiteId));
+        if (resumedSite) {
+          setLeaveDate(savedAfterHoursDraft.leaveDate || requestedLeaveDate);
+          setSelectedSite(resumedSite);
+        }
+      }
     } catch (error) {
       setSites([]);
       setErrorMessage(error.message);
@@ -2586,8 +2611,18 @@ function AfterHoursDriveUpPage({ accessToken }) {
   }
 
   useEffect(() => {
-    loadAvailableSites();
+    loadAvailableSites(null, savedAfterHoursDraft?.leaveDate || addDays(today, 1));
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !selectedSite) return;
+    window.localStorage.setItem(afterHoursBookingDraftStorageKey, JSON.stringify({
+      form,
+      leaveDate,
+      selectedSiteId: selectedSite.id,
+      selectedSiteNumber: selectedSite.siteNumber,
+    }));
+  }, [form, leaveDate, selectedSite]);
 
   function updateForm(field, value) {
     setForm((current) => {
@@ -2688,6 +2723,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
         }
       );
       setConfirmation(result);
+      window.localStorage.removeItem(afterHoursBookingDraftStorageKey);
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
       setErrorMessage(error.message);
@@ -2710,6 +2746,15 @@ function AfterHoursDriveUpPage({ accessToken }) {
           paymentMethod: "card",
         }),
       });
+      window.localStorage.setItem(afterHoursBookingDraftStorageKey, JSON.stringify({
+        form,
+        leaveDate,
+        selectedSiteId: selectedSite.id,
+        selectedSiteNumber: selectedSite.siteNumber,
+        checkoutUrl: result.checkoutUrl,
+        checkoutToken: result.checkoutToken,
+        checkoutExpiresAt: new Date(result.expiresAt).getTime(),
+      }));
       window.location.assign(result.checkoutUrl);
     } catch (error) {
       setErrorMessage(error.message);
@@ -2777,6 +2822,27 @@ function AfterHoursDriveUpPage({ accessToken }) {
           Find an open site for tonight, reserve it now, then pay by card or use
           a cash envelope from beside the board.
         </p>
+        {savedAfterHoursDraft ? (
+          <div className="resume-booking-card after-hours-resume-card" role="status">
+            <div>
+              <strong>Your late-arrival booking is saved on this device.</strong>
+              <span>
+                {savedAfterHoursDraft.checkoutUrl
+                  ? "Your secure payment page is ready to resume."
+                  : `Your site and guest details have been restored${savedAfterHoursDraft.selectedSiteNumber ? ` for Site ${savedAfterHoursDraft.selectedSiteNumber}` : ""}.`}
+              </span>
+            </div>
+            {savedAfterHoursDraft.checkoutUrl ? (
+              <button type="button" onClick={() => window.location.assign(savedAfterHoursDraft.checkoutUrl)}>
+                Resume secure checkout
+              </button>
+            ) : null}
+            <button type="button" className="text-button" onClick={() => {
+              window.localStorage.removeItem(afterHoursBookingDraftStorageKey);
+              window.location.reload();
+            }}>Start over</button>
+          </div>
+        ) : null}
       </header>
 
       <section className="after-hours-panel">
@@ -3173,6 +3239,8 @@ function PublicHome({
   onOpenGuest,
   onOpenAdmin,
 }) {
+  const savedPublicBookingDraft = useState(() => readBookingDraft(publicBookingDraftStorageKey))[0];
+  const isRestoringPublicDraft = useRef(false);
   const isFlexibleSearch = searchForm.searchMode === "flexible";
   const matchingSiteCount = directMatches.length;
   const flexibleSiteCount = flexibleMatches.length;
@@ -3182,8 +3250,10 @@ function PublicHome({
   const isLongStay = Number(numberOfNights) > 14;
   const requiresPhoneBooking = searchForm.rigOverTenYears;
   const isPublicOnlineBookingEnabled = true;
-  const [selectedBookingSite, setSelectedBookingSite] = useState(null);
-  const [publicBookingForm, setPublicBookingForm] = useState({
+  const [selectedBookingSite, setSelectedBookingSite] = useState(
+    () => savedPublicBookingDraft?.selectedBookingSite || null
+  );
+  const [publicBookingForm, setPublicBookingForm] = useState(() => savedPublicBookingDraft?.publicBookingForm || {
     firstName: "",
     lastName: "",
     email: "",
@@ -3243,6 +3313,10 @@ function PublicHome({
       : bookingCheckoutStatus?.message || "Checking your payment...";
 
   useEffect(() => {
+    if (isRestoringPublicDraft.current) {
+      isRestoringPublicDraft.current = false;
+      return;
+    }
     setSelectedBookingSite(null);
     setPublicBookingError("");
     setShowAllPublicDirectMatches(false);
@@ -3272,6 +3346,30 @@ function PublicHome({
   ]);
 
   useEffect(() => {
+    if (!savedPublicBookingDraft) return;
+    isRestoringPublicDraft.current = true;
+    Object.entries(savedPublicBookingDraft.searchForm || {}).forEach(([field, value]) => {
+      if (value !== undefined) onSearchChange(field, value);
+    });
+    setSelectedBookingSite(savedPublicBookingDraft.selectedBookingSite || null);
+    setPublicBookingForm(savedPublicBookingDraft.publicBookingForm || {});
+    setPublicBookingError("");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!selectedBookingSite && !publicBookingForm.firstName && !savedPublicBookingDraft) return;
+    window.localStorage.setItem(publicBookingDraftStorageKey, JSON.stringify({
+      searchForm,
+      selectedBookingSite,
+      publicBookingForm,
+      checkoutUrl: savedPublicBookingDraft?.checkoutUrl || null,
+      checkoutToken: savedPublicBookingDraft?.checkoutToken || null,
+      checkoutExpiresAt: savedPublicBookingDraft?.checkoutExpiresAt || null,
+    }));
+  }, [searchForm, selectedBookingSite, publicBookingForm]);
+
+  useEffect(() => {
     setIsMobileNavOpen(false);
   }, [isCalendarOpen]);
 
@@ -3294,6 +3392,9 @@ function PublicHome({
         }
 
         setBookingCheckoutStatus(result);
+        if (["completed", "expired", "failed", "conflict"].includes(result.status)) {
+          window.localStorage.removeItem(publicBookingDraftStorageKey);
+        }
 
         if (
           ["open", "processing", "paid"].includes(result.status) &&
@@ -3402,6 +3503,15 @@ function PublicHome({
           rigOverTenYears: searchForm.rigOverTenYears,
         }),
       });
+
+      window.localStorage.setItem(publicBookingDraftStorageKey, JSON.stringify({
+        searchForm,
+        selectedBookingSite,
+        publicBookingForm,
+        checkoutUrl: checkout.checkoutUrl,
+        checkoutToken: checkout.checkoutToken,
+        checkoutExpiresAt: new Date(checkout.expiresAt).getTime(),
+      }));
 
       window.location.assign(checkout.checkoutUrl);
     } catch (error) {
@@ -3719,6 +3829,35 @@ function PublicHome({
                 </h3>
               </div>
             </div>
+            {!returnedBookingCheckoutToken && savedPublicBookingDraft ? (
+              <div className="resume-booking-card" role="status">
+                <div>
+                  <strong>Your booking is saved on this device.</strong>
+                  <span>
+                    {savedPublicBookingDraft.checkoutUrl
+                      ? "Your secure payment page is ready to resume."
+                      : "Your dates, site, and guest details have been restored below."}
+                  </span>
+                </div>
+                {savedPublicBookingDraft.checkoutUrl ? (
+                  <button
+                    type="button"
+                    className="public-search-button"
+                    onClick={() => window.location.assign(savedPublicBookingDraft.checkoutUrl)}>
+                    Resume secure checkout
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    window.localStorage.removeItem(publicBookingDraftStorageKey);
+                    window.location.reload();
+                  }}>
+                  Start over
+                </button>
+              </div>
+            ) : null}
             <StaySearchModeFields
               searchForm={searchForm}
               onChange={onSearchChange}
@@ -6350,6 +6489,7 @@ export default function App() {
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] =
     useState("");
+  const [paymentLinkNights, setPaymentLinkNights] = useState("1");
   const [reservationCardPayment, setReservationCardPayment] = useState(null);
   const [scheduleCardPayment, setScheduleCardPayment] = useState(null);
   const [openCardActionMenuId, setOpenCardActionMenuId] = useState("");
@@ -7100,6 +7240,7 @@ export default function App() {
     );
     setActiveScheduleCheckNumber("");
     setActiveSchedulePaymentMethod("");
+    setPaymentLinkNights("1");
     setIsEditingSchedulePricingCategory(false);
     setSchedulePaymentErrorMessage("");
     setSchedulePaymentSuccessMessage("");
@@ -9392,6 +9533,7 @@ export default function App() {
           body: JSON.stringify({
             baseUrl: window.location.origin,
             customAmount: options.customAmount,
+            customCardAmount: options.customCardAmount,
             description: options.description,
           }),
         }
@@ -9413,6 +9555,39 @@ export default function App() {
       setPaymentLinkErrorMessage(error.message);
       return null;
     }
+  }
+
+  function getPaymentLinkAmountsForNights(reservation, nights) {
+    const numberOfNights = Math.max(1, Number(nights) || 1);
+    const useDiscountPrice = Boolean(reservation?.requestedDiscounts?.length);
+    const bankPrices = useDiscountPrice
+      ? reservation?.totals?.discountNightlyPrices?.length
+        ? reservation.totals.discountNightlyPrices
+        : reservation?.totals?.normalNightlyPrices
+      : reservation?.totals?.normalNightlyPrices?.length
+        ? reservation.totals.normalNightlyPrices
+        : reservation?.totals?.discountNightlyPrices;
+    const cardPrices = useDiscountPrice
+      ? reservation?.totals?.discountCardNightlyPrices?.length
+        ? reservation.totals.discountCardNightlyPrices
+        : reservation?.totals?.normalCardNightlyPrices
+      : reservation?.totals?.normalCardNightlyPrices?.length
+        ? reservation.totals.normalCardNightlyPrices
+        : reservation?.totals?.discountCardNightlyPrices;
+    const startIndex = Math.max(0, Number(reservation?.paidChargeableNights || 0));
+    const partialCredit = Number(reservation?.partialPaymentCredit || 0);
+    const sumPrices = (prices) => Array.isArray(prices) && prices.length
+      ? Math.max(prices.slice(startIndex, startIndex + numberOfNights).reduce((sum, price) => sum + Number(price || 0), 0) - partialCredit, 0)
+      : null;
+    const remainingBank = Number(reservation?.bankRemainingBalance ?? reservation?.remainingBalance ?? 0);
+    const remainingCard = Number(reservation?.cardRemainingBalance ?? reservation?.remainingBalance ?? 0);
+    const bankAmount = Math.min(sumPrices(bankPrices) ?? (remainingBank / Math.max(1, Number(reservation?.unpaidStayNights || 1))) * numberOfNights, remainingBank);
+    const option = reservation?.cardPaymentOptions?.find((item) => Number(item.nights) === numberOfNights);
+    const cardAmount = Math.min(option?.amount ?? sumPrices(cardPrices) ?? (remainingCard / Math.max(1, Number(reservation?.unpaidStayNights || 1))) * numberOfNights, remainingCard);
+    return {
+      bankAmount: Math.max(0, bankAmount).toFixed(2),
+      cardAmount: Math.max(0, cardAmount).toFixed(2),
+    };
   }
 
   function openPaymentLinkTextMessage(reservation) {
@@ -14924,6 +15099,48 @@ export default function App() {
                     <span>
                       Paid so far: {formatCurrency(activeScheduleReservation.amountPaid || 0)}
                     </span>
+                  </div>
+                  <div className="payment-link-generator-card">
+                    <div>
+                      <strong>Send a payment link</strong>
+                      <span className="muted">
+                        Choose one night or the full unpaid balance. The link can be paid by bank or card.
+                      </span>
+                    </div>
+                    <div className="payment-link-generator-controls">
+                      <label>
+                        Nights to request
+                        <select
+                          value={paymentLinkNights}
+                          onChange={(event) => setPaymentLinkNights(event.target.value)}>
+                          {Array.from({
+                            length: Math.max(1, Number(activeScheduleReservation.unpaidStayNights || 1)),
+                          }, (_, index) => {
+                            const nights = index + 1;
+                            return <option key={nights} value={String(nights)}>{nights} {nights === 1 ? "night" : "nights"}</option>;
+                          })}
+                        </select>
+                      </label>
+                      <div className="payment-link-generator-total">
+                        <span>Requested amount</span>
+                        <strong>{formatCurrency(getPaymentLinkAmountsForNights(activeScheduleReservation, paymentLinkNights).bankAmount)} bank · {formatCurrency(getPaymentLinkAmountsForNights(activeScheduleReservation, paymentLinkNights).cardAmount)} card</strong>
+                      </div>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={Number(activeScheduleReservation.bankRemainingBalance ?? activeScheduleReservation.remainingBalance ?? 0) <= 0}
+                        onClick={() => generatePaymentLink(
+                          activeScheduleReservation,
+                          `${paymentLinkNights}-night payment link`,
+                          {
+                            customAmount: getPaymentLinkAmountsForNights(activeScheduleReservation, paymentLinkNights).bankAmount,
+                            customCardAmount: getPaymentLinkAmountsForNights(activeScheduleReservation, paymentLinkNights).cardAmount,
+                            description: `${paymentLinkNights}-night stay payment`,
+                          }
+                        )}>
+                        Generate payment link
+                      </button>
+                    </div>
                   </div>
                   <div className="payment-pricing-category-control">
                     <span>

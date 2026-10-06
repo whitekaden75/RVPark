@@ -327,13 +327,14 @@ function createAdminSessionToken(adminUser) {
   return `${encodedPayload}.${signature}`;
 }
 
-function createGuestPaymentLinkToken(reservationId, amount = null, description = "") {
+function createGuestPaymentLinkToken(reservationId, amount = null, description = "", cardAmount = null) {
   const payload = {
     type: "guest_payment_link",
     reservationId: Number(reservationId),
     nonce: randomBytes(12).toString("hex"),
     expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 90,
     ...(Number.isFinite(Number(amount)) && Number(amount) > 0 ? { customAmount: roundCurrency(amount) } : {}),
+    ...(Number.isFinite(Number(cardAmount)) && Number(cardAmount) > 0 ? { customCardAmount: roundCurrency(cardAmount) } : {}),
     ...(String(description || "").trim() ? { description: String(description).trim().slice(0, 200) } : {})
   };
   const encodedPayload = encodeTokenPayload(payload);
@@ -6198,7 +6199,8 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
         : baseDepositAmount;
     const amountCents = toAmountCents(checkoutAmount);
     const checkoutToken = randomBytes(24).toString("hex");
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    // Keep the site hold short so abandoned browser checkouts return to inventory.
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
     const stripeCustomer = await stripe.customers.create({
       name: `${firstName} ${lastName}`.trim(),
       email,
@@ -7177,7 +7179,7 @@ app.get("/api/guest/payment-links/:token", async (req, res) => {
 
     const { bankAmount: remainingBankAmount, cardAmount: remainingCardAmount } = getRemainingBalancePaymentAmounts(reservation);
     const bankAmount = link.customAmount || remainingBankAmount;
-    const cardAmount = link.customAmount || remainingCardAmount;
+    const cardAmount = link.customCardAmount || (link.customAmount ? link.customAmount : remainingCardAmount);
 
     return res.json({
       reservationId: reservation.id,
@@ -7242,7 +7244,7 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
 
     const { bankAmount: remainingBankAmount, cardAmount: remainingCardAmount } = getRemainingBalancePaymentAmounts(reservation);
     const bankAmount = link.customAmount || remainingBankAmount;
-    const cardAmount = link.customAmount || remainingCardAmount;
+    const cardAmount = link.customCardAmount || (link.customAmount ? link.customAmount : remainingCardAmount);
     const paymentAmount = paymentMethod === "card" ? cardAmount : bankAmount;
     const amountCents = toAmountCents(paymentAmount);
 
@@ -9290,16 +9292,24 @@ app.post("/api/reservations/:id/payment-links", async (req, res) => {
     }
 
     const requestedAmount = Number(req.body?.customAmount);
+    const requestedCardAmount = Number(req.body?.customCardAmount);
     const { bankAmount: remainingBankAmount, cardAmount: remainingCardAmount } = getRemainingBalancePaymentAmounts(reservation);
     const bankAmount = Number.isFinite(requestedAmount) && requestedAmount > 0 ? roundCurrency(requestedAmount) : remainingBankAmount;
-    const cardAmount = bankAmount;
+    const cardAmount = Number.isFinite(requestedCardAmount) && requestedCardAmount > 0
+      ? roundCurrency(requestedCardAmount)
+      : (Number.isFinite(requestedAmount) && requestedAmount > 0 ? getCardPrice(bankAmount) : remainingCardAmount);
 
     if (!toAmountCents(bankAmount)) {
       return res.status(400).json({ message: "This reservation does not have any unpaid nights." });
     }
 
     const description = String(req.body?.description || "").trim().slice(0, 200);
-    const token = createGuestPaymentLinkToken(reservation.id, requestedAmount, description);
+    const token = createGuestPaymentLinkToken(
+      reservation.id,
+      Number.isFinite(requestedAmount) && requestedAmount > 0 ? bankAmount : null,
+      description,
+      Number.isFinite(requestedCardAmount) && requestedCardAmount > 0 ? cardAmount : null
+    );
     const paymentUrl = `${baseUrl}/?pay=${encodeURIComponent(token)}`;
 
     return res.json({
