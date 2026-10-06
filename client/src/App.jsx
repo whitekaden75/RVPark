@@ -6224,6 +6224,7 @@ export default function App() {
   const [sites, setSites] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [reservations, setReservations] = useState([]);
+  const [openBookingCheckouts, setOpenBookingCheckouts] = useState([]);
   const [hasLoadedSites, setHasLoadedSites] = useState(false);
   const [hasLoadedCustomers, setHasLoadedCustomers] = useState(false);
   const [hasLoadedReservations, setHasLoadedReservations] = useState(false);
@@ -6682,6 +6683,7 @@ export default function App() {
           await Promise.all([
             ensureSitesLoaded(),
             ensureReservationsLoaded(),
+            loadOpenBookingCheckouts(),
           ]);
           return;
         }
@@ -7941,6 +7943,12 @@ export default function App() {
     return request;
   }
 
+  async function loadOpenBookingCheckouts() {
+    const checkouts = await apiRequest("/admin/booking-checkouts");
+    setOpenBookingCheckouts(ensureArray(checkouts, "Open booking checkouts"));
+    return checkouts;
+  }
+
   async function refreshSites() {
     return ensureSitesLoaded({ force: true });
   }
@@ -7962,6 +7970,7 @@ export default function App() {
       ensureReservationsLoaded({ force: true }),
       ensureSitesLoaded({ force: true }),
       ensureCustomersLoaded({ force: true }),
+      loadOpenBookingCheckouts(),
     ]);
 
     return {
@@ -7969,6 +7978,28 @@ export default function App() {
       sites: siteData,
       customers: customerData,
     };
+  }
+
+  async function releaseBookingCheckout(checkout) {
+    const guest = checkout.booking_payload || {};
+    if (!window.confirm(`Release the open booking for ${guest.firstName || "this guest"}? Their checkout page will be closed.`)) return;
+    try {
+      await apiRequest(`/admin/booking-checkouts/${checkout.id}/release`, { method: "POST" });
+      await loadOpenBookingCheckouts();
+      setSuccessMessage("The open booking was released and its site is available again.");
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function approveBookingCheckout(checkout) {
+    const guest = checkout.booking_payload || {};
+    if (!window.confirm(`Approve and create a reservation for ${guest.firstName || "this guest"}?`)) return;
+    try {
+      const result = await apiRequest(`/admin/booking-checkouts/${checkout.id}/approve`, { method: "POST" });
+      await Promise.all([loadOpenBookingCheckouts(), ensureReservationsLoaded({ force: true })]);
+      setSuccessMessage(result.confirmationEmail?.sent ? `Reservation #${result.reservation.id} created and confirmation emailed.` : `Reservation #${result.reservation.id} created.`);
+    } catch (error) { setErrorMessage(error.message); }
   }
 
   async function handleReservationConflict(error, setLocalMessage) {
@@ -8301,7 +8332,7 @@ export default function App() {
         guest.body,
         guest.payment?.url ? [
           `Card payment (secure link): ${formatCurrency(guest.payment.cardAmount)} — ${guest.payment.url}`,
-          `Cash or check: ${formatCurrency(guest.payment.bankAmount)} (lower price). Put cash or check in an envelope and leave it at the office.`,
+          `Cash or check: ${formatCurrency(guest.payment.bankAmount)} (lower price). Put cash or check in an envelope and place it in the mail slot.`,
           "Reply STOP to unsubscribe or HELP for assistance."
         ].join("\n") : ""
       ].filter(Boolean).join("\n\n")])));
@@ -9196,6 +9227,28 @@ export default function App() {
 
     try {
       await refreshReservationAndSiteData();
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function decidePendingReservation(reservation, decision) {
+    const action = decision === "approve" ? "approve" : "decline";
+    const label = action === "approve" ? "approve" : "decline";
+    if (!window.confirm(`Are you sure you want to ${label} booking #${reservation.id}?`)) return;
+    setErrorMessage("");
+    setSuccessMessage("");
+    try {
+      await apiRequest(`/reservations/${reservation.id}/decision`, {
+        method: "POST",
+        body: JSON.stringify({ decision: action }),
+      });
+      await ensureReservationsLoaded({ force: true });
+      setSuccessMessage(
+        action === "approve"
+          ? `Booking #${reservation.id} approved. Confirmation email sent when an address is available.`
+          : `Booking #${reservation.id} declined.`
+      );
     } catch (error) {
       setErrorMessage(error.message);
     }
@@ -12480,6 +12533,33 @@ export default function App() {
               </div>
             </div>
             <>
+              {openBookingCheckouts.length ? (
+                <div className="pending-bookings-card checkout-holds-card">
+                  <div className="result-header">
+                    <div>
+                      <h3>Open customer booking pages</h3>
+                      <p className="muted">These customers have started checkout on another computer but have not created an official reservation yet.</p>
+                    </div>
+                    <span className="status-badge pending">{openBookingCheckouts.length} open</span>
+                  </div>
+                  <div className="pending-bookings-list">
+                    {openBookingCheckouts.map((checkout) => {
+                      const guest = checkout.booking_payload || {};
+                      return <article key={checkout.id} className="pending-booking-row">
+                        <div>
+                          <strong>{guest.firstName || "Guest"} {guest.lastName || ""}</strong>
+                          <p>{guest.phoneNumber || "No phone"} · {guest.email || "No email"}</p>
+                          <p>Site {guest.siteNumber || checkout.site_id}: {formatDisplayDate(checkout.arrival_date)}–{formatLeaveDate(checkout.leave_date)} · Checkout {formatReservationStatus(checkout.payment_status)}</p>
+                        </div>
+                        <div className="button-row">
+                          <button type="button" className="primary-button" onClick={() => approveBookingCheckout(checkout)}>Approve booking</button>
+                          <button type="button" className="ghost-button pending-decline-button" onClick={() => releaseBookingCheckout(checkout)}>Release / close checkout</button>
+                        </div>
+                      </article>;
+                    })}
+                  </div>
+                </div>
+              ) : null}
               <div className="section-heading">
                 <p>
                   See who is in a site today, then inspect a single site

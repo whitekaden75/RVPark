@@ -8101,6 +8101,54 @@ select option {
   text-align: left;
 }
 
+.pending-bookings-card {
+  margin: 18px 0 24px;
+  padding: 20px;
+  border: 1px solid rgba(203, 117, 71, 0.35);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255, 248, 235, 0.96), rgba(250, 246, 237, 0.92));
+}
+
+.pending-bookings-card .result-header {
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.pending-bookings-card h3 {
+  margin: 0 0 4px;
+}
+
+.pending-booking-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 0;
+  border-top: 1px solid rgba(39, 64, 50, 0.14);
+}
+
+.pending-booking-row p {
+  margin: 4px 0 0;
+  color: #52675b;
+  font-size: 0.9rem;
+}
+
+.pending-decline-button {
+  border-color: #b75d49;
+  color: #9a2c2c;
+}
+
+@media (max-width: 760px) {
+  .pending-booking-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pending-booking-row .button-row button {
+    flex: 1;
+  }
+}
+
 .after-hours-call-link {
   display: inline-block;
   margin-top: 24px;

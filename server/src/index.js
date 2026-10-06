@@ -7556,6 +7556,152 @@ app.get("/api/reservations", async (_req, res) => {
   }
 });
 
+app.get("/api/admin/booking-checkouts", async (_req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, checkout_token, stripe_checkout_session_id, payment_status,
+             site_id, arrival_date::text, leave_date::text, booking_payload,
+             created_at, expires_at
+      FROM public_booking_checkouts
+      WHERE payment_status IN ('open', 'processing') AND expires_at > NOW()
+      ORDER BY created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/admin/booking-checkouts/:id/release", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT id, stripe_checkout_session_id, payment_status
+       FROM public_booking_checkouts WHERE id = $1 FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!result.rowCount) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Checkout hold not found." });
+    }
+    const checkout = result.rows[0];
+    if (!["open", "processing"].includes(checkout.payment_status)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ message: "This checkout is no longer open." });
+    }
+    if (checkout.payment_status === "open" && checkout.stripe_checkout_session_id && stripe) {
+      try {
+        await stripe.checkout.sessions.expire(checkout.stripe_checkout_session_id);
+      } catch (stripeError) {
+        if (!String(stripeError?.message || "").toLowerCase().includes("already")) throw stripeError;
+      }
+    }
+    await client.query(
+      `UPDATE public_booking_checkouts
+       SET payment_status = 'expired', expired_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [req.params.id]
+    );
+    await client.query("COMMIT");
+    broadcastAdminDataChange({ reason: "booking_checkout_released" });
+    res.json({ released: true });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/admin/booking-checkouts/:id/approve", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT * FROM public_booking_checkouts WHERE id = $1 FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!result.rowCount) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Checkout hold not found." });
+    }
+    const checkout = result.rows[0];
+    if (!["open", "processing"].includes(checkout.payment_status) || checkout.reservation_id) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ message: "This checkout is no longer available for approval." });
+    }
+    const payload = checkout.booking_payload || {};
+    const segment = { siteId: Number(checkout.site_id), arrivalDate: payload.arrivalDate, leaveDate: payload.leaveDate };
+    const overlap = await findReservationOverlap(client, [segment], null, checkout.id);
+    if (overlap) {
+      await client.query("ROLLBACK");
+      return res.status(409).json(overlap);
+    }
+
+    const customerResult = await client.query(
+      `SELECT id FROM customers
+       WHERE LOWER(TRIM(first_name)) = LOWER($1)
+         AND LOWER(TRIM(last_name)) = LOWER($2)
+         AND RIGHT(REGEXP_REPLACE(COALESCE(phone_number, ''), '[^0-9]', '', 'g'), 10) = $3
+       LIMIT 1 FOR UPDATE`,
+      [payload.firstName, payload.lastName, String(payload.phoneNumber || '').replace(/\D/g, '').slice(-10)]
+    );
+    let customerId;
+    if (customerResult.rowCount) {
+      customerId = customerResult.rows[0].id;
+      await client.query(`UPDATE customers SET email = $2 WHERE id = $1`, [customerId, payload.email || null]);
+    } else {
+      const inserted = await client.query(
+        `INSERT INTO customers (first_name, last_name, email, phone_number)
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [payload.firstName, payload.lastName, payload.email || null, payload.phoneNumber || null]
+      );
+      customerId = inserted.rows[0].id;
+    }
+    const notes = `Approved from public checkout by admin. Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}.`;
+    const reservationResult = await client.query(
+      `INSERT INTO reservations (
+        customer_id, booked_date, status, reservation_term, billing_mode,
+        deposit_amount, total_price, rv_kind, motorhome_class_a, motorhome_class_c,
+        motorhome_with_tow, slide_driver_side, slide_passenger_side, rig_length_feet,
+        amount_paid, notes, payment_method, requested_discounts
+      ) VALUES ($1, (CURRENT_TIMESTAMP AT TIME ZONE 'America/Los_Angeles')::date, 'active', 'standard', 'standard',
+        $2, NULL, $3, $4, $5, $6, $7, $8, $9, 0, $10, $11, $12) RETURNING id`,
+      [customerId, Number(checkout.amount_cents) / 100, payload.rvKind,
+        Boolean(payload.motorhomeClassA), Boolean(payload.motorhomeClassC), Boolean(payload.motorhomeWithTow),
+        Boolean(payload.slideDriverSide), Boolean(payload.slidePassengerSide), Number(payload.rigLengthFeet) || null,
+        notes, checkout.payment_method_type === "card" ? "card" : "bank", normalizeRequestedDiscounts(payload.discounts)]
+    );
+    const reservationId = reservationResult.rows[0].id;
+    await client.query(
+      `INSERT INTO reservation_site_stays (reservation_id, site_id, arrival_date, leave_date) VALUES ($1, $2, $3, $4)`,
+      [reservationId, segment.siteId, segment.arrivalDate, segment.leaveDate]
+    );
+    if (checkout.payment_status === "open" && checkout.stripe_checkout_session_id && stripe) {
+      try { await stripe.checkout.sessions.expire(checkout.stripe_checkout_session_id); } catch (error) { console.warn("Unable to expire approved checkout", error.message); }
+    }
+    await client.query(
+      `UPDATE public_booking_checkouts
+       SET payment_status = 'completed', reservation_id = $2, completed_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [checkout.id, reservationId]
+    );
+    await client.query("COMMIT");
+    const reservation = await fetchReservationDetails(pool, reservationId);
+    let confirmationEmail = null;
+    if (reservation?.email?.includes("@")) {
+      try { await sendReservationConfirmationEmail(reservation); confirmationEmail = { sent: true, recipient: reservation.email }; }
+      catch (error) { confirmationEmail = { sent: false, message: error.message }; }
+    }
+    broadcastAdminDataChange({ reason: "booking_checkout_approved" });
+    res.status(201).json({ reservation, confirmationEmail });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally { client.release(); }
+});
+
 app.get("/api/reservations/:id", async (req, res) => {
   try {
     await syncOpenStripePayments();
@@ -7569,6 +7715,69 @@ app.get("/api/reservations/:id", async (req, res) => {
     res.json(reservation);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/reservations/:id/decision", async (req, res) => {
+  const decision = String(req.body?.decision || "").trim().toLowerCase();
+  if (!["approve", "decline"].includes(decision)) {
+    return res.status(400).json({ message: "Choose approve or decline." });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const currentResult = await client.query(
+      `SELECT id, status FROM reservations WHERE id = $1 FOR UPDATE`,
+      [req.params.id]
+    );
+    if (currentResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+    if (currentResult.rows[0].status !== "pending") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ message: "This booking is no longer pending." });
+    }
+
+    if (decision === "approve") {
+      const staysResult = await client.query(
+        `SELECT site_id AS "siteId", arrival_date::text AS "arrivalDate", leave_date::text AS "leaveDate"
+         FROM reservation_site_stays WHERE reservation_id = $1 ORDER BY arrival_date`,
+        [req.params.id]
+      );
+      const overlap = await findReservationOverlap(client, staysResult.rows, req.params.id);
+      if (overlap) {
+        await client.query("ROLLBACK");
+        return res.status(409).json(overlap);
+      }
+    }
+
+    await client.query(
+      `UPDATE reservations
+       SET status = $1,
+           canceled_at = CASE WHEN $1 = 'canceled' THEN now() ELSE NULL END,
+           updated_at = now()
+       WHERE id = $2`,
+      [decision === "approve" ? "active" : "canceled", req.params.id]
+    );
+    await client.query("COMMIT");
+
+    const reservation = await fetchReservationDetails(pool, req.params.id);
+    if (decision === "approve" && reservation?.email?.includes("@")) {
+      try {
+        await sendReservationConfirmationEmail(reservation);
+      } catch (emailError) {
+        console.error("Unable to send approved reservation confirmation", req.params.id, emailError);
+      }
+    }
+    broadcastAdminDataChange({ reason: decision === "approve" ? "reservation_approved" : "reservation_declined" });
+    return res.json(reservation);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    return res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
   }
 });
 
