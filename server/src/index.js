@@ -6199,8 +6199,9 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
         : baseDepositAmount;
     const amountCents = toAmountCents(checkoutAmount);
     const checkoutToken = randomBytes(24).toString("hex");
-    // Keep the site hold short so abandoned browser checkouts return to inventory.
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    // Stripe Checkout requires expires_at to be at least 30 minutes after creation.
+    // Keep the database hold aligned with the Stripe session lifetime.
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
     const stripeCustomer = await stripe.customers.create({
       name: `${firstName} ${lastName}`.trim(),
       email,
