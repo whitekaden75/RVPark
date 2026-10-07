@@ -9,6 +9,7 @@ import { createMessaging } from "./messaging.js";
 import { createMessageNotifier } from "./message-notifications.js";
 import { createArrivalReminders } from "./arrival-reminders.js";
 import { registerBookkeepingRoutes } from "./bookkeeping.js";
+import { registerFinanceRoutes } from "./bookkeeping-finance.js";
 import {
   buildAvailabilityMap,
   buildAvailabilityBookingContext,
@@ -9761,6 +9762,7 @@ app.delete("/api/reservations/:id", async (req, res) => {
 });
 
 registerBookkeepingRoutes(app, { pool, notify: broadcastAdminDataChange });
+registerFinanceRoutes(app, { pool, stripe, notify: broadcastAdminDataChange });
 
 app.listen(port, () => {
   console.log(`RV Park server listening on port ${port}`);

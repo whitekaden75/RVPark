@@ -5,6 +5,8 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from "multer";
 import OpenAI from "openai";
 import { extractBookkeepingDocument } from "./bookkeeping-extraction.js";
+import { reconcileTransactions } from "./bookkeeping-reconciliation.js";
+import { bookkeepingRoutes } from "./bookkeeping-http.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -37,22 +39,6 @@ function normalizeTransactionType(value) {
     : "expense";
 }
 
-function normalizedWords(value) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((word) => word.length > 2);
-}
-
-function daysBetween(left, right) {
-  if (!left || !right) return 999;
-  return Math.abs((new Date(left).getTime() - new Date(right).getTime()) / 86400000);
-}
-
-function vendorSimilarity(left, right) {
-  const a = new Set(normalizedWords(left));
-  const b = new Set(normalizedWords(right));
-  if (!a.size || !b.size) return 0;
-  return [...a].filter((word) => b.has(word)).length / Math.max(a.size, b.size);
-}
-
 function safeFilenamePart(value, fallback) {
   const part = String(value || fallback).trim().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return part || fallback;
@@ -68,15 +54,16 @@ async function extractDocument(file, note = "", categories = []) {
 }
 
 export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
+  const routes = bookkeepingRoutes(app);
   const bucket = process.env.RAILWAY_BUCKET_NAME || process.env.RAILWAY_BUCKET;
   const storage = createStorageClient();
 
-  app.get("/api/bookkeeping/categories", async (_req, res) => {
+  routes.get("/api/bookkeeping/categories", async (_req, res) => {
     const result = await pool.query("SELECT id, name, category_type FROM bookkeeping_categories WHERE is_active = TRUE ORDER BY category_type, name");
     return res.json({ categories: result.rows });
   });
 
-  app.post("/api/bookkeeping/categories", async (req, res) => {
+  routes.post("/api/bookkeeping/categories", async (req, res) => {
     const name = String(req.body?.name || "").trim().slice(0, 100);
     const categoryType = ["income", "expense", "other"].includes(req.body?.category_type) ? req.body.category_type : "expense";
     if (!name) return res.status(400).json({ message: "Category name is required." });
@@ -90,7 +77,7 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     }
   });
 
-  app.post("/api/bookkeeping/documents", upload.single("file"), async (req, res) => {
+  routes.post("/api/bookkeeping/documents", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ message: "Upload a PDF, CSV, JPG, PNG, or WEBP file." });
     if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
     const hash = createHash("sha256").update(req.file.buffer).digest("hex");
@@ -106,34 +93,35 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     return res.status(201).json({ document: result.rows[0] });
   });
 
-  app.get("/api/bookkeeping/documents", async (_req, res) => {
+  routes.get("/api/bookkeeping/documents", async (_req, res) => {
     const result = await pool.query("SELECT * FROM bookkeeping_documents ORDER BY uploaded_at DESC LIMIT 200");
     return res.json({ documents: result.rows });
   });
 
-  app.get("/api/bookkeeping/documents/:id/download", async (req, res) => {
+  routes.get("/api/bookkeeping/documents/:id/download", async (req, res) => {
     if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
-    const result = await pool.query("SELECT storage_key, original_filename FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
+    const result = await pool.query("SELECT storage_key, original_filename, mime_type FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
     if (!result.rowCount) return res.status(404).json({ message: "Document not found." });
     const url = await getSignedUrl(storage, new GetObjectCommand({ Bucket: bucket, Key: result.rows[0].storage_key, ResponseContentDisposition: `inline; filename=\"${result.rows[0].original_filename.replaceAll('"', '')}\"` }), { expiresIn: 900 });
-    return res.json({ url });
+    return res.json({ url, mimeType: result.rows[0].mime_type, filename: result.rows[0].original_filename });
   });
 
-  app.delete("/api/bookkeeping/documents/:id", async (req, res) => {
+  routes.delete("/api/bookkeeping/documents/:id", async (req, res) => {
     const result = await pool.query("SELECT storage_key, processing_status FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
     if (!result.rowCount) return res.status(404).json({ message: "Document not found." });
     if (!["uploaded", "queued", "failed", "rejected", "needs_review"].includes(result.rows[0].processing_status)) {
       return res.status(409).json({ message: "Processed documents cannot be deleted from here." });
     }
     if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
-    await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: result.rows[0].storage_key }));
-    await pool.query("DELETE FROM bookkeeping_transactions WHERE document_id = $1 AND status = 'pending'", [req.params.id]);
+    const records = await pool.query('SELECT id FROM bookkeeping_transactions WHERE document_id=$1 LIMIT 1',[req.params.id]);
+    if(records.rowCount) return res.status(409).json({message:'Preserve processed source documents. Exclude individual transactions from the review panel instead.'});
     await pool.query("DELETE FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
+    await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: result.rows[0].storage_key })).catch(()=>console.warn('An unused bookkeeping upload could not be removed from storage.'));
     notify({ reason: "bookkeeping_changed" });
     return res.status(204).end();
   });
 
-  app.post("/api/bookkeeping/documents/:id/process", async (req, res) => {
+  async function processDocument(req, res) {
     if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
     const client = await pool.connect();
     let claimed = false;
@@ -141,13 +129,17 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     try {
       const lockResult = await client.query("SELECT pg_try_advisory_lock(2147483001) AS locked");
       if (!lockResult.rows[0].locked) {
-        return res.status(409).json({ message: "Another bookkeeping document is being processed. This document can be retried shortly." });
+        return res.status(409).json({ code: "BOOKKEEPING_BUSY", message: "Another bookkeeping document is being processed. This document can be retried shortly." });
       }
       processingLockHeld = true;
       const documentResult = await client.query("SELECT * FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
       if (!documentResult.rowCount) return res.status(404).json({ message: "Document not found." });
       const document = documentResult.rows[0];
-      const claim = await client.query("UPDATE bookkeeping_documents SET processing_status='processing', error_message=NULL WHERE id=$1 AND processing_status IN ('uploaded','queued','failed') RETURNING id", [document.id]);
+      // A crashed worker releases its advisory lock. Only its queued job may be recovered.
+      if (req.fromQueue && document.processing_status === 'processing' && document.metadata?.ai_queued) {
+        await client.query("UPDATE bookkeeping_documents SET processing_status='queued' WHERE id=$1", [document.id]);
+      }
+      const claim = await client.query(`UPDATE bookkeeping_documents SET processing_status='processing', error_message=NULL WHERE id=$1 AND processing_status IN ('uploaded','queued','failed') ${req.fromQueue ? "AND metadata->>'ai_queued'='true'" : ''} RETURNING id`, [document.id]);
       if (!claim.rowCount) return res.status(409).json({ message: "This document is already processing or has been processed." });
       claimed = true;
       notify({ reason: "bookkeeping_changed" });
@@ -167,7 +159,6 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
       const renamedKey = `${document.storage_key.slice(0, document.storage_key.lastIndexOf("/") + 1)}${document.id}-${renamedFilename}`;
       if (renamedKey !== document.storage_key) {
         await storage.send(new CopyObjectCommand({ Bucket: bucket, CopySource: `${bucket}/${document.storage_key}`, Key: renamedKey, ContentType: document.mime_type, MetadataDirective: "REPLACE" }));
-        await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: document.storage_key }));
       }
       await client.query("BEGIN");
       await client.query("INSERT INTO bookkeeping_extractions (document_id, model, extracted_json, confidence) VALUES ($1,$2,$3,$4)", [document.id, process.env.OPENAI_BOOKKEEPING_MODEL || "gpt-5", extracted, extracted.confidence || null]);
@@ -175,14 +166,15 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
         const tx = await client.query(`INSERT INTO bookkeeping_transactions (document_id, uploaded_by_admin_user_id, transaction_date, vendor, description, subtotal, tax, total, currency, category, payment_account, transaction_type, ai_confidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`, [document.id, req.adminUser.id, item.transactionDate || null, item.vendor || null, item.description || null, item.subtotal ?? null, item.tax ?? null, item.total ?? 0, item.currency || "USD", item.category || null, item.paymentAccount || null, normalizeTransactionType(item.transactionType), item.confidence || extracted.confidence || null]);
         for (const line of Array.isArray(item.lineItems) ? item.lineItems : []) await client.query("INSERT INTO bookkeeping_line_items (transaction_id, description, quantity, unit_price, amount, category) VALUES ($1,$2,$3,$4,$5,$6)", [tx.rows[0].id, line.description || "Item", line.quantity ?? null, line.unitPrice ?? null, line.amount ?? 0, line.category || null]);
       }
-      await client.query("UPDATE bookkeeping_documents SET original_filename=$2, storage_key=$3, document_type=$4, processing_status='needs_review', processed_at=NOW(), error_message=NULL WHERE id=$1", [document.id, renamedFilename, renamedKey, extracted.documentType || "other"]);
+      await client.query("UPDATE bookkeeping_documents SET original_filename=$2, storage_key=$3, document_type=$4, processing_status='needs_review', processed_at=NOW(), error_message=NULL,metadata=metadata || '{\"ai_queued\":false}'::jsonb WHERE id=$1", [document.id, renamedFilename, renamedKey, extracted.documentType || "other"]);
       await client.query("COMMIT");
+      if(renamedKey !== document.storage_key) await storage.send(new DeleteObjectCommand({Bucket:bucket,Key:document.storage_key})).catch(() => {});
       notify({ reason: "bookkeeping_changed" });
       return res.json({ extracted });
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       if (claimed) {
-        await pool.query("UPDATE bookkeeping_documents SET processing_status='failed', error_message=$2 WHERE id=$1", [req.params.id, error.message]);
+        await pool.query("UPDATE bookkeeping_documents SET processing_status='failed', error_message=$2,metadata=COALESCE(metadata,'{}'::jsonb) || '{\"ai_queued\":false}'::jsonb WHERE id=$1", [req.params.id, error.message]);
         notify({ reason: "bookkeeping_changed" });
       }
       return res.status(500).json({ message: error.message });
@@ -190,80 +182,102 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
       if (processingLockHeld) await client.query("SELECT pg_advisory_unlock(2147483001)").catch(() => {});
       client.release();
     }
-  });
+  }
+  routes.post("/api/bookkeeping/documents/:id/process", processDocument);
 
-  app.get("/api/bookkeeping/transactions", async (req, res) => {
+  routes.post('/api/bookkeeping/queue', async (req,res) => {
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).filter(id => /^\d+$/.test(String(id))).slice(0,200);
+    if (!ids.length) return res.status(400).json({message:'Choose at least one document.'});
+    const note = typeof req.body.note === 'string' ? req.body.note.trim().slice(0,4000) : null;
+    const result = await pool.query(`UPDATE bookkeeping_documents SET processing_status='queued',error_message=NULL,metadata=COALESCE(metadata,'{}'::jsonb) || jsonb_build_object('ai_queued',true,'ai_queued_by',$2::bigint,'ai_queued_at',now()) || CASE WHEN $3::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('note',$3::text) END WHERE id=ANY($1::bigint[]) AND processing_status IN ('uploaded','queued','failed') RETURNING id`,[ids,req.adminUser.id,note]);
+    notify({reason:'bookkeeping_changed'});
+    res.json({queued:result.rowCount});
+    runQueue().catch(error => console.warn('Bookkeeping queue:',error.message));
+  });
+  let queueRunning = false;
+  routes.delete('/api/bookkeeping/queue', async(req,res)=>{
+    const ids=(Array.isArray(req.body?.ids)?req.body.ids:[]).filter(id=>/^\d+$/.test(String(id))).slice(0,200);
+    if(!ids.length)return res.status(400).json({message:'Choose queued documents to cancel.'});
+    const result=await pool.query("UPDATE bookkeeping_documents SET metadata=metadata || '{\"ai_queued\":false}'::jsonb WHERE id=ANY($1::bigint[]) AND processing_status='queued' RETURNING id",[ids]);
+    notify({reason:'bookkeeping_changed'});res.json({cancelled:result.rowCount});
+  });
+  async function runQueue() {
+    if(queueRunning || !storage || !bucket) return;
+    queueRunning = true;
+    try {
+      while(true) {
+        const result = await pool.query("SELECT id,uploaded_by_admin_user_id,metadata FROM bookkeeping_documents WHERE metadata->>'ai_queued'='true' AND processing_status IN ('queued','processing') ORDER BY metadata->>'ai_queued_at',id LIMIT 1");
+        const doc = result.rows[0];
+        if(!doc) break;
+        let status = 200;
+        const response = {status(value){status=value;return this;},json(){return this;}};
+        await processDocument({params:{id:doc.id},body:{},fromQueue:true,adminUser:{id:doc.metadata.ai_queued_by || doc.uploaded_by_admin_user_id}},response);
+        if(status === 409 || status === 503) break;
+      }
+    } finally {queueRunning=false;}
+  }
+  if(storage && bucket) {
+    const timer = setInterval(() => runQueue().catch(error => {if(error.code!=='42P01') console.warn('Bookkeeping queue:',error.message);}),10000);
+    timer.unref();
+  }
+
+  routes.get("/api/bookkeeping/transactions", async (req, res) => {
     const requestedStatus = String(req.query.status || "pending");
     const statusClause = requestedStatus === "all" ? "t.status <> 'void'" : "t.status = $1";
     const params = requestedStatus === "all" ? [] : [requestedStatus];
-    const result = await pool.query(`SELECT t.*, d.original_filename AS source_filename FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id = t.document_id WHERE ${statusClause} ORDER BY t.transaction_date DESC NULLS LAST, t.id DESC LIMIT 500`, params);
+    const requestedLimit = Number(req.query.limit);
+    const limit = Number.isInteger(requestedLimit) ? Math.max(1,Math.min(5000,requestedLimit)) : 500;
+    const order = requestedStatus === 'pending' ? 't.id DESC' : 't.transaction_date DESC NULLS LAST, t.id DESC';
+    const result = await pool.query(`SELECT t.*, d.original_filename AS source_filename FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id = t.document_id WHERE ${statusClause} ORDER BY ${order} LIMIT ${limit}`, params);
     return res.json({ transactions: result.rows });
   });
-
-  app.post("/api/bookkeeping/documents/:id/reconcile", async (req, res) => {
-    const statement = await pool.query("SELECT id, document_type FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
-    if (!statement.rowCount) return res.status(404).json({ message: "Statement document not found." });
-    if (!["bank_statement", "credit_card_statement"].includes(statement.rows[0].document_type)) return res.status(400).json({ message: "Only bank and credit-card statements can be reconciled." });
-    const statementTransactions = await pool.query("SELECT * FROM bookkeeping_transactions WHERE document_id = $1 ORDER BY transaction_date, id", [req.params.id]);
-    const receiptTransactions = await pool.query(`SELECT t.*, d.original_filename AS source_filename FROM bookkeeping_transactions t JOIN bookkeeping_documents d ON d.id = t.document_id WHERE d.document_type IN ('receipt', 'invoice') AND t.document_id <> $1 AND t.status <> 'void'`, [req.params.id]);
-    const duplicateKey = (transaction) => `${String(transaction.transaction_date || "").slice(0, 10)}|${Number(transaction.total || 0).toFixed(2)}|${String(transaction.vendor || transaction.description || "").trim().toLowerCase().replace(/\s+/g, " ")}`;
-    const findDuplicates = (transactions, source) => {
-      const groups = new Map();
-      for (const transaction of transactions) {
-        const key = duplicateKey(transaction);
-        if (!key.startsWith("|")) groups.set(key, [...(groups.get(key) || []), transaction]);
-      }
-      return [...groups.entries()].flatMap(([key, group]) => group.length < 2 ? [] : group.slice(1).map((duplicate) => ({
-        source,
-        duplicate,
-        original: group[0],
-        reason: "Same date, amount, and vendor/description"
-      })));
-    };
-    const duplicateStatementCandidates = findDuplicates(statementTransactions.rows, "statement");
-    const duplicateReceiptCandidates = findDuplicates(receiptTransactions.rows, "receipt");
-    const duplicateStatementIds = new Set(duplicateStatementCandidates.map((item) => item.duplicate.id));
-    const duplicateReceiptIds = new Set(duplicateReceiptCandidates.map((item) => item.duplicate.id));
-    const usedReceipts = new Set();
-    const matches = [];
-    for (const bankTransaction of statementTransactions.rows) {
-      if (duplicateStatementIds.has(bankTransaction.id)) {
-        matches.push({ statementTransaction: bankTransaction, receiptTransaction: null, status: "duplicate", score: 1, details: { reason: "Duplicate statement record" } });
-        continue;
-      }
-      let best = null;
-      for (const receipt of receiptTransactions.rows) {
-        if (duplicateReceiptIds.has(receipt.id)) continue;
-        if (usedReceipts.has(receipt.id)) continue;
-        const amountDifference = Math.abs(Number(bankTransaction.total || 0) - Number(receipt.total || 0));
-        const dateDistance = daysBetween(bankTransaction.transaction_date, receipt.transaction_date);
-        const vendorScore = vendorSimilarity(bankTransaction.vendor, receipt.vendor);
-        const amountScore = amountDifference <= 0.01 ? 1 : 0;
-        const dateScore = dateDistance <= 3 ? 1 : 0;
-        const score = amountScore * 0.6 + dateScore * 0.2 + vendorScore * 0.2;
-        if (!best || score > best.score) best = { receipt, score, amountDifference, dateDistance, vendorScore };
-      }
-      if (best && best.score >= 0.8) {
-        usedReceipts.add(best.receipt.id);
-        matches.push({ statementTransaction: bankTransaction, receiptTransaction: best.receipt, status: "matched", score: best.score, details: best });
-      } else {
-        matches.push({ statementTransaction: bankTransaction, receiptTransaction: null, status: best && best.score >= 0.4 ? "possible_match" : "unmatched_statement", score: best?.score || 0, details: best || {} });
-      }
-    }
-    const unmatchedReceipts = receiptTransactions.rows.filter((receipt) => !usedReceipts.has(receipt.id) && !duplicateReceiptIds.has(receipt.id));
-    const run = await pool.query("INSERT INTO bookkeeping_reconciliation_runs (statement_document_id, created_by_admin_user_id, summary_json) VALUES ($1,$2,$3) RETURNING id", [req.params.id, req.adminUser.id, JSON.stringify({ matched: matches.filter((item) => item.status === "matched").length, possible: matches.filter((item) => item.status === "possible_match").length, unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement").length, unmatchedReceipts: unmatchedReceipts.length, duplicates: duplicateStatementCandidates.length + duplicateReceiptCandidates.length })]);
-    for (const match of matches) {
-      const persistedStatus = match.status === "duplicate" ? "possible_match" : match.status;
-      await pool.query("INSERT INTO bookkeeping_reconciliation_matches (run_id, statement_transaction_id, receipt_transaction_id, match_status, match_score, details) VALUES ($1,$2,$3,$4,$5,$6)", [run.rows[0].id, match.statementTransaction.id, match.receiptTransaction?.id || null, persistedStatus, match.score, JSON.stringify({ ...(match.details || {}), displayStatus: match.status })]);
-    }
-    notify({ reason: "bookkeeping_changed" });
-    return res.json({ runId: run.rows[0].id, matched: matches.filter((item) => item.status === "matched"), possibleMatches: matches.filter((item) => item.status === "possible_match"), unmatchedStatement: matches.filter((item) => item.status === "unmatched_statement"), duplicates: [...duplicateStatementCandidates, ...duplicateReceiptCandidates], unmatchedReceipts, consolidated: matches.filter((item) => item.status !== "duplicate").map((item) => ({ statementTransaction: item.statementTransaction, receiptTransaction: item.receiptTransaction, status: item.status, score: item.score })) });
+  routes.get('/api/bookkeeping/transactions/:id', async(req,res) => {
+    const result = await pool.query('SELECT t.*,d.original_filename AS source_filename FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id=t.document_id WHERE t.id=$1',[req.params.id]);
+    if(!result.rowCount) return res.status(404).json({message:'Transaction not found.'});
+    res.json({transaction:result.rows[0]});
   });
 
-  app.patch("/api/bookkeeping/transactions/:id", async (req, res) => {
-    const fields = ["transaction_date", "vendor", "description", "subtotal", "tax", "total", "category", "payment_account", "notes", "status"];
-    const values = fields.map((field) => req.body[field]);
-    const result = await pool.query(`UPDATE bookkeeping_transactions SET transaction_date=$1,vendor=$2,description=$3,subtotal=$4,tax=$5,total=$6,category=$7,payment_account=$8,notes=$9,status=COALESCE($10,status),approved_by_admin_user_id=CASE WHEN $10='approved' THEN $11 ELSE approved_by_admin_user_id END,approved_at=CASE WHEN $10='approved' THEN NOW() ELSE approved_at END WHERE id=$12 RETURNING *`, [...values, req.adminUser.id, req.params.id]);
+  routes.post("/api/bookkeeping/documents/:id/reconcile", async (req, res) => {
+    const statement = await pool.query("SELECT id, document_type FROM bookkeeping_documents WHERE id=$1", [req.params.id]);
+    if (!statement.rowCount) return res.status(404).json({message:"Statement not found."});
+    if (!["bank_statement","credit_card_statement"].includes(statement.rows[0].document_type)) return res.status(400).json({message:"Choose a bank or credit-card statement."});
+    const statements = await pool.query("SELECT * FROM bookkeeping_transactions WHERE document_id=$1 AND status<>'void' ORDER BY transaction_date,id", [req.params.id]);
+    if (!statements.rowCount) return res.status(400).json({message:"Process this statement first, or choose a statement with transactions."});
+    const receipts = await pool.query(`SELECT t.*,d.original_filename AS source_filename FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id=t.document_id WHERE (d.document_type IN ('receipt','invoice') OR t.document_id IS NULL) AND t.document_id IS DISTINCT FROM $1::bigint AND t.status<>'void' AND t.transaction_date BETWEEN (SELECT min(transaction_date)-3 FROM bookkeeping_transactions WHERE document_id=$1 AND status<>'void') AND (SELECT max(transaction_date)+3 FROM bookkeeping_transactions WHERE document_id=$1 AND status<>'void') ORDER BY t.transaction_date,t.id`, [req.params.id]);
+    const report = reconcileTransactions(statements.rows,receipts.rows);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const run = await client.query("INSERT INTO bookkeeping_reconciliation_runs (statement_document_id,created_by_admin_user_id,summary_json) VALUES ($1,$2,$3) RETURNING id", [req.params.id,req.adminUser.id,JSON.stringify({...report,matchedCount:report.matched.length})]);
+      for (const match of report.consolidated) await client.query("INSERT INTO bookkeeping_reconciliation_matches (run_id,statement_transaction_id,receipt_transaction_id,match_status,match_score,details) VALUES ($1,$2,$3,$4,$5,$6)",[run.rows[0].id,match.statementTransaction.id,match.receiptTransaction?.id || null,match.status,match.score,JSON.stringify(match.details)]);
+      await client.query("COMMIT");
+      notify({reason:"bookkeeping_changed"});
+      return res.json({runId:run.rows[0].id,...report});
+    } catch(error) { await client.query("ROLLBACK"); return res.status(500).json({message:error.message}); } finally {client.release();}
+  });
+
+  routes.get("/api/bookkeeping/documents/:id/reconcile", async (req,res) => {
+    const result = await pool.query("SELECT id,created_at,summary_json FROM bookkeeping_reconciliation_runs WHERE statement_document_id=$1 ORDER BY id DESC LIMIT 1",[req.params.id]);
+    const run = result.rows[0];
+    res.json({report:run && Array.isArray(run.summary_json?.matched) ? {runId:run.id,createdAt:run.created_at,...run.summary_json} : null});
+  });
+
+  routes.patch("/api/bookkeeping/transactions/:id", async (req, res) => {
+    const body = req.body || {};
+    if (body.status && !['approved','pending'].includes(body.status)) return res.status(400).json({message:'Choose pending or approved.'});
+    if (body.transaction_type && !['income','expense','refund','transfer','adjustment'].includes(body.transaction_type)) return res.status(400).json({message:'Choose a valid transaction type.'});
+    if (body.total != null && (!Number.isFinite(Number(body.total)) || Number(body.total) < 0)) return res.status(400).json({message:'Enter a positive amount and use the transaction type to describe its direction.'});
+    if (body.currency != null && !/^[A-Z]{3}$/.test(body.currency)) return res.status(400).json({message:'Use a three-letter currency code such as USD.'});
+    if (body.transaction_date != null && (!/^\d{4}-\d{2}-\d{2}$/.test(body.transaction_date) || Number.isNaN(Date.parse(body.transaction_date)) || new Date(body.transaction_date).toISOString().slice(0,10)!==body.transaction_date)) return res.status(400).json({message:'Enter a valid transaction date.'});
+    const fields = ["transaction_date", "vendor", "description", "subtotal", "tax", "total", "category", "payment_account", "notes", "status", "transaction_type", "currency"].filter(field => Object.hasOwn(body,field));
+    if (!fields.length) return res.status(400).json({message:'No changes supplied.'});
+    const values = fields.map(field => body[field]);
+    const assignments = fields.map((field,index) => `${field}=$${index+1}`);
+    values.push(req.adminUser.id,req.params.id);
+    if (body.status === 'approved') assignments.push(`approved_by_admin_user_id=$${values.length-1}`, 'approved_at=NOW()');
+    const supplied = field => fields.includes(field) ? `$${fields.indexOf(field)+1}` : field;
+    const approvalGuard = body.status === 'approved' ? `AND ${supplied('transaction_date')} IS NOT NULL AND length(trim(COALESCE(${supplied('vendor')},'')))>0 AND ${supplied('total')}>=0` : '';
+    const result = await pool.query(`UPDATE bookkeeping_transactions SET ${assignments.join(',')} WHERE id=$${values.length} AND status<>'void' ${approvalGuard} RETURNING *`, values);
     if (!result.rowCount) return res.status(404).json({ message: "Transaction not found." });
     if (req.body.status === "approved") {
       await pool.query("UPDATE bookkeeping_documents SET processing_status='approved' WHERE id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1) AND NOT EXISTS (SELECT 1 FROM bookkeeping_transactions WHERE document_id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1) AND status = 'pending')", [req.params.id]);
@@ -272,19 +286,11 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     return res.json({ transaction: result.rows[0] });
   });
 
-  app.delete("/api/bookkeeping/transactions/:id", async (req, res) => {
-    const result = await pool.query("DELETE FROM bookkeeping_transactions WHERE id = $1 RETURNING id", [req.params.id]);
+  routes.delete("/api/bookkeeping/transactions/:id", async (req, res) => {
+    const result = await pool.query("UPDATE bookkeeping_transactions SET status='void' WHERE id = $1 AND status<>'void' RETURNING id", [req.params.id]);
     if (!result.rowCount) return res.status(404).json({ message: "Transaction not found." });
     notify({ reason: "bookkeeping_changed" });
     return res.status(204).end();
   });
 
-  app.get("/api/bookkeeping/reports/profit-loss", async (req, res) => {
-    const from = String(req.query.from || "1900-01-01");
-    const to = String(req.query.to || "2999-12-31");
-    const result = await pool.query(`SELECT COALESCE(SUM(CASE WHEN transaction_type='income' THEN total ELSE 0 END),0) AS revenue, COALESCE(SUM(CASE WHEN transaction_type='expense' THEN total ELSE 0 END),0) AS expenses, category, transaction_type FROM bookkeeping_transactions WHERE status='approved' AND transaction_date BETWEEN $1 AND $2 GROUP BY category, transaction_type ORDER BY transaction_type, category`, [from, to]);
-    const revenue = result.rows.filter((row) => row.transaction_type === "income").reduce((sum, row) => sum + Number(row.revenue || 0), 0);
-    const expenses = result.rows.filter((row) => row.transaction_type === "expense").reduce((sum, row) => sum + Number(row.expenses || 0), 0);
-    return res.json({ reportType: "profit_loss", periodStart: from, periodEnd: to, revenue, expenses, netProfit: revenue - expenses, rows: result.rows });
-  });
 }

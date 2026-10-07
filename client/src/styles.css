@@ -8189,6 +8189,50 @@ select option {
   color: #9a2c2c;
 }
 
+.bookkeeping-source-preview {
+  margin: 12px 0 14px;
+}
+
+.bookkeeping-source-preview-button {
+  display: grid;
+  gap: 6px;
+  width: min(100%, 360px);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #357a84;
+  cursor: zoom-in;
+  text-align: left;
+}
+
+.bookkeeping-source-preview-button img {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+  border: 1px solid rgba(39, 64, 50, 0.16);
+  border-radius: 10px;
+  background: #f4f0e7;
+}
+
+.bookkeeping-source-preview-button span {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.bookkeeping-source-lightbox-content {
+  display: flex;
+  justify-content: center;
+  background: #1f2d29;
+}
+
+.bookkeeping-source-lightbox-content img {
+  display: block;
+  max-width: 100%;
+  max-height: 75vh;
+  object-fit: contain;
+}
+
 .payment-link-generator-card > div:first-child {
   display: grid;
   gap: 4px;

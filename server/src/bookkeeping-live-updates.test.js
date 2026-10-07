@@ -47,3 +47,24 @@ test("transaction lists retain the requested status filter", async () => {
   assert.match(calls[0].sql, /t.status = \$1/);
   assert.match(calls[2].sql, /t.status <> 'void'/);
 });
+
+test('AI queue requests are persisted, scoped to eligible files, and use the requesting admin', async()=>{
+  const calls=[],events=[];
+  const routes=routesWith({query:async(sql,params)=>{calls.push({sql,params});return {rowCount:2,rows:[{id:1},{id:2}]};}},event=>events.push(event.reason));
+  const res=response();
+  await routes.get('post /api/bookkeeping/queue')({body:{ids:[1,2,'invalid'],note:'Business expenses'},adminUser:{id:7}},res);
+  assert.equal(res.body.queued,2);assert.match(calls[0].sql,/'ai_queued',true/);assert.match(calls[0].sql,/processing_status IN \('uploaded','queued','failed'\)/);
+  assert.deepEqual(calls[0].params,[[1,2],7,'Business expenses']);assert.deepEqual(events,['bookkeeping_changed']);
+});
+
+test('cancelling waiting AI jobs cannot cancel the processing job',async()=>{
+  const calls=[];const routes=routesWith({query:async(sql,params)=>{calls.push({sql,params});return {rowCount:1,rows:[]};}},()=>{});
+  const res=response();await routes.get('delete /api/bookkeeping/queue')({body:{ids:[1,2]}},res);
+  assert.equal(res.body.cancelled,1);assert.match(calls[0].sql,/processing_status='queued'/);
+});
+
+test('async database failures return a response instead of an unhandled rejection',async()=>{
+  const routes=routesWith({query:async()=>{throw Object.assign(new Error('Missing schema'),{code:'42P01'});}},()=>{});
+  const res=response();await routes.get('get /api/bookkeeping/documents')({},res);
+  assert.equal(res.statusCode,503);assert.match(res.body.message,/setup is incomplete/);
+});

@@ -286,3 +286,19 @@ Then redeploy the backend.
 - a site cannot have overlapping stays
 - reservation segments must be contiguous and non-overlapping
 - site-switch plans are generated automatically when one site cannot cover the full stay
+
+## Bookkeeping finance workspace
+
+Before deploying the upgraded bookkeeping screen, run `sql/2026-10-06_bookkeeping_finance.sql` against the existing Railway PostgreSQL database. It requires the existing bookkeeping and reservation-payment tables. It preserves existing records, adds indexed Stripe activity, sync metadata, bills, and reversible consolidation records, and protects linked expenses from inconsistent edits. Take a database backup first. No migration runs automatically at server startup.
+
+The admin workspace includes Overview, Transactions, Documents, Reconcile, Bills, and Reports. Review AI suggestions before approving them. Uploaded originals are requested only when a transaction is expanded (or its document is explicitly opened). The AI queue is stored in document metadata, processes one document at a time under a database advisory lock, survives browser navigation, and recovers interrupted queued jobs after a server restart. Failed jobs require an explicit retry; waiting jobs can be cancelled without cancelling the active extraction.
+
+Use **Sync period** for the first import and for historical date ranges. The existing server `STRIPE_SECRET_KEY` must allow balance-transaction and balance reads. Recent 35-day history refreshes every 15 minutes while the backend is running. Balance IDs are upserted so repeat imports do not create duplicate payments. Live and test activity are separated. Stripe payments are not counted again from reservation payment events. Payouts and transfers move money but do not create income.
+
+Reports are cash-basis USD: Stripe gross collections less refunds/disputes, office payment events, approved document/manual income, approved expenses, and processing fees. Advance deposits are collections, not earned/accrual revenue. Non-USD records are excluded without currency conversion. Statements and receipts may describe the same purchase: confirm a match before approving both; consolidation preserves the source records and can be undone. Stripe bank deposits should be transfers or matched to Stripe—not recorded as new income.
+
+Bills are a due-date tracker. They do not add expenses themselves. Record the actual payment as an approved expense and link it to the bill; the same expense cannot pay two tracked bills. Nothing in this workspace initiates a bank payment. Export the selected period's ledger CSV for your accountant.
+
+This is a practical cash-basis bookkeeping workspace, not full QuickBooks parity: automatic bank feeds, double-entry accounting/balance sheets, payroll, tax filing, and accrual/deferred-revenue accounting are not implemented. Historical office collections predating payment-event records must be reviewed separately.
+
+Verification: run `npm run build` in `client` and `node --test src/*.test.js` in `server`.
