@@ -276,11 +276,11 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     values.push(req.adminUser.id,req.params.id);
     if (body.status === 'approved') assignments.push(`approved_by_admin_user_id=$${values.length-1}`, 'approved_at=NOW()');
     const supplied = field => fields.includes(field) ? `$${fields.indexOf(field)+1}` : field;
-    const approvalGuard = body.status === 'approved' ? `AND ${supplied('transaction_date')} IS NOT NULL AND length(trim(COALESCE(${supplied('vendor')},'')))>0 AND ${supplied('total')}>=0` : '';
+    const approvalGuard = body.status === 'approved' ? `AND ${supplied('transaction_date')}::date IS NOT NULL AND length(trim(COALESCE(${supplied('vendor')}::text,'')))>0 AND ${supplied('total')}::numeric>=0` : '';
     const result = await pool.query(`UPDATE bookkeeping_transactions SET ${assignments.join(',')} WHERE id=$${values.length} AND status<>'void' ${approvalGuard} RETURNING *`, values);
     if (!result.rowCount) return res.status(404).json({ message: "Transaction not found." });
     if (req.body.status === "approved") {
-      await pool.query("UPDATE bookkeeping_documents SET processing_status='approved' WHERE id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1) AND NOT EXISTS (SELECT 1 FROM bookkeeping_transactions WHERE document_id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1) AND status = 'pending')", [req.params.id]);
+      await pool.query("UPDATE bookkeeping_documents SET processing_status='approved' WHERE id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1::bigint) AND NOT EXISTS (SELECT 1 FROM bookkeeping_transactions WHERE document_id = (SELECT document_id FROM bookkeeping_transactions WHERE id = $1::bigint) AND status = 'pending')", [req.params.id]);
     }
     notify({ reason: "bookkeeping_changed" });
     return res.json({ transaction: result.rows[0] });

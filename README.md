@@ -82,7 +82,9 @@ Run [add-stay-level-check-ins.sql](/Users/kadenwhite/Desktop/RVPark/add-stay-lev
 
 ### Nightly payment progress
 
-Standard reservations derive payment amounts from the current nightly rates and payment history instead of displaying a running dollar balance throughout the site. The UI reports paid stay nights and nights left to pay, then hides that progress once every stay night is covered. Exact dollar amounts remain available only inside payment collection screens.
+Standard reservations derive payment amounts from nightly prices and payment history instead of displaying a running dollar balance throughout the site. Online bookings retain their checkout quote, including the guest's selected regular or discounted price and per-night card price, for the originally booked dates/site. Check-in, confirmation emails, the schedule, and payment links use that same quote rather than today's rate table. Older online bookings recover the quote from their saved checkout totals. Ordinary contact, check-in, and payment-method edits do not change it; intentional discount, pricing-category, or dates/site changes can reprice the stay. This uses the existing `public_booking_checkouts.booking_payload` and requires no new SQL migration.
+
+Office-created standard reservations without an online checkout quote continue using the configured nightly rates. The UI reports paid stay nights and nights left to pay, then hides that progress once every stay night is covered. Exact dollar amounts remain available only inside payment collection screens.
 
 Every seventh consecutive night is free: six paid nights earn the seventh night free. The consecutive-night count continues when a guest switches sites without a date gap and resets when there is a gap. Manual-total, monthly, and yearly billing keep their separate billing behavior. This calculation uses the existing payment-event history and does not require another SQL migration.
 
