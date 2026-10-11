@@ -37,3 +37,22 @@ test('an existing monthly account retains its rent billing settings when adding 
  const plan=combinedBookingPlan({...primary,billing_mode:'monthly',totalPrice:0,monthlyRentPrice:900},source);
  assert.equal(plan.billingMode,'monthly');assert.equal(plan.totalPrice,0);assert.equal(plan.monthly,true);
 });
+
+test('converting unpriced bookings to monthly rent needs no total and leaves the price unset',()=>{
+ const unpricedPrimary={...primary,bankTotalPrice:null,totalPrice:1500,manual_pricing_override:true};
+ const longSource={...source,bankTotalPrice:null,siteStays:[{site_id:2,arrival_date:'2026-10-29',leave_date:'2027-05-01'}]};
+ const plan=combinedBookingPlan(unpricedPrimary,longSource,{billingMode:'monthly'});
+ assert.equal(plan.billingMode,'monthly');assert.equal(plan.totalPrice,null);assert.equal(plan.manualOverride,false);
+ assert.equal(plan.resetMonthlySettings,true);assert.equal(plan.monthly,true);assert.equal(plan.amountPaid,350);
+ const billing=buildBillingSummary({billing_mode:plan.billingMode,total_price:plan.totalPrice,
+  monthly_rent_price:null,electric_meter_reading:null,amount_paid:plan.amountPaid,requested_discounts:[]},sumReservationTotals([]),[]);
+ assert.equal(billing.monthlyRentPrice,null);assert.equal(billing.bankTotalPrice,null);assert.equal(billing.amountPaid,350);
+});
+
+test('monthly rent keeps an existing account but a stay-total merge still requires an agreed price',()=>{
+ const existing=combinedBookingPlan({...primary,billing_mode:'monthly',totalPrice:0,monthlyRentPrice:900},source,{billingMode:'monthly'});
+ assert.equal(existing.resetMonthlySettings,false);assert.equal(existing.totalPrice,null);
+ assert.throws(()=>combinedBookingPlan(primary,{...source,bankTotalPrice:null},{billingMode:'manual_total'}),/agreed combined/);
+ assert.throws(()=>combinedBookingPlan(primary,source,{billingMode:'invalid'}),/Choose monthly rent/);
+ assert.equal(combinedBookingPlan(primary,source,{billingMode:'manual_total',monthly:false,totalPrice:1400}).totalPrice,1400);
+});

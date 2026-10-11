@@ -12,7 +12,7 @@ export function sameBookingGuest(primary,source) {
     (email(primary) && email(primary)===email(source) || phone(primary) && phone(primary)===phone(source)));
 }
 
-export function combinedBookingPlan(primary,source,{monthly=true,totalPrice}={}) {
+export function combinedBookingPlan(primary,source,{monthly=true,totalPrice,billingMode:requestedBillingMode}={}) {
   if(primary.status!=='active' || source.status!=='active') throw fault('Only active bookings can be combined.');
   if(primary.merged_into_reservation_id || source.merged_into_reservation_id) throw fault('A booking was already combined. Refresh and use its current booking.');
   if([primary,source].some(booking=>expectedEnvelopeAmount(booking)!==null && !booking.after_hours_cash_received)) throw fault('Verify after-hours cash before combining these bookings.');
@@ -24,7 +24,14 @@ export function combinedBookingPlan(primary,source,{monthly=true,totalPrice}={})
   if(stays.some((stay,index)=>index && stays[index-1].leave_date!==stay.arrival_date)) {
     throw fault('Choose consecutive bookings with no date gaps or overlapping nights.');
   }
-  let billingMode=primary.billing_mode,price=primary.totalPrice ?? null,manualOverride=Boolean(primary.manual_pricing_override);
+  if(requestedBillingMode!==undefined && !['monthly','manual_total'].includes(requestedBillingMode)) throw fault('Choose monthly rent or an agreed stay total.',400);
+  let billingMode=requestedBillingMode ?? primary.billing_mode,price=primary.totalPrice ?? null,manualOverride=Boolean(primary.manual_pricing_override);
+  const resetMonthlySettings=billingMode==='monthly' && primary.billing_mode!=='monthly';
+  if(billingMode==='monthly' && requestedBillingMode==='monthly') {
+    // A monthly account has no whole-trip quote. New rent and meter values remain
+    // unset until the office configures them; existing monthly settings are kept.
+    price=null;manualOverride=false;
+  }
   if(billingMode!=='monthly') {
     if(totalPrice!==undefined) {
       if(totalPrice==='' || typeof totalPrice==='boolean' || !Number.isFinite(Number(totalPrice)) || Number(totalPrice)<0) throw fault('Enter a valid combined stay total.',400);
@@ -35,8 +42,8 @@ export function combinedBookingPlan(primary,source,{monthly=true,totalPrice}={})
     }
     billingMode='manual_total';manualOverride=true;
   }
-  return {stays,billingMode,totalPrice:price,manualOverride,
-    monthly:Boolean(monthly),
+  return {stays,billingMode,totalPrice:price,manualOverride,resetMonthlySettings,
+    monthly:billingMode==='monthly' || Boolean(monthly),
     amountPaid:Math.round((Number(primary.amountPaid || 0)+Number(source.amountPaid || 0))*100)/100};
 }
 
@@ -75,7 +82,7 @@ export function registerCombinedBookingRoutes(app,{pool,getReservation,notify}) 
       if(locked.rowCount!==2) throw fault('One of these bookings no longer exists.',404);
       if(locked.rows.some(r=>r.merged_into_reservation_id)) throw fault('One booking was already combined. Refresh and use its current booking.');
       const primary=await getReservation(client,primaryId),source=await getReservation(client,sourceId);
-      const plan=combinedBookingPlan(primary,source,{monthly:req.body.monthly ?? true,totalPrice:req.body.totalPrice});
+      const plan=combinedBookingPlan(primary,source,{monthly:req.body.monthly ?? true,totalPrice:req.body.totalPrice,billingMode:req.body.billingMode});
       // Capture both originals before moving children or suppressing the source row.
       await client.query(`INSERT INTO reservation_merge_events
         (primary_reservation_id,source_reservation_id,primary_before,source_before,admin_user_id)
@@ -116,8 +123,13 @@ export function registerCombinedBookingRoutes(app,{pool,getReservation,notify}) 
       }
       const notes=[primary.notes || '',source.notes ? `From combined booking #${sourceId}: ${source.notes}` : '',`Combined booking #${sourceId} into #${primaryId}.`].filter(Boolean).join('\n\n');
       await client.query(`UPDATE reservations SET amount_paid=$2,monthly_classification=$3,
-        billing_mode=$4,total_price=$5,manual_pricing_override=$6,notes=$7 WHERE id=$1`,
-        [primaryId,plan.amountPaid,plan.monthly,plan.billingMode,plan.totalPrice,plan.manualOverride,notes]);
+        billing_mode=$4,total_price=$5,manual_pricing_override=$6,notes=$7,
+        monthly_rent_price=CASE WHEN $8 THEN NULL ELSE monthly_rent_price END,
+        electric_meter_reading=CASE WHEN $8 THEN NULL ELSE electric_meter_reading END,
+        monthly_billing_day=CASE WHEN $8 THEN NULL ELSE monthly_billing_day END,
+        monthly_summer_rate=CASE WHEN $8 THEN NULL ELSE monthly_summer_rate END,
+        monthly_winter_rate=CASE WHEN $8 THEN NULL ELSE monthly_winter_rate END WHERE id=$1`,
+        [primaryId,plan.amountPaid,plan.monthly,plan.billingMode,plan.totalPrice,plan.manualOverride,notes,plan.resetMonthlySettings]);
       await client.query(`UPDATE reservations SET merged_into_reservation_id=$2,status='canceled',
         canceled_at=now(),canceled_site_stays='[]'::jsonb,amount_paid=0 WHERE id=$1`,[sourceId,primaryId]);
       // Flatten older aliases if the source itself was a primary of an earlier merge.

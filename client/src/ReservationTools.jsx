@@ -37,7 +37,7 @@ export default function ReservationTools({reservation,reservations,request,onSav
   function reviewCombination(){
     setError('');
     if(!source) return;
-    if(reservation.billing_mode!=='monthly' && (total.trim()==='' || !Number.isFinite(Number(total)) || Number(total)<0)) {
+    if(!monthly && (total.trim()==='' || !Number.isFinite(Number(total)) || Number(total)<0)) {
       setError('Enter the agreed combined stay total before reviewing.');return;
     }
     setReview(true);
@@ -58,15 +58,15 @@ export default function ReservationTools({reservation,reservations,request,onSav
         {!candidates.length?<p className="muted">No other active bookings were found for this guest.</p>:null}
         {source?<>
           <p className="booking-combine-dates">{dates(source.siteStays || [])}</p>
-          {reservation.billing_mode!=='monthly'?<label>Combined stay total ($)<input aria-label="Combined stay total" type="number" min="0" step="0.01" value={total} disabled={busy || review} onChange={event=>{setTotal(event.target.value);setReview(false);}}/><small>The default adds both agreed stay prices. Enter a different agreed total if needed.</small></label>:null}
-          <label className="checkbox-row"><input type="checkbox" checked={monthly} disabled={busy || review} onChange={event=>setMonthly(event.target.checked)}/><span>Mark the combined booking as monthly, even if under 28 nights</span></label>
+          <label className="checkbox-row compact-checkbox"><input type="checkbox" checked={monthly} disabled={busy || review} onChange={event=>{setMonthly(event.target.checked);setReview(false);}}/><span>Use monthly rent pricing — no whole-trip total</span></label>
+          {monthly ? <p className="muted">{reservation.billing_mode==='monthly' ? 'Keep the existing monthly billing settings. Rent can be changed on the Monthly page.' : 'No price is set when you combine these bookings. Set the rent, billing day and electricity details later on the Monthly page.'}</p> : <label>Combined stay total ($)<input aria-label="Combined stay total" type="number" min="0" step="0.01" value={total} disabled={busy || review} onChange={event=>{setTotal(event.target.value);setReview(false);}}/><small>The default adds both agreed stay prices. Enter a different agreed total if needed.</small></label>}
           {review?<div className="booking-combine-review">
             <h4>Review combined booking #{reservation.id}</h4>
             <p>{reservation.first_name} {reservation.last_name} · {dates([...(reservation.siteStays || []),...(source.siteStays || [])].sort((a,b)=>a.arrival_date.localeCompare(b.arrival_date)))}</p>
             <p><strong>Payments already collected: {money(Number(reservation.amountPaid || 0)+Number(source.amountPaid || 0))}</strong></p>
-            <p>{reservation.billing_mode==='monthly'?`Keep this booking’s monthly rate of ${money(reservation.monthlyRentPrice)}.`:`Agreed stay total: ${money(total)}.`} Guest details come from booking #{reservation.id}. Payment and check-in histories from both bookings are kept.</p>
+            <p>{monthly ? reservation.billing_mode==='monthly' ? 'Keep the existing monthly billing settings; no whole-trip total is set.' : 'Monthly rent pricing. No price is set yet; configure rent later on the Monthly page.' : `Agreed stay total: ${money(total)}.`} Guest details come from booking #{reservation.id}. Payment and check-in histories from both bookings are kept.</p>
             <p>Booking #{source.id} will move into this booking. Recurring charges from both records are kept; review them afterward. Any existing balance waiver needs review for the combined stay.</p>
-            <div className="button-row"><button type="button" className="ghost-button" disabled={busy} onClick={()=>setReview(false)}>Back</button><button type="button" className="primary-button" disabled={busy} onClick={()=>save('combine',{sourceReservationId:source.id,monthly,...(reservation.billing_mode!=='monthly'?{totalPrice:total}:{})},`Booking #${source.id} combined into #${reservation.id}.`)}>{busy?'Combining…':`Combine into booking #${reservation.id}`}</button></div>
+            <div className="button-row"><button type="button" className="ghost-button" disabled={busy} onClick={()=>setReview(false)}>Back</button><button type="button" className="primary-button" disabled={busy} onClick={()=>save('combine',{sourceReservationId:source.id,monthly,billingMode:monthly?'monthly':'manual_total',...(!monthly?{totalPrice:total}:{})},`Booking #${source.id} combined into #${reservation.id}.`)}>{busy?'Combining…':`Combine into booking #${reservation.id}`}</button></div>
           </div>:<button type="button" className="ghost-button" disabled={busy} onClick={reviewCombination}>Review combination</button>}
         </>:null}
       </div>

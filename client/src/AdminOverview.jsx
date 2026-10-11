@@ -86,9 +86,9 @@ export default function AdminOverview({ reservations, sites, today, isLoading, o
         <strong>{isLoading ? "—" : metric.value}</strong><small>{metric.note}</small>
       </button>)}
     </div>
-    <section className="overview-payment-followup overview-cash-verification" aria-labelledby="cash-verification-title">
+    {cashNotice ? <p className="message success" role="status">{cashNotice}</p> : null}
+    {!isLoading && overview.cashFollowUps.length > 0 ? <section className="overview-payment-followup overview-cash-verification" aria-labelledby="cash-verification-title">
       <div className="overview-panel-heading"><div><p className="admin-eyebrow">Morning cash check</p><h3 id="cash-verification-title">After-hours cash to verify <span className="overview-followup-count">{isLoading ? '—' : overview.cashFollowUps.length}</span></h3><p className="overview-followup-description">Count the QR booking’s cash envelope, then mark it received. Adjust the amount below if the envelope is short.</p></div></div>
-      {cashNotice ? <p className="message success" role="status">{cashNotice}</p> : null}
       {isLoading ? <p className="overview-empty">Checking cash envelopes…</p> : overview.cashFollowUps.length ? <div>{overview.cashFollowUps.map(entry=><div className="overview-cash-row" key={entry.reservation.id}>
         <div className="overview-followup-guest"><span className="overview-guest-avatar">{(entry.reservation.first_name || 'G').slice(0,1)}{(entry.reservation.last_name || '').slice(0,1)}</span><span><strong>{entry.reservation.first_name} {entry.reservation.last_name}</strong><small>Site {entry.siteNumbers.join(' → ')} · #{entry.reservation.id} · {entry.arrivalDate===yesterday ? 'Arrived yesterday' : `Arrival ${shortDate(entry.arrivalDate)}`}</small><button type="button" className="overview-text-action" onClick={()=>onOpenReservation(entry.reservation)}>Review booking <OverviewIcon name="arrow"/></button></span></div>
         <div className="overview-cash-amount"><strong>{entry.expectedAmount===null ? 'Expected amount needs review' : `Expected ${entry.expectedAmount.toLocaleString('en-US',{style:'currency',currency:'USD'})}`}</strong>{entry.expectedAmount!==null ? <label><span>{Number(entry.reservation.amountPaid || 0)>0 ? 'Cash already recorded' : 'Cash counted ($)'}</span><input aria-label={`Cash counted for ${entry.reservation.first_name} ${entry.reservation.last_name}`} type="number" min="0.01" step="0.01" value={cashAmounts[entry.reservation.id] ?? entry.expectedAmount.toFixed(2)} onChange={event=>setCashAmounts(current=>({...current,[entry.reservation.id]:event.target.value}))} disabled={cashBusy[entry.reservation.id]}/></label> : null}</div>
@@ -96,7 +96,7 @@ export default function AdminOverview({ reservations, sites, today, isLoading, o
         {Number(entry.reservation.amountPaid || 0)>0 ? <small className="overview-cash-note">Payments are already recorded. This verifies existing cash without adding another payment. Review the booking if cash still needs to be recorded.</small> : null}
         {cashErrors[entry.reservation.id] ? <p className="message error overview-cash-note" role="alert">{cashErrors[entry.reservation.id]}</p> : null}
       </div>)}</div> : <p className="overview-empty">No after-hours cash envelopes awaiting verification.</p>}
-    </section>
+    </section> : null}
     <section className="overview-payment-followup" aria-labelledby="payment-followup-title">
       <div className="overview-panel-heading">
         <div><p className="admin-eyebrow">Office follow-up</p><h3 id="payment-followup-title">Payment follow-up <span className="overview-followup-count">{isLoading ? "—" : overview.paymentFollowUps.length}</span></h3><p className="overview-followup-description">Guests who have arrived and still need to finish paying. Departed guests stay here until their balance is settled.</p></div>
