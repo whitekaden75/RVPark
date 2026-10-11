@@ -88,6 +88,16 @@ Office-created standard reservations without an online checkout quote continue u
 
 Every seventh consecutive night is free: six paid nights earn the seventh night free. The consecutive-night count continues when a guest switches sites without a date gap and resets when there is a gap. Manual-total, monthly, and yearly billing keep their separate billing behavior. This calculation uses the existing payment-event history and does not require another SQL migration.
 
+### Office booking tools and morning cash verification
+
+Run these migrations against the existing database before deploying these tools: `sql/2026-10-10_reservation_balance_waivers.sql`, `sql/2026-10-10_monthly_and_combined_bookings.sql`, and `sql/2026-10-10_after_hours_cash_verification.sql`. They can be rerun safely and do not run automatically at startup.
+
+Open a reservation, choose **Manage payments → Adjust pricing or paid amount**, and use **Waive remaining balance** to settle the current booking without recording money that was never collected. An optional office note and a separate audit record preserve the reason. **Restore balance** reverses the waiver. Changing the dates, site, or explicit pricing ends the waiver; contact edits and payment updates preserve it.
+
+The reservation card also has **Monthly & combined bookings**. **Mark as monthly** includes shorter stays in the Monthly page without changing their price. Combine consecutive, active bookings for the same guest after reviewing the site/date sequence and agreed total. The combined booking retains existing stay IDs, collected payments, check-ins and associated records. The old booking is archived and its detail link opens the combined booking. Finish pending payments and verify after-hours cash before combining. Existing monthly billing settings are retained when combining into a monthly account; review recurring charges and any previous waiver after combining. Closing a reservation card leaves the originating admin page and its filters in place.
+
+**Overview → After-hours cash to verify** shows QR cash bookings awaiting a morning envelope check, including older bookings that were approved before cash was verified. Count the envelope, adjust **Cash counted** if needed, and click **Received cash**. This records the actual cash in the payment history, approves the booking, and saves an office receipt with a timestamp and administrator ID. The accepted QR quote is retained even if rate tables have changed. A short envelope leaves its remaining balance in Payment follow-up. Repeated or concurrent verification clicks cannot credit cash twice. If money was already recorded, **Verify recorded cash** verifies matching cash payment history without adding another payment; review the booking if that history does not match the envelope.
+
 ### Stripe Terminal
 
 Register the Stripe S710 to the live Stripe account and keep it assigned to the correct Terminal Location. The admin reservation flow uses Stripe's server-driven Terminal integration: after a reservation is created, the office can record cash/check or send the card deposit to the reader, and the reservation is updated only after Stripe confirms a successful card-present PaymentIntent.

@@ -4,6 +4,15 @@ export const adminPrimaryPages = [
   { key: "messages", label: "Messages" },
 ];
 
+export function sameBookingGuest(primary,source) {
+  if(Number(primary.customer_id)===Number(source.customer_id)) return true;
+  const name=r=>`${r.first_name || ''} ${r.last_name || ''}`.trim().toLowerCase();
+  const email=r=>String(r.email || '').trim().toLowerCase();
+  const phone=r=>String(r.phone_number || '').replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'');
+  return Boolean(name(primary) && name(primary)===name(source) &&
+    (email(primary) && email(primary)===email(source) || phone(primary) && phone(primary)===phone(source)));
+}
+
 export const adminPageGroups = [
   {
     label: "Reservations",
@@ -54,13 +63,28 @@ export function updateStayField(stay, field, value) {
     : { ...stay, [field]: value };
 }
 
+export function getAfterHoursCashFollowUps(reservations, today) {
+  return reservations.filter(reservation => ['pending','active'].includes(reservation.status) &&
+    !reservation.merged_into_reservation_id && !reservation.after_hours_cash_received &&
+    /^AFTER-HOURS DRIVE-UP\b/m.test(String(reservation.notes || '')) &&
+    reservation.siteStays?.some(stay => stay.arrival_date <= today))
+    .map(reservation => {
+      const stays=[...reservation.siteStays].sort((a,b)=>a.arrival_date.localeCompare(b.arrival_date));
+      const quote=String(reservation.notes).match(/Expected envelope amount:\s*\$([\d,]+\.\d{2})(?:\.|\s|$)/);
+      const expected=quote ? Number(quote[1].replaceAll(',','')) : null;
+      return {reservation,arrivalDate:stays[0].arrival_date,
+        siteNumbers:[...new Set(stays.map(stay=>stay.site_number))],
+        expectedAmount:Number.isFinite(expected) && expected>0 ? expected : null};
+    }).sort((a,b)=>a.arrivalDate.localeCompare(b.arrivalDate) || Number(a.reservation.id)-Number(b.reservation.id));
+}
+
 export function getPaymentFollowUps(reservations, today) {
   const rows = [];
   for (const reservation of reservations) {
-    const cashEnvelope = reservation.status === "pending" &&
-      String(reservation.notes || "").includes("AFTER-HOURS DRIVE-UP");
-    if (reservation.status !== "active" && !cashEnvelope) continue;
-    if (reservation.reservation_term === "yearly" ||
+    if (reservation.balanceWaiver?.active) continue;
+    if (!reservation.after_hours_cash_received && /^AFTER-HOURS DRIVE-UP\b/m.test(String(reservation.notes || ''))) continue;
+    if (reservation.status !== "active") continue;
+    if (reservation.monthly_classification || reservation.reservation_term === "yearly" ||
         (reservation.effectiveBillingMode || reservation.billing_mode) === "monthly") continue;
 
     const stays = (reservation.siteStays || [])
@@ -95,7 +119,6 @@ export function getPaymentFollowUps(reservations, today) {
       siteNumbers: [...new Set(visit.map((stay) => stay.site_number))],
       departed: visit.at(-1).leave_date <= today,
       unpaidNights,
-      cashEnvelope,
     });
   }
   return rows.sort((left, right) => Number(right.departed) - Number(left.departed) ||
@@ -134,5 +157,6 @@ export function getAdminOverview(reservations, sites, today) {
     moves: moves.sort(order),
     pending: reservations.filter((reservation) => reservation.status === "pending"),
     paymentFollowUps: getPaymentFollowUps(reservations, today),
+    cashFollowUps: getAfterHoursCashFollowUps(reservations, today),
   };
 }

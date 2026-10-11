@@ -9,6 +9,9 @@ import { createMessaging } from "./messaging.js";
 import { createMessageNotifier } from "./message-notifications.js";
 import { createArrivalReminders } from "./arrival-reminders.js";
 import { createLateArrivalTexts } from "./late-arrivals.js";
+import { applyBalanceWaiver, registerBalanceWaiverRoutes } from "./pricing-waivers.js";
+import { registerAfterHoursCashRoutes } from "./after-hours-cash.js";
+import { registerCombinedBookingRoutes } from "./combined-bookings.js";
 import { registerBookkeepingRoutes } from "./bookkeeping.js";
 import { registerFinanceRoutes } from "./bookkeeping-finance.js";
 import { applyBookedPricing, createBookingPricingQuote, loadBookedPricing } from "./booking-pricing.js";
@@ -518,6 +521,17 @@ app.use("/api", (req, res, next) => {
       console.error("Unable to authenticate admin request", error);
       return res.status(500).json({ message: "Unable to authenticate admin request." });
     });
+});
+
+// Old booking links can still be read, but edits must use the combined booking.
+app.use('/api/reservations/:id',async(req,res,next)=>{
+  if(req.method==='GET' || !/^[1-9]\d*$/.test(String(req.params.id))) return next();
+  try {
+    const result=await pool.query(`SELECT to_jsonb(r)->>'merged_into_reservation_id' AS merged_id
+      FROM reservations r WHERE id=$1`,[req.params.id]);
+    if(result.rows[0]?.merged_id) return res.status(409).json({message:`This booking was combined into #${result.rows[0].merged_id}. Open that booking to make changes.`,mergedIntoReservationId:Number(result.rows[0].merged_id)});
+    return next();
+  } catch(error) {return res.status(503).json({message:'Unable to check the booking. Please refresh and try again.'});}
 });
 
 app.get("/api/admin/session", async (req, res) => {
@@ -2139,7 +2153,18 @@ async function findStripePaymentRecordForUpdate(client, { checkoutSessionId = nu
   return null;
 }
 
+async function redirectMergedPaymentRecord(client,paymentRecord) {
+  const destination=await client.query(`SELECT coalesce(to_jsonb(r)->>'merged_into_reservation_id',r.id::text) AS id
+    FROM reservations r WHERE id=$1`,[paymentRecord.reservation_id]);
+  const id=destination.rows[0]?.id;
+  if(id && String(id)!==String(paymentRecord.reservation_id)) {
+    await client.query('UPDATE stripe_payment_records SET reservation_id=$2 WHERE id=$1',[paymentRecord.id,id]);
+    paymentRecord.reservation_id=id;
+  }
+}
+
 async function applyStripePaymentSettlement(client, paymentRecord, details) {
+  await redirectMergedPaymentRecord(client,paymentRecord);
   const wasAlreadyPaid = paymentRecord.payment_status === "paid";
   const collectedAmount = Number(paymentRecord.amount_cents) / 100;
   const paymentPriceType =
@@ -3025,6 +3050,8 @@ async function syncOpenStripePayments({
 
       const lockedPayment = lockedPaymentResult.rows[0];
 
+      await redirectMergedPaymentRecord(client,lockedPayment);
+
       if (lockedPayment.payment_status === "paid") {
         await client.query("COMMIT");
         continue;
@@ -3689,6 +3716,11 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.payment_method,
         r.pricing_category_override,
         r.requested_discounts,
+        to_jsonb(r)->'balance_waiver' AS balance_waiver,
+        to_jsonb(r)->'after_hours_cash_received' AS after_hours_cash_received,
+        coalesce((to_jsonb(r)->>'monthly_classification')::boolean,false) AS monthly_classification,
+        coalesce((to_jsonb(r)->>'manual_pricing_override')::boolean,false) AS manual_pricing_override,
+        (to_jsonb(r)->>'merged_into_reservation_id')::bigint AS merged_into_reservation_id,
         r.created_at,
         c.first_name,
         c.last_name,
@@ -3706,6 +3738,9 @@ async function fetchReservationDetails(queryable, reservationId) {
   }
 
   const reservationRow = reservationResult.rows[0];
+  if (reservationRow.merged_into_reservation_id) {
+    return fetchReservationDetails(queryable,reservationRow.merged_into_reservation_id);
+  }
   const paymentEventsResult = await queryable.query(
     `
       SELECT
@@ -3843,7 +3878,7 @@ async function fetchReservationDetails(queryable, reservationId) {
     ...reservationRow,
     pricingCategoryOverride: reservationRow.pricing_category_override || null,
     totals,
-    ...billing,
+    ...applyBalanceWaiver(reservationRow, pricedSiteStays, billing),
     paymentEvents: paymentEventsResult.rows.map((row) => ({
       id: row.id,
       stripePaymentRecordId: row.stripe_payment_record_id,
@@ -3906,7 +3941,7 @@ function buildReservationDetailsFromParts(
     ...reservationRow,
     pricingCategoryOverride: reservationRow.pricing_category_override || null,
     totals,
-    ...billing,
+    ...applyBalanceWaiver(reservationRow, pricedSiteStays, billing),
     paymentEvents: paymentEventRows.map((row) => ({
       id: row.id,
       stripePaymentRecordId: row.stripe_payment_record_id,
@@ -3957,6 +3992,11 @@ async function fetchReservationList(queryable) {
         r.payment_method,
         r.pricing_category_override,
         r.requested_discounts,
+        to_jsonb(r)->'balance_waiver' AS balance_waiver,
+        to_jsonb(r)->'after_hours_cash_received' AS after_hours_cash_received,
+        coalesce((to_jsonb(r)->>'monthly_classification')::boolean,false) AS monthly_classification,
+        coalesce((to_jsonb(r)->>'manual_pricing_override')::boolean,false) AS manual_pricing_override,
+        (to_jsonb(r)->>'merged_into_reservation_id')::bigint AS merged_into_reservation_id,
         r.created_at,
         c.first_name,
         c.last_name,
@@ -3964,6 +4004,7 @@ async function fetchReservationList(queryable) {
         c.phone_number
       FROM reservations r
       JOIN customers c ON c.id = r.customer_id
+      WHERE to_jsonb(r)->>'merged_into_reservation_id' IS NULL
       ORDER BY r.booked_date DESC, r.id DESC
     `
   );
@@ -4240,6 +4281,7 @@ function sanitizeGuestReservation(reservation) {
     bankDailyPrice: reservation.bankDailyPrice,
     cardDailyPrice: reservation.cardDailyPrice,
     amountPaid: reservation.amountPaid,
+    balanceWaiver: reservation.balanceWaiver ? {active:reservation.balanceWaiver.active,waivedAt:reservation.balanceWaiver.waivedAt} : null,
     totalChargeableNights: reservation.totalChargeableNights,
     paidChargeableNights: reservation.paidChargeableNights,
     unpaidChargeableNights: reservation.unpaidChargeableNights,
@@ -7477,6 +7519,7 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
       return total + (Number.isFinite(nights) && nights > 0 ? nights : 0);
     }, 0);
     const isMonthlyStay =
+      reservation.monthly_classification ||
       reservation.effectiveBillingMode === "monthly" ||
       reservation.billing_mode === "monthly" ||
       (reservation.reservation_term !== "yearly" &&
@@ -9179,6 +9222,9 @@ app.delete("/api/reservations/:id", async (req, res) => {
 
 registerBookkeepingRoutes(app, { pool, notify: broadcastAdminDataChange });
 registerFinanceRoutes(app, { pool, stripe, notify: broadcastAdminDataChange });
+registerAfterHoursCashRoutes(app, {pool,getReservation:fetchReservationDetails,insertPayment:insertReservationPaymentEvent,findOverlap:findReservationOverlap,notify:broadcastAdminDataChange});
+registerBalanceWaiverRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
+registerCombinedBookingRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
 
 app.listen(port, () => {
   console.log(`RV Park server listening on port ${port}`);

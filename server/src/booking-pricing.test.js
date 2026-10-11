@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { applyBookedPricing, createBookingPricingQuote, loadBookedPricing } from "./booking-pricing.js";
+import { applyBalanceWaiver } from "./pricing-waivers.js";
 import {
   buildBillingSummary, buildPricingRuleLookup, calculateChargeableNights,
   getCardPrice, getPricingForSiteAndNights, sumReservationTotals
@@ -240,7 +241,7 @@ test("schedule and check-in reservation loaders both return the original quote",
   } };
   const loaders = vm.runInNewContext(`${declarations.join("\n")}\n({ fetchReservationDetails, fetchReservationList })`, {
     applyBookedPricing, loadBookedPricing, buildPricingRuleLookup, getPricingForSiteAndNights,
-    sumReservationTotals, buildBillingSummary,
+    sumReservationTotals, buildBillingSummary, applyBalanceWaiver,
     toPriceNumber: (value) => value == null ? null : Number(value),
     serializeReservationCheckIn: (value) => value || null,
     loadPricingRules: async () => liveRules,

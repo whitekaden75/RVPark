@@ -7,7 +7,7 @@ export function arrivalReminderText(reservation, date, formatDate, reference = '
     `We're looking forward to your arrival ${reference}!`, '', 'Reservation Details',
     `Arrival: ${formatDate(date)}`, `Departure: ${departure === '9999-12-31' ? 'Open-ended' : departure ? formatDate(departure) : 'Not set'}`,
     'Check-in: 1:00 PM',
-    ...(Number(reservation.unpaidStayNights) > 0 ? [`${reservation.unpaidStayNights} ${Number(reservation.unpaidStayNights) === 1 ? 'night remains' : 'nights remain'} to be paid`] : []),
+    ...(reservation.balanceWaiver?.active ? ['The remaining balance has been waived by the office.'] : Number(reservation.unpaidStayNights) > 0 ? [`${reservation.unpaidStayNights} ${Number(reservation.unpaidStayNights) === 1 ? 'night remains' : 'nights remain'} to be paid`] : []),
     '',
     'Please reply to this message to confirm your arrival and provide your approximate arrival time. Any questions? Call (541) 295-1269',
     '', 'Thank you!', '', 'Makayla', 'Riverpark RV Resort', '2956 Rogue River Hwy', 'Grants Pass, OR 97527'
@@ -84,7 +84,9 @@ export function createArrivalReminders({ pool, today = () => tomorrow(), tomorro
       catch (error) { results.push({ id: recipient.id, state: 'failed', message: error.message }); continue; }
       // A durable claim protects against double clicks and simultaneous staff sessions.
       const claim = await pool.query(`
-        INSERT INTO arrival_text_reminders (reservation_id,arrival_date,state) VALUES ($1,$2,'sending')
+        INSERT INTO arrival_text_reminders (reservation_id,arrival_date,state)
+        SELECT $1,$2,'sending' FROM reservations r
+        WHERE r.id=$1 AND to_jsonb(r)->>'merged_into_reservation_id' IS NULL
         ON CONFLICT (reservation_id,arrival_date) DO UPDATE SET state='sending',error_message=NULL,updated_at=now()
           WHERE arrival_text_reminders.state='failed'
         RETURNING reservation_id`, [recipient.id, date]);

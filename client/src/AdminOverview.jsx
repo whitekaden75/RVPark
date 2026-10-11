@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { getAdminOverview } from "./admin-ui.js";
 
 function OverviewIcon({ name, ...props }) {
@@ -13,11 +13,16 @@ function OverviewIcon({ name, ...props }) {
   return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>{paths[name] || paths.arrow}</svg>;
 }
 
-export default function AdminOverview({ reservations, sites, today, isLoading, onNavigate, onOpenReservation, onRefresh }) {
+export default function AdminOverview({ reservations, sites, today, isLoading, onNavigate, onOpenReservation, onRefresh, onVerifyCash }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const [paymentFilter, setPaymentFilter] = useState("all");
   const [paymentSearch, setPaymentSearch] = useState("");
+  const [cashAmounts,setCashAmounts]=useState({});
+  const [cashBusy,setCashBusy]=useState({});
+  const [cashErrors,setCashErrors]=useState({});
+  const [cashNotice,setCashNotice]=useState('');
+  const cashInFlight=useRef(new Set());
   const overview = getAdminOverview(reservations, sites, today);
   const yesterday = new Date(Date.parse(`${today}T12:00:00Z`) - 86400000).toISOString().slice(0, 10);
   const followUps = overview.paymentFollowUps.filter((entry) => {
@@ -41,6 +46,20 @@ export default function AdminOverview({ reservations, sites, today, isLoading, o
     try { await onRefresh(); }
     catch (error) { setRefreshError(error.message); }
     finally { setIsRefreshing(false); }
+  }
+
+  async function receiveCash(entry) {
+    const id=entry.reservation.id;
+    if(cashInFlight.current.has(id)) return;
+    cashInFlight.current.add(id);setCashBusy(current=>({...current,[id]:true}));
+    setCashErrors(current=>({...current,[id]:''}));setCashNotice('');
+    try {
+      const amount=cashAmounts[id] ?? entry.expectedAmount.toFixed(2);
+      const updated=await onVerifyCash(entry.reservation,amount,Number(entry.reservation.amountPaid || 0)>0);
+      const receipt=updated.after_hours_cash_received;
+      setCashNotice(`Cash verified for ${updated.first_name} ${updated.last_name}: ${Number(receipt?.amount ?? amount).toLocaleString('en-US',{style:'currency',currency:'USD'})}.${Number(updated.bankRemainingBalance || 0)>0 ? ' The remaining balance is in Payment follow-up.' : ''}`);
+    } catch(error) {setCashErrors(current=>({...current,[id]:error.message}));}
+    finally {cashInFlight.current.delete(id);setCashBusy(current=>({...current,[id]:false}));}
   }
 
   function renderGuest(entry, type) {
@@ -67,6 +86,17 @@ export default function AdminOverview({ reservations, sites, today, isLoading, o
         <strong>{isLoading ? "—" : metric.value}</strong><small>{metric.note}</small>
       </button>)}
     </div>
+    <section className="overview-payment-followup overview-cash-verification" aria-labelledby="cash-verification-title">
+      <div className="overview-panel-heading"><div><p className="admin-eyebrow">Morning cash check</p><h3 id="cash-verification-title">After-hours cash to verify <span className="overview-followup-count">{isLoading ? '—' : overview.cashFollowUps.length}</span></h3><p className="overview-followup-description">Count the QR booking’s cash envelope, then mark it received. Adjust the amount below if the envelope is short.</p></div></div>
+      {cashNotice ? <p className="message success" role="status">{cashNotice}</p> : null}
+      {isLoading ? <p className="overview-empty">Checking cash envelopes…</p> : overview.cashFollowUps.length ? <div>{overview.cashFollowUps.map(entry=><div className="overview-cash-row" key={entry.reservation.id}>
+        <div className="overview-followup-guest"><span className="overview-guest-avatar">{(entry.reservation.first_name || 'G').slice(0,1)}{(entry.reservation.last_name || '').slice(0,1)}</span><span><strong>{entry.reservation.first_name} {entry.reservation.last_name}</strong><small>Site {entry.siteNumbers.join(' → ')} · #{entry.reservation.id} · {entry.arrivalDate===yesterday ? 'Arrived yesterday' : `Arrival ${shortDate(entry.arrivalDate)}`}</small><button type="button" className="overview-text-action" onClick={()=>onOpenReservation(entry.reservation)}>Review booking <OverviewIcon name="arrow"/></button></span></div>
+        <div className="overview-cash-amount"><strong>{entry.expectedAmount===null ? 'Expected amount needs review' : `Expected ${entry.expectedAmount.toLocaleString('en-US',{style:'currency',currency:'USD'})}`}</strong>{entry.expectedAmount!==null ? <label><span>{Number(entry.reservation.amountPaid || 0)>0 ? 'Cash already recorded' : 'Cash counted ($)'}</span><input aria-label={`Cash counted for ${entry.reservation.first_name} ${entry.reservation.last_name}`} type="number" min="0.01" step="0.01" value={cashAmounts[entry.reservation.id] ?? entry.expectedAmount.toFixed(2)} onChange={event=>setCashAmounts(current=>({...current,[entry.reservation.id]:event.target.value}))} disabled={cashBusy[entry.reservation.id]}/></label> : null}</div>
+        <button type="button" className="primary-button" onClick={()=>receiveCash(entry)} disabled={isLoading || cashBusy[entry.reservation.id] || entry.expectedAmount===null}>{cashBusy[entry.reservation.id] ? 'Verifying…' : Number(entry.reservation.amountPaid || 0)>0 ? 'Verify recorded cash' : 'Received cash'}</button>
+        {Number(entry.reservation.amountPaid || 0)>0 ? <small className="overview-cash-note">Payments are already recorded. This verifies existing cash without adding another payment. Review the booking if cash still needs to be recorded.</small> : null}
+        {cashErrors[entry.reservation.id] ? <p className="message error overview-cash-note" role="alert">{cashErrors[entry.reservation.id]}</p> : null}
+      </div>)}</div> : <p className="overview-empty">No after-hours cash envelopes awaiting verification.</p>}
+    </section>
     <section className="overview-payment-followup" aria-labelledby="payment-followup-title">
       <div className="overview-panel-heading">
         <div><p className="admin-eyebrow">Office follow-up</p><h3 id="payment-followup-title">Payment follow-up <span className="overview-followup-count">{isLoading ? "—" : overview.paymentFollowUps.length}</span></h3><p className="overview-followup-description">Guests who have arrived and still need to finish paying. Departed guests stay here until their balance is settled.</p></div>
@@ -77,7 +107,7 @@ export default function AdminOverview({ reservations, sites, today, isLoading, o
       ].map(([key, label]) => <button key={key} type="button" aria-pressed={paymentFilter === key} onClick={() => setPaymentFilter(key)}>{label}</button>)}</div>
       {isLoading ? <p className="overview-empty">Checking payment progress…</p> : followUps.length ? <div className="overview-followup-list">{followUps.map((entry) => <div key={entry.reservation.id} className="overview-followup-row">
         <div className="overview-followup-guest"><span className="overview-guest-avatar">{(entry.reservation.first_name || "G").slice(0, 1)}{(entry.reservation.last_name || "").slice(0, 1)}</span><span><strong>{entry.reservation.first_name} {entry.reservation.last_name}</strong><small>Site {entry.siteNumbers.join(" → ")} · Reservation #{entry.reservation.id}</small></span></div>
-        <div className="overview-followup-stay"><strong>{entry.departed ? `Departed ${shortDate(entry.leaveDate)}` : entry.arrivalDate === yesterday ? "Arrived yesterday" : entry.arrivalDate === today ? "Arriving today" : `Arrived ${shortDate(entry.arrivalDate)}`}</strong><small>{entry.cashEnvelope ? "Verify cash envelope" : entry.departed ? "Balance needs office follow-up" : `Departure ${shortDate(entry.leaveDate)}`}</small></div>
+        <div className="overview-followup-stay"><strong>{entry.departed ? `Departed ${shortDate(entry.leaveDate)}` : entry.arrivalDate === yesterday ? "Arrived yesterday" : entry.arrivalDate === today ? "Arriving today" : `Arrived ${shortDate(entry.arrivalDate)}`}</strong><small>{entry.departed ? "Balance needs office follow-up" : `Departure ${shortDate(entry.leaveDate)}`}</small></div>
         <span className="overview-followup-progress">{entry.unpaidNights == null ? "Balance still due" : `${entry.unpaidNights} ${entry.unpaidNights === 1 ? "night" : "nights"} left to pay`}</span>
         <button type="button" className="ghost-button" aria-label={`Review payment for ${entry.reservation.first_name} ${entry.reservation.last_name}`} onClick={() => onOpenReservation(entry.reservation)}>Review payment <OverviewIcon name="arrow" /></button>
       </div>)}</div> : <p className="overview-empty">{overview.paymentFollowUps.length ? "No unpaid stays match these filters." : "No outstanding payments for guests who have arrived."}</p>}

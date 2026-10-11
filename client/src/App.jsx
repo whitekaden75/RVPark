@@ -26,6 +26,7 @@ import { loadStripe } from "@stripe/stripe-js";
 import CheckInPage from "./CheckInPage.jsx";
 import MessageInbox from "./MessageInbox.jsx";
 import AdminOverview from "./AdminOverview.jsx";
+import ReservationTools from "./ReservationTools.jsx";
 import { adminPrimaryPages, adminPageGroups, adminPages, getSiteOptions, updateStayField } from "./admin-ui.js";
 const BookkeepingPage = lazy(() => import("./BookkeepingPage.jsx"));
 
@@ -494,6 +495,7 @@ function isMonthlyReservation(reservation) {
   if (!reservation || reservation.status === "canceled") return false;
 
   return (
+    reservation.monthly_classification ||
     reservation.effectiveBillingMode === "monthly" ||
     reservation.billing_mode === "monthly" ||
     (reservation.reservation_term !== "yearly" &&
@@ -766,6 +768,9 @@ function NightPaymentStatus({
   className = "",
   showNightlyRates = false,
 }) {
+  if (reservation?.balanceWaiver?.active) {
+    return <div className={`night-payment-status balance-waived-status ${className}`.trim()}><strong>Balance waived</strong><span>No further payment is due for this booking.</span></div>;
+  }
   const progress = getNightPaymentProgress(reservation);
   const bankNightlyPrice = reservation?.bankDailyPrice;
   const cardNightlyPrice = reservation?.cardDailyPrice;
@@ -797,6 +802,7 @@ function NightPaymentStatus({
 }
 
 function formatNightPaymentSummary(reservation) {
+  if (reservation?.balanceWaiver?.active) return " • Balance waived";
   const progress = getNightPaymentProgress(reservation);
 
   return progress?.unpaid > 0
@@ -805,6 +811,7 @@ function formatNightPaymentSummary(reservation) {
 }
 
 function hasPaymentDueForReservation(reservation) {
+  if (reservation?.balanceWaiver?.active) return false;
   const progress = getNightPaymentProgress(reservation);
 
   if (progress) return progress.unpaid > 0;
@@ -6393,6 +6400,7 @@ export default function App() {
   const [isCreatedPaymentPanelMinimized, setIsCreatedPaymentPanelMinimized] =
     useState(false);
   const [editingReservationId, setEditingReservationId] = useState(null);
+  const reservationEditReturnPage = useRef(null);
   const [activePage, setActivePage] = useState(() => {
     if (typeof window === "undefined") {
       return "home";
@@ -6490,6 +6498,9 @@ export default function App() {
   const reservationSubmitInFlight = useRef(false);
   const [isSavingReservation, setIsSavingReservation] = useState(false);
   const [isSavingAdminEdit, setIsSavingAdminEdit] = useState(false);
+  const [isSavingBalanceWaiver, setIsSavingBalanceWaiver] = useState(false);
+  const [balanceWaiverReason, setBalanceWaiverReason] = useState("");
+  const balanceWaiverInFlight = useRef(false);
   const [adminSaveNotice, setAdminSaveNotice] = useState("");
   const [adminConflictNotice, setAdminConflictNotice] = useState("");
   const [confirmationCopyMessage, setConfirmationCopyMessage] = useState("");
@@ -7958,6 +7969,7 @@ export default function App() {
     setCustomerForm(emptyCustomer);
     setEditingReservationId(null);
     setReservationEditFocusSection("");
+    reservationEditReturnPage.current = null;
   }
 
   function clearSection(sectionKey) {
@@ -8945,6 +8957,7 @@ export default function App() {
   }
 
   async function startEditingReservation(reservationId, focusSection = "") {
+    if (activePage !== "reservation") reservationEditReturnPage.current = activePage;
     setErrorMessage("");
     setCreatedReservation(null);
     setGeneratedPaymentLink(null);
@@ -9026,7 +9039,9 @@ export default function App() {
   }
 
   function cancelEditingReservation() {
+    const returnPage = reservationEditReturnPage.current;
     resetReservationForm();
+    if (returnPage) setActivePage(returnPage);
   }
 
   async function copyReservationConfirmation() {
@@ -9979,6 +9994,7 @@ export default function App() {
   }
 
   async function saveSchedulePaymentInfo() {
+    if (balanceWaiverInFlight.current) return;
     if (!activeScheduleReservation) {
       return;
     }
@@ -10392,7 +10408,6 @@ export default function App() {
   function openScheduleReservation(reservation, options = {}) {
     const { openPaymentEditor = false } = options;
 
-    setActivePage("schedule");
     const terminalBalance =
       reservation.cardRemainingBalance ?? reservation.remainingBalance;
     setActiveSchedulePaymentAmount(
@@ -10406,8 +10421,44 @@ export default function App() {
     setSchedulePaymentForm(createSchedulePaymentForm(reservation));
     setSchedulePaymentErrorMessage("");
     setSchedulePaymentSuccessMessage("");
+    setBalanceWaiverReason("");
     setIsEditingSchedulePaymentInfo(openPaymentEditor);
     setActiveScheduleReservation(reservation);
+  }
+
+  function applySavedBookingTools(updated) {
+    setReservations(current=>current.map(entry=>entry.id===updated.id?updated:entry));
+    setActiveScheduleReservation(current=>current?.id===updated.id?updated:current);
+    setCreatedReservation(current=>current?.id===updated.id?updated:current);
+    setSchedulePaymentForm(createSchedulePaymentForm(updated));
+    setScheduleCardPayment(null);setGeneratedPaymentLink(null);
+  }
+
+  async function setScheduleBalanceWaiver(waive) {
+    if (!activeScheduleReservation || balanceWaiverInFlight.current || isSavingAdminEdit) return;
+    setSchedulePaymentErrorMessage("");
+    setSchedulePaymentSuccessMessage("");
+    if (JSON.stringify(schedulePaymentForm) !== JSON.stringify(createSchedulePaymentForm(activeScheduleReservation))) {
+      setSchedulePaymentErrorMessage("Save or reset your pricing edits before changing the balance waiver.");
+      return;
+    }
+    balanceWaiverInFlight.current = true;
+    setIsSavingBalanceWaiver(true);
+    try {
+      const updated = await apiRequest(`/reservations/${activeScheduleReservation.id}/balance-waiver`, {
+        method: "POST", body: JSON.stringify({ waive, reason: balanceWaiverReason }),
+      });
+      setReservations(current => current.map(entry => entry.id === updated.id ? updated : entry));
+      setActiveScheduleReservation(current => current?.id === updated.id ? updated : current);
+      setCreatedReservation(current => current?.id === updated.id ? updated : current);
+      setSchedulePaymentForm(createSchedulePaymentForm(updated));
+      setBalanceWaiverReason("");
+      setScheduleCardPayment(null);
+      setGeneratedPaymentLink(null);
+      setPaymentLinkSuccessMessage("");
+      setSchedulePaymentSuccessMessage(waive ? "Remaining balance waived. The amount collected is unchanged." : "Balance restored using the current pricing.");
+    } catch (error) { setSchedulePaymentErrorMessage(error.message); }
+    finally { balanceWaiverInFlight.current = false; setIsSavingBalanceWaiver(false); }
   }
 
   async function openReservationEditor(
@@ -11183,6 +11234,13 @@ export default function App() {
             onNavigate={setActivePage}
             onOpenReservation={openScheduleReservation}
             onRefresh={refreshSharedAdminData}
+            onVerifyCash={async (reservation,amount,alreadyRecorded) => {
+              const updated=await apiRequest(`/reservations/${reservation.id}/receive-after-hours-cash`, {
+                method: "POST",body: JSON.stringify({amount,alreadyRecorded})
+              });
+              applySavedBookingTools(updated);
+              return updated;
+            }}
           />
         ) : null}
         {activePage === "checkin" ? (
@@ -14743,6 +14801,7 @@ export default function App() {
                   : ""}
               </p>
               <div className="pricing-summary">
+                {activeScheduleReservation.monthly_classification ? <span className="booking-monthly-label">Monthly guest · marked by office</span> : null}
                 <span>
                   Email: {activeScheduleReservation.email || "Not set"}
                 </span>
@@ -15322,6 +15381,19 @@ export default function App() {
                           not collect money.
                         </span>
                       </div>
+                      <div className="balance-waiver-card">
+                        <div><h4>{activeScheduleReservation.balanceWaiver?.active ? "Balance waived" : "Waive the remaining balance"}</h4>
+                          <p>Use this when the office decides no more payment is needed. Payments already collected stay on record. Changing stay dates or charge settings ends the waiver.</p>
+                        </div>
+                        {activeScheduleReservation.balanceWaiver?.active ? <p className="balance-waiver-note">{activeScheduleReservation.balanceWaiver.reason || "Waived by the office."}</p> : <>
+                          {activeScheduleReservation.balanceWaiver?.scopeChanged ? <p className="balance-waiver-note">The previous waiver ended because the booking changed. Review the balance before waiving it again.</p> : null}
+                          <label>Office note (optional)<input value={balanceWaiverReason} maxLength={500} placeholder="For example: courtesy adjustment" disabled={isSavingBalanceWaiver} onChange={event => setBalanceWaiverReason(event.target.value)} /></label>
+                        </>}
+                        <button type="button" className="ghost-button" disabled={isSavingAdminEdit || isSavingBalanceWaiver || activeScheduleReservation.status !== "active"}
+                          onClick={() => setScheduleBalanceWaiver(!activeScheduleReservation.balanceWaiver?.active)}>
+                          {isSavingBalanceWaiver ? "Saving waiver…" : activeScheduleReservation.balanceWaiver?.active ? "Restore balance" : "Waive remaining balance"}
+                        </button>
+                      </div>
                       <label className="checkbox-row compact-checkbox payment-discount-checkbox">
                         <input
                           type="checkbox"
@@ -15425,7 +15497,7 @@ export default function App() {
                           <button
                             type="button"
                             className="primary-button"
-                            disabled={isSavingAdminEdit}
+                            disabled={isSavingAdminEdit || isSavingBalanceWaiver}
                             onClick={saveSchedulePaymentInfo}>
                             {isSavingAdminEdit
                               ? "Saving changes…"
@@ -15457,6 +15529,7 @@ export default function App() {
                   ) : null}
                 </div>
               ) : null}
+              <ReservationTools reservation={activeScheduleReservation} reservations={reservations} request={apiRequest} onSaved={applySavedBookingTools} onRefresh={refreshSharedAdminData}/>
               {!isEditingSchedulePaymentInfo &&
               activeScheduleReservation.status !== "canceled" &&
               hasPaymentDueForReservation(activeScheduleReservation) ? (

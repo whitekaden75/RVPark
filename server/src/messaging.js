@@ -79,7 +79,7 @@ export function createMessaging({ pool, accountSid, authToken, webhookBaseUrl, n
         r.id AS reservation_id,r.status,r.total_price,r.amount_paid,
         (SELECT json_agg(json_build_object('site',s.site_number,'arrival',st.arrival_date::text,'departure',st.leave_date::text) ORDER BY st.arrival_date)
          FROM reservation_site_stays st JOIN rv_sites s ON s.id=st.site_id WHERE st.reservation_id=r.id) AS stays
-      FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
+      FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id AND to_jsonb(r)->>'merged_into_reservation_id' IS NULL
       WHERE (CASE WHEN length(regexp_replace(c.phone_number,'[^0-9]','','g'))=10 THEN '+1' ELSE '+' END || regexp_replace(c.phone_number,'[^0-9]','','g')) = ANY($1::text[])
       ORDER BY r.id DESC`, [phones]);
     return { hasMore: result.rows.length > 100, messages: rows.map(row => ({

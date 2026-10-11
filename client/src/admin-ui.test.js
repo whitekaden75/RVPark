@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adminPages, getSiteOptions, updateStayField, getAdminOverview, getPaymentFollowUps } from "./admin-ui.js";
+import { adminPages, getSiteOptions, updateStayField, getAdminOverview, getPaymentFollowUps, getAfterHoursCashFollowUps, sameBookingGuest } from "./admin-ui.js";
 
 const sites = [
   { id: 1, site_number: "10" },
@@ -101,7 +101,8 @@ test("payment follow-up excludes future, canceled, fully-paid and recurring stay
 test("unverified after-hours cash envelopes stay visible; ordinary pending bookings do not", () => {
   const cash = { ...reservation(1, [stay(1, "2026-10-09", "2026-10-12")], "pending"),
     notes: "AFTER-HOURS DRIVE-UP — cash envelope payment awaiting office verification.", paidStayNights: 0, unpaidStayNights: 3 };
-  assert.equal(getPaymentFollowUps([cash], "2026-10-10")[0].cashEnvelope, true);
+  assert.equal(getPaymentFollowUps([cash], "2026-10-10").length, 0);
+  assert.equal(getAfterHoursCashFollowUps([cash], "2026-10-10")[0].reservation.id, 1);
 });
 
 test("site moves preserve visit arrival; paid past visits don't flag an unpaid future return visit", () => {
@@ -122,4 +123,33 @@ test("an ongoing trip includes unpaid nights after a future site move", () => {
   assert.equal(result.departed, false);
   assert.equal(result.unpaidNights, 3);
   assert.deepEqual(result.siteNumbers, ["10", "2"]);
+});
+
+test("waived balances leave payment follow-up and return when their waiver ends", () => {
+  const trip = { ...reservation(1, [stay(1, "2026-10-09", "2026-10-12")]), paidStayNights: 1, unpaidStayNights: 2,
+    balanceWaiver: { active: true } };
+  assert.equal(getPaymentFollowUps([trip], "2026-10-10").length, 0);
+  assert.equal(getPaymentFollowUps([{ ...trip, balanceWaiver: { active: false } }], "2026-10-10").length, 1);
+});
+
+test("manual monthly classification applies to shorter stays and keeps them out of nightly follow-up", () => {
+  const trip = { ...reservation(1, [stay(1, "2026-10-09", "2026-10-12")]), unpaidStayNights: 3, paidStayNights: 0, monthly_classification: true };
+  assert.equal(getPaymentFollowUps([trip], "2026-10-10").length, 0);
+  const guest = { customer_id: 4, first_name: "Taylor", last_name: "Lee", email: "taylor@example.com" };
+  assert.equal(sameBookingGuest(guest, { ...guest, customer_id: 5, email: "TAYLOR@example.com" }), true);
+  assert.equal(sameBookingGuest(guest, { ...guest, customer_id: 5, first_name: "Other" }), false);
+});
+
+
+test("cash verification includes old approved QR bookings, preserves captured quotes and hides verified, future or canceled envelopes", () => {
+  const cash={...reservation(1,[stay(1,'2026-10-09','2026-10-10')],'pending'),notes:'AFTER-HOURS DRIVE-UP. Expected envelope amount: $1,234.56.',bankRemainingBalance:1234.56};
+  const data=[cash,{...cash,id:2,status:'active'},{...cash,id:3,status:'canceled'},
+    {...cash,id:4,after_hours_cash_received:{amount:50}},
+    {...cash,id:5,siteStays:[stay(1,'2026-10-11','2026-10-12')]},
+    {...cash,id:6,notes:'AFTER-HOURS DRIVE-UP. Expected envelope amount: $invalid.'}];
+  const rows=getAfterHoursCashFollowUps(data,'2026-10-10');
+  assert.deepEqual(rows.map(row=>row.reservation.id),[1,2,6]);
+  assert.equal(rows[0].expectedAmount,1234.56);assert.equal(rows[2].expectedAmount,null);
+  const partial={...cash,status:'active',after_hours_cash_received:{amount:50},bankRemainingBalance:1184.56};
+  assert.equal(getPaymentFollowUps([partial],'2026-10-10').length,1);
 });

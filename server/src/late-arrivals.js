@@ -66,7 +66,8 @@ export function createLateArrivalTexts({ pool, getReservation, normalizePhone, c
     // A unique claim coordinates admin sends, webhook retries and multiple servers.
     const claim = await pool.query(`
       INSERT INTO late_arrival_texts (reservation_id, arrival_date, state, automatic, attempts)
-      VALUES ($1, $2, 'sending', $3, 1)
+      SELECT $1, $2, 'sending', $3, 1 FROM reservations r
+      WHERE r.id=$1 AND to_jsonb(r)->>'merged_into_reservation_id' IS NULL
       ON CONFLICT (reservation_id, arrival_date) DO UPDATE
         SET state='sending', automatic=EXCLUDED.automatic, attempts=late_arrival_texts.attempts+1,
             error_message=NULL, retryable=false, updated_at=now()

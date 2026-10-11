@@ -174,6 +174,19 @@
 .overview-followup-progress { justify-self: start; padding: 7px 10px; border-radius: 8px; background: #fff3dc; color: #92702e; font-size: .76rem; font-weight: 700; }
 .overview-followup-row > button { display: flex; align-items: center; justify-content: center; gap: 8px; }
 .overview-followup-row > button svg { width: 16px; }
+.overview-cash-verification { border-color: #d4e4d4; background: #fcfefb; }
+.overview-cash-row { display: grid; grid-template-columns: minmax(0,1.5fr) minmax(190px,1fr) auto; align-items: center; gap: 20px; padding: 18px 0; border-top: 1px solid #e2eadf; }
+.overview-cash-row strong { font-size: .85rem; }
+.overview-cash-row small { font-size: .75rem; color: #73816e; }
+.overview-cash-amount { display: grid; gap: 8px; }
+.overview-cash-amount label { display: flex; align-items: center; gap: 10px; font-size: .75rem; color: #73816e; }
+.overview-cash-amount input { width: 108px; min-width: 0; }
+.overview-cash-note { grid-column: 1 / -1; margin: 0; }
+.overview-cash-row .overview-text-action { justify-self: start; font-size: .75rem; padding: 0; }
+@media (max-width: 760px) {
+  .overview-cash-row { grid-template-columns: 1fr; gap: 14px; }
+  .overview-cash-row > button { width: 100%; }
+}
 
 @media (max-width: 900px) {
   .overview-payment-followup { padding: 20px; }
@@ -251,3 +264,34 @@
 @media (prefers-reduced-motion: reduce) {
   .admin-shell *, .admin-shell *::before, .admin-shell *::after { scroll-behavior: auto; transition: none; }
 }
+.admin-shell .balance-waiver-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid #d4e5dc;
+  border-radius: 14px;
+  background: #f1f7f3;
+  margin-bottom: 18px;
+}
+.admin-shell .balance-waiver-card h4 { margin: 0 0 6px; color: #245a48; }
+.admin-shell .balance-waiver-card p { margin: 0; line-height: 1.55; font-size: .9rem; }
+.admin-shell .balance-waiver-card > button { justify-self: start; }
+.admin-shell .balance-waiver-note { padding: 10px 12px; background: #fff; border-radius: 8px; }
+.admin-shell .balance-waived-status { color: #245a48; }
+.admin-shell .booking-tools { border: 1px solid #d7e5dc; border-radius: 14px; margin: 18px 0; background: #f8fbf8; }
+.admin-shell .booking-tools * { box-sizing: border-box; }
+.admin-shell .booking-tools > summary { padding: 16px; color: #245c49; font-weight: 750; cursor: pointer; }
+.admin-shell .booking-tools-body { padding: 0 18px 18px; display: grid; grid-template-columns: minmax(0,1fr); gap: 22px; }
+.admin-shell .booking-tools h4 { margin: 0 0 8px; }
+.admin-shell .booking-tools p { font-size: .9rem; line-height: 1.55; margin: 0 0 12px; }
+.admin-shell .booking-monthly-action { display: flex; gap: 20px; align-items: center; min-width: 0; }
+.admin-shell .booking-monthly-action > div { flex: 1; min-width: 0; }
+.admin-shell .booking-monthly-label { color: #245c49; font-size: .9rem; }
+.admin-shell .booking-combine-action { display: grid; grid-template-columns: minmax(0,1fr); gap: 12px; border-top: 1px solid #d7e5dc; padding-top: 20px; }
+.admin-shell .booking-tools label { min-width: 0; }
+.admin-shell .booking-tools input:not([type="checkbox"]), .admin-shell .booking-tools select { width: 100%; min-width: 0; max-width: 100%; }
+.admin-shell .booking-tools button { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.admin-shell .booking-combine-action > button { justify-self: start; }
+.admin-shell .booking-combine-dates { overflow-wrap: anywhere; }
+.admin-shell .booking-combine-review { padding: 16px; background: #fff; border: 1px solid #d7e5dc; border-radius: 12px; }
+@media(max-width:600px) { .admin-shell .booking-monthly-action { display: grid; grid-template-columns: minmax(0,1fr); gap: 12px; } }

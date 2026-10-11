@@ -277,6 +277,7 @@ export function buildBillingSummary(reservationRow, totals, paymentEvents = []) 
     : totals?.normalCardNightlyPrices || [];
   const effectiveBillingMode =
     reservationRow.billing_mode === "manual_total" &&
+    !reservationRow.manual_pricing_override &&
     reservationRow.reservation_term !== "yearly" &&
     selectedDailyTotal !== null &&
     selectedDailyTotal !== undefined
