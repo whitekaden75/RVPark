@@ -8,6 +8,7 @@ import { pool } from "./db.js";
 import { createMessaging } from "./messaging.js";
 import { createMessageNotifier } from "./message-notifications.js";
 import { createArrivalReminders } from "./arrival-reminders.js";
+import { createLateArrivalTexts } from "./late-arrivals.js";
 import { registerBookkeepingRoutes } from "./bookkeeping.js";
 import { registerFinanceRoutes } from "./bookkeeping-finance.js";
 import { applyBookedPricing, createBookingPricingQuote, loadBookedPricing } from "./booking-pricing.js";
@@ -151,7 +152,7 @@ function addSmsComplianceFooter(messageBody) {
   return `${trimmedBody}\n\nReply STOP to unsubscribe or HELP for assistance.`;
 }
 
-async function makeTwilioRequest(path, { method = "GET", form = null } = {}) {
+async function makeTwilioRequest(path, { method = "GET", form = null, timeoutMs = null } = {}) {
   const sendingMessage = method === "POST" && path.endsWith("/Messages.json");
   if (sendingMessage) {
     // Fail before sending if message storage has not been migrated or is unavailable.
@@ -160,6 +161,7 @@ async function makeTwilioRequest(path, { method = "GET", form = null } = {}) {
   }
   const response = await fetch(`https://api.twilio.com${path}`, {
     method,
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     headers: {
       Authorization: `Basic ${Buffer.from(
         `${twilioApiKeySid}:${twilioApiKeySecret}`
@@ -247,7 +249,8 @@ app.post("/api/stripe/webhooks", express.raw({ type: "application/json" }), asyn
     await updateStripeWebhookEventRecord(eventRecord.id, "processed");
     await Promise.all([
       sendPublicBookingConfirmation(createdReservationId),
-      sendPublicBookingPushNotification(createdReservationId)
+      sendPublicBookingPushNotification(createdReservationId),
+      sendAutomaticLateArrivalText(createdReservationId)
     ]);
     if (createdReservationId) {
       broadcastAdminDataChange({ reason: "online_booking_created" });
@@ -594,6 +597,45 @@ app.get("/api/admin/events", (req, res) => {
   });
 });
 
+async function createLateArrivalPaymentLink(reservation) {
+  const baseUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/+$/, "");
+  const { bankAmount, cardAmount } = getRemainingBalancePaymentAmounts(reservation);
+  if (!hasPaymentDueForReservation(reservation) || !baseUrl ||
+      /^https?:\/\/(localhost|127\.0\.0\.1)(?::\d+)?$/i.test(baseUrl) || !guestAuthSecret || bankAmount <= 0) return null;
+  const token = createGuestPaymentLinkToken(reservation.id, null, "Late arrival balance");
+  return {
+    url: `${baseUrl}/?pay=${encodeURIComponent(token)}`,
+    amount: bankAmount, bankAmount, cardAmount, description: "Late arrival balance"
+  };
+}
+
+function sendReservationText({ to, body }) {
+  return makeTwilioRequest(`/2010-04-01/Accounts/${encodeURIComponent(twilioAccountSid)}/Messages.json`, {
+    method: "POST", timeoutMs: 15000, form: { To: to, Body: addSmsComplianceFooter(body),
+      ...(twilioMessagingServiceSid ? { MessagingServiceSid: twilioMessagingServiceSid } : { From: twilioPhoneNumber }) }
+  });
+}
+
+const lateArrivalTexts = createLateArrivalTexts({
+  pool,
+  getReservation: id => fetchReservationDetails(pool, id),
+  normalizePhone: normalizeSmsPhoneNumber,
+  createPaymentLink: createLateArrivalPaymentLink,
+  send: sendReservationText,
+  configured: () => isTwilioConfigured,
+  notify: broadcastAdminDataChange
+});
+
+async function sendAutomaticLateArrivalText(reservationId) {
+  if (!reservationId) return null;
+  try { return await lateArrivalTexts.sendReservation(reservationId); }
+  catch (error) {
+    console.error("Unable to send automatic late-arrival text", reservationId,
+      error.code === "42P01" ? "Run sql/2026-10-10_late_arrival_texts.sql first." : error.message);
+    return { id: reservationId, state: "failed", message: "Late-arrival text could not be prepared. Check Messages for follow-up." };
+  }
+}
+
 const arrivalReminders = createArrivalReminders({
   pool,
   today: () => getParkTodayDate(),
@@ -602,23 +644,8 @@ const arrivalReminders = createArrivalReminders({
   normalizePhone: normalizeSmsPhoneNumber,
   formatDate: formatDisplayDate,
   configured: () => isTwilioConfigured,
-  createPaymentLink: async (reservation, date) => {
-    const baseUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/+$/, "");
-    const { bankAmount, cardAmount } = getRemainingBalancePaymentAmounts(reservation);
-    if (!baseUrl || /^https?:\/\/(localhost|127\.0\.0\.1)(?::\d+)?$/i.test(baseUrl) || !guestAuthSecret || bankAmount <= 0) return null;
-    const token = createGuestPaymentLinkToken(reservation.id, null, "Late arrival balance");
-    return {
-      url: `${baseUrl}/?pay=${encodeURIComponent(token)}`,
-      amount: bankAmount,
-      bankAmount,
-      cardAmount,
-      description: "Late arrival balance"
-    };
-  },
-  send: ({ to, body }) => makeTwilioRequest(`/2010-04-01/Accounts/${encodeURIComponent(twilioAccountSid)}/Messages.json`, {
-    method: "POST", form: { To: to, Body: addSmsComplianceFooter(body),
-      ...(twilioMessagingServiceSid ? { MessagingServiceSid: twilioMessagingServiceSid } : { From: twilioPhoneNumber }) }
-  })
+  createPaymentLink: createLateArrivalPaymentLink,
+  send: sendReservationText
 });
 
 app.get("/api/messages/arrival-reminders", async (req, res) => {
@@ -629,6 +656,23 @@ app.get("/api/messages/arrival-reminders", async (req, res) => {
 app.get("/api/messages/late-arrivals", async (_req, res) => {
   try { return res.json(await arrivalReminders.latePreview()); }
   catch (error) { return res.status(503).json({ message: error.message }); }
+});
+
+app.post("/api/messages/late-arrivals", async (req, res) => {
+  const ids = req.body.reservationIds;
+  const customBodies = req.body.customBodies || {};
+  if (!Array.isArray(ids) || ids.length > 500 || !ids.every(id => /^\d+$/.test(String(id))) ||
+      typeof customBodies !== "object" || Array.isArray(customBodies) ||
+      Object.values(customBodies).some(body => typeof body !== "string" || body.length > 5000)) {
+    return res.status(400).json({ message: "Select valid late-arrival reservations and message drafts." });
+  }
+  if (!isTwilioConfigured) return res.status(503).json({ message: "Text messaging is not configured." });
+  const results = [];
+  for (const id of new Set(ids.map(String))) {
+    try { results.push(await lateArrivalTexts.sendReservation(id, { automatic: false, customBody: customBodies[id] || "" })); }
+    catch (error) { results.push({ id, state: "failed", message: error.code === "42P01" ? "Run sql/2026-10-10_late_arrival_texts.sql first." : error.message }); }
+  }
+  return res.json({ results });
 });
 
 app.get("/api/messages/arrival-reminders/:id", async (req, res) => {
@@ -5294,7 +5338,8 @@ app.post("/api/guest/after-hours/reservations", async (req, res) => {
     const reservation = await fetchReservationDetails(pool, reservationId);
     Promise.allSettled([
       sendAfterHoursCashConfirmationEmail(reservation, expectedCashAmount),
-      sendPublicBookingPushNotification(reservationId)
+      sendPublicBookingPushNotification(reservationId),
+      sendAutomaticLateArrivalText(reservationId)
     ]).catch(() => {});
 
     return res.status(201).json({
@@ -5772,7 +5817,8 @@ app.get("/api/guest/booking-checkouts/:checkoutToken", async (req, res) => {
 
           await Promise.all([
             sendPublicBookingConfirmation(reservationId),
-            sendPublicBookingPushNotification(reservationId)
+            sendPublicBookingPushNotification(reservationId),
+            sendAutomaticLateArrivalText(reservationId)
           ]);
           if (reservationId) {
             broadcastAdminDataChange({ reason: "online_booking_created" });
@@ -7030,7 +7076,7 @@ app.post("/api/admin/booking-checkouts/:id/approve", async (req, res) => {
       );
       customerId = inserted.rows[0].id;
     }
-    const notes = `Approved from public checkout by admin. Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}.`;
+    const notes = `Approved from public checkout by admin. Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}. ${payload.smsConsent ? "Guest opted in to reservation-related text messages." : "Guest did not opt in to text messages."}`;
     const reservationResult = await client.query(
       `INSERT INTO reservations (
         customer_id, booked_date, status, reservation_term, billing_mode,
@@ -7065,6 +7111,7 @@ app.post("/api/admin/booking-checkouts/:id/approve", async (req, res) => {
       try { await sendReservationConfirmationEmail(reservation); confirmationEmail = { sent: true, recipient: reservation.email }; }
       catch (error) { confirmationEmail = { sent: false, message: error.message }; }
     }
+    await sendAutomaticLateArrivalText(reservationId);
     broadcastAdminDataChange({ reason: "booking_checkout_approved" });
     res.status(201).json({ reservation, confirmationEmail });
   } catch (error) {
@@ -7142,6 +7189,7 @@ app.post("/api/reservations/:id/decision", async (req, res) => {
         console.error("Unable to send approved reservation confirmation", req.params.id, emailError);
       }
     }
+    if (decision === "approve") await sendAutomaticLateArrivalText(reservation.id);
     broadcastAdminDataChange({ reason: decision === "approve" ? "reservation_approved" : "reservation_declined" });
     return res.json(reservation);
   } catch (error) {
@@ -8183,7 +8231,8 @@ app.post("/api/reservations", async (req, res) => {
       }
     }
 
-    res.status(201).json({ ...reservation, confirmationEmail });
+    const lateArrivalText = await sendAutomaticLateArrivalText(reservationId);
+    res.status(201).json({ ...reservation, confirmationEmail, lateArrivalText });
   } catch (error) {
     await client.query("ROLLBACK");
 
@@ -9133,4 +9182,5 @@ registerFinanceRoutes(app, { pool, stripe, notify: broadcastAdminDataChange });
 
 app.listen(port, () => {
   console.log(`RV Park server listening on port ${port}`);
+  lateArrivalTexts.start();
 });

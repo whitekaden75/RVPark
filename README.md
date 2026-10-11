@@ -289,6 +289,24 @@ Then redeploy the backend.
 - reservation segments must be contiguous and non-overlapping
 - site-switch plans are generated automatically when one site cannot cover the full stay
 
+## Admin office workspace
+
+Admin opens to a daily overview with active sites booked tonight, guest arrivals, departures, site moves, pending reservations, and office shortcuts. Site moves between consecutive stays are shown separately from guest arrivals and departures. Pending bookings do not count as active occupancy. Overview guest rows open the reservation details.
+
+All admin pages support `?admin=PAGE` links and retain the selected page when reloaded. Reservation and schedule site searches preserve the selected option while filtering, clear the filter when a new site is chosen, and are not overwritten by live refreshes. The reservation form supports typed arrival/departure dates alongside the calendar and prevents duplicate submissions while saving.
+
+Run `npm test` and `npm run build` in `client` for the admin regressions and production build. The existing server checks remain `node --test src/*.test.js` in `server`.
+
+### Payment follow-up and automatic late-arrival texts
+
+Overview has a **Payment follow-up** list for active nightly/custom stays that have already started and still have unpaid nights or a balance. Filter by **Arrived yesterday** or **Departed unpaid**, search by guest/site/reservation number, and open **Review payment** to collect or record the payment. Settled bookings disappear on refresh/live updates; canceled bookings and future-only stays are excluded. Pending after-hours cash envelopes stay visible for verification. Monthly/yearly billing remains in its existing pages.
+
+Before deploying automatic late-arrival texts, apply `sql/2026-10-10_late_arrival_texts.sql` to the existing database. It adds a delivery record and indexes; it does not send any texts or run automatically at startup. Existing Twilio message storage and stay-level check-ins must already be installed.
+
+Confirmed same-day reservations created at or after **5:00 PM America/Los_Angeles** receive the existing late-arrival instructions, including a secure remaining-balance payment link when available. Public paid checkouts, admin-created/approved bookings, and QR cash-envelope bookings use the same sender. Explicit guest text opt-outs, missing phone numbers, canceled bookings, and guests already checked in for that visit are skipped. The server scans once per minute after 5 PM to recover interrupted booking callbacks. Exact cutoff and winter/daylight-saving offsets are tested.
+
+Automatic and manual late-arrival texts share one durable claim per reservation/arrival date. Messages already accepted or with uncertain delivery are never blindly resent. Explicit provider throttling can retry after five minutes, up to three attempts. Other failed sends need staff attention in **Messages → Late arrival texts**. A failed SMS does not roll back a saved reservation. The database migration was verified using a temporary local PostgreSQL database and fake provider responses; no real test texts were sent.
+
 ## Bookkeeping finance workspace
 
 Before deploying the upgraded bookkeeping screen, run `sql/2026-10-06_bookkeeping_finance.sql` against the existing Railway PostgreSQL database. It requires the existing bookkeeping and reservation-payment tables. It preserves existing records, adds indexed Stripe activity, sync metadata, bills, and reversible consolidation records, and protects linked expenses from inconsistent edits. Take a database backup first. No migration runs automatically at server startup.

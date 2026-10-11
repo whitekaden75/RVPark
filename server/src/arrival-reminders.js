@@ -110,20 +110,30 @@ export function createArrivalReminders({ pool, today = () => tomorrow(), tomorro
   async function latePreview() {
     const date = today();
     const result = await pool.query(`
-      SELECT r.id, c.first_name, c.last_name, c.phone_number
+      SELECT r.id, c.first_name, c.last_name, c.phone_number,
+        log.state, log.message_sid, log.error_message, log.automatic
       FROM reservations r JOIN customers c ON c.id=r.customer_id
+      LEFT JOIN late_arrival_texts log ON log.reservation_id=r.id AND log.arrival_date=$1::date
       WHERE r.status='active'
-        AND (SELECT min(st.arrival_date) FROM reservation_site_stays st WHERE st.reservation_id=r.id)=$1::date
-        AND NOT EXISTS (SELECT 1 FROM reservation_check_ins ci WHERE ci.reservation_id=r.id)
+        AND EXISTS (SELECT 1 FROM reservation_site_stays st WHERE st.reservation_id=r.id AND st.arrival_date=$1::date)
+        AND NOT EXISTS (SELECT 1 FROM reservation_site_stays st WHERE st.reservation_id=r.id AND st.leave_date=$1::date)
+        AND NOT EXISTS (SELECT 1 FROM reservation_check_ins ci JOIN reservation_site_stays st ON st.id=ci.reservation_site_stay_id
+          WHERE ci.reservation_id=r.id AND st.arrival_date=$1::date)
       ORDER BY c.last_name,c.first_name,r.id`, [date]);
     const recipients = [];
     for (const row of result.rows) {
       const reservation = await getReservation(row.id);
-      reservation.lateArrivalDate = date;
+      if (!reservation) continue;
       const payment = Number(reservation.remainingBalance || 0) > 0 && createPaymentLink
         ? await createPaymentLink(reservation, date)
         : null;
-      recipients.push({ ...row, phone: normalizePhone(row.phone_number), body: lateArrivalText(reservation), payment, eligible: Boolean(normalizePhone(row.phone_number)) });
+      const optedOut = String(reservation.notes || '').includes('Guest did not opt in to text messages.');
+      const skipReason = optedOut ? 'Guest opted out of text messages.' : !normalizePhone(row.phone_number)
+        ? 'Add a valid mobile phone number first.' : row.state && row.state !== 'failed'
+        ? row.state === 'sent' ? `${row.automatic ? 'Automatic text' : 'Late-arrival text'} already sent.`
+          : row.error_message || 'Sending is in progress; check delivery before resending.' : '';
+      recipients.push({ ...row, phone: normalizePhone(row.phone_number), body: lateArrivalText({ ...reservation, lateArrivalDate: date }),
+        payment, skipReason, eligible: !skipReason });
     }
     return { date, recipients };
   }

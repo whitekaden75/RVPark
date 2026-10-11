@@ -25,6 +25,8 @@ import {
 import { loadStripe } from "@stripe/stripe-js";
 import CheckInPage from "./CheckInPage.jsx";
 import MessageInbox from "./MessageInbox.jsx";
+import AdminOverview from "./AdminOverview.jsx";
+import { adminPrimaryPages, adminPageGroups, adminPages, getSiteOptions, updateStayField } from "./admin-ui.js";
 const BookkeepingPage = lazy(() => import("./BookkeepingPage.jsx"));
 
 const apiBaseUrl = (
@@ -161,7 +163,7 @@ const emptyCustomer = {
 function createEmptySiteStay(defaultSite = null) {
   return {
     siteId: defaultSite?.siteId || "",
-    siteSearch: defaultSite?.siteSearch || "",
+    siteSearch: "",
     arrivalDate: "",
     leaveDate: "",
   };
@@ -276,7 +278,7 @@ function createReservationEditorState(reservation) {
       notes: reservation.notes || "",
       siteStays: reservation.siteStays.map((segment) => ({
         siteId: String(segment.site_id),
-        siteSearch: segment.site_number,
+        siteSearch: "",
         arrivalDate: segment.arrival_date,
         leaveDate: isOpenEndedStay(segment.leave_date)
           ? ""
@@ -5690,20 +5692,16 @@ function SiteStayFields({
   onRemove,
   canRemove,
 }) {
-  const siteSearch = segment.siteSearch?.trim().toLowerCase() || "";
-  const filteredSites = [...sites]
-    .sort((left, right) =>
-      siteNumberCollator.compare(left.site_number, right.site_number)
-    )
-    .filter((site) =>
-      siteSearch ? site.site_number.toLowerCase().includes(siteSearch) : true
-    );
+  const filteredSites = getSiteOptions(sites, segment.siteSearch, segment.siteId);
+  const hasMatches = sites.some((site) =>
+    String(site.site_number).toLowerCase().includes(segment.siteSearch?.trim().toLowerCase() || "")
+  );
   const bookedRanges = bookedRangesBySite[String(segment.siteId)] || [];
 
   return (
     <div className="segment-card">
       <div className="segment-header">
-        <h4>Stay Segment {index + 1}</h4>
+        <h4>Site stay {index + 1}</h4>
         {canRemove ? (
           <button
             type="button"
@@ -5718,6 +5716,8 @@ function SiteStayFields({
           Search site
           <input
             placeholder="Type site number or letter"
+            type="search"
+            autoComplete="off"
             value={segment.siteSearch || ""}
             onChange={(event) =>
               onChange(index, "siteSearch", event.target.value)
@@ -5727,7 +5727,9 @@ function SiteStayFields({
         <label>
           Site
           <select
+            aria-label={`Site for stay ${index + 1}`}
             value={segment.siteId}
+            disabled={!sites.length}
             onChange={(event) => onChange(index, "siteId", event.target.value)}>
             <option value="">Select a site</option>
             {filteredSites.map((site) => (
@@ -5738,7 +5740,30 @@ function SiteStayFields({
             ))}
           </select>
         </label>
+        <label>
+          Arrival date
+          <input
+            type="date"
+            value={segment.arrivalDate}
+            onChange={(event) => onChange(index, "arrivalDate", event.target.value)}
+          />
+        </label>
+        {reservationTerm !== "yearly" ? (
+          <label>
+            Departure date
+            <input
+              type="date"
+              min={segment.arrivalDate ? addDays(segment.arrivalDate, 1) : undefined}
+              value={segment.leaveDate}
+              onChange={(event) => onChange(index, "leaveDate", event.target.value)}
+            />
+          </label>
+        ) : null}
       </div>
+      {!hasMatches && sites.length ? (
+        <p className="site-search-help" role="status">No sites match this search. Clear the search to see all sites.</p>
+      ) : null}
+      {!sites.length ? <p className="site-search-help" role="status">No sites are available to select yet.</p> : null}
       {segment.arrivalDate ? (
         <p className="muted">
           {reservationTerm === "yearly"
@@ -6239,30 +6264,8 @@ function FloatingTerminalPayment({
 }
 
 export default function App() {
-  const appPages = [
-    { key: "checkin", label: "Check In" },
-    { key: "messages", label: "Text Messages" },
-  ];
-  const adminDropdowns = [
-    {
-      label: "Reservations",
-      pages: [
-        { key: "availability", label: "Availability" },
-        { key: "reservation", label: "Create new reservation" },
-        { key: "schedule", label: "Schedule" },
-        { key: "history", label: "History" },
-      ],
-    },
-    {
-      label: "Finance & Setup",
-      pages: [
-        { key: "monthly", label: "Monthly" },
-        { key: "yearly", label: "Yearly" },
-        { key: "bookkeeping", label: "Bookkeeping" },
-        { key: "sites", label: "Sites" },
-      ],
-    },
-  ];
+  const appPages = adminPrimaryPages;
+  const adminDropdowns = adminPageGroups;
   const stripeReturnState = getStripeReturnState();
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [isMobileAdminNav, setIsMobileAdminNav] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches);
@@ -6398,7 +6401,7 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const requestedAdminPage = params.get("admin");
 
-    if (appPages.some((page) => page.key === requestedAdminPage)) {
+    if (adminPages.some((page) => page.key === requestedAdminPage)) {
       return requestedAdminPage;
     }
 
@@ -6484,6 +6487,8 @@ export default function App() {
   const [isRecordingOfficePayment, setIsRecordingOfficePayment] = useState(false);
   const [isOpeningReservationEditor, setIsOpeningReservationEditor] =
     useState(false);
+  const reservationSubmitInFlight = useRef(false);
+  const [isSavingReservation, setIsSavingReservation] = useState(false);
   const [isSavingAdminEdit, setIsSavingAdminEdit] = useState(false);
   const [adminSaveNotice, setAdminSaveNotice] = useState("");
   const [adminConflictNotice, setAdminConflictNotice] = useState("");
@@ -6668,9 +6673,6 @@ export default function App() {
       if (Notification.permission === "denied") {
         if (!isCancelled) {
           setBookingNotificationStatus("blocked");
-          setBookingNotificationMessage(
-            "Notifications are blocked in this phone’s browser settings."
-          );
         }
         return;
       }
@@ -6735,6 +6737,16 @@ export default function App() {
   }, [activePage]);
 
   useEffect(() => {
+    const url = new URL(window.location.href);
+    if (adminPages.some((page) => page.key === activePage)) {
+      url.searchParams.set("admin", activePage);
+    } else {
+      url.searchParams.delete("admin");
+    }
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [activePage]);
+
+  useEffect(() => {
     if (!adminSaveNotice) {
       return undefined;
     }
@@ -6772,6 +6784,7 @@ export default function App() {
         }
 
         if (
+          activePage === "overview" ||
           activePage === "checkin" ||
           activePage === "schedule" ||
           activePage === "history" ||
@@ -7118,50 +7131,18 @@ export default function App() {
         activeElement instanceof HTMLInputElement &&
         activeElement.type === "number"
       ) {
-        event.preventDefault();
+        activeElement.blur();
       }
     }
 
     window.addEventListener("wheel", preventNumberInputScroll, {
-      passive: false,
+      passive: true,
     });
 
     return () => {
       window.removeEventListener("wheel", preventNumberInputScroll);
     };
   }, []);
-
-  useEffect(() => {
-    setReservationForm((current) => {
-      let hasChanges = false;
-      const nextSiteStays = current.siteStays.map((stay) => {
-        if (!stay.siteId) {
-          return stay;
-        }
-
-        const selectedSite = sites.find(
-          (site) => String(site.id) === String(stay.siteId)
-        );
-
-        if (!selectedSite || stay.siteSearch === selectedSite.site_number) {
-          return stay;
-        }
-
-        hasChanges = true;
-        return {
-          ...stay,
-          siteSearch: selectedSite.site_number,
-        };
-      });
-
-      return hasChanges
-        ? {
-            ...current,
-            siteStays: nextSiteStays,
-          }
-        : current;
-    });
-  }, [sites]);
 
   useEffect(() => {
     if (!activeScheduleReservation) {
@@ -7483,7 +7464,7 @@ export default function App() {
     const searchValue = customerSearch.trim().toLowerCase();
     const searchPhoneDigits = customerSearch.replaceAll(/\D/g, "");
 
-    if (!searchValue) {
+    if (!searchValue || String(customer.id) === String(reservationForm.customerId)) {
       return true;
     }
 
@@ -7496,6 +7477,7 @@ export default function App() {
 
     return (
       fullName.includes(searchValue) ||
+      String(customer.email || "").toLowerCase().includes(searchValue) ||
       (searchPhoneDigits && customerPhoneDigits.includes(searchPhoneDigits))
     );
   });
@@ -7674,16 +7656,7 @@ export default function App() {
   );
   const selectedTimelineSite =
     sites.find((site) => String(site.id) === timelineSiteId) || null;
-  const timelineSiteOptions = [...sites]
-    .sort((left, right) =>
-      siteNumberCollator.compare(left.site_number, right.site_number)
-    )
-    .filter((site) => {
-      const searchValue = timelineSiteSearch.trim().toLowerCase();
-      return searchValue
-        ? site.site_number.toLowerCase().includes(searchValue)
-        : true;
-    });
+  const timelineSiteOptions = getSiteOptions(sites, timelineSiteSearch, timelineSiteId);
   const selectedSiteBookedRanges = scheduleReservations.flatMap((reservation) =>
     reservation.siteStays
       .filter((segment) => String(segment.site_id) === timelineSiteId)
@@ -7782,7 +7755,7 @@ export default function App() {
     rig: "rig details",
     notes: "notes",
   }[reservationEditFocusSection];
-  const isReservationPageLoading = isLoadingSites || isLoadingCustomers;
+  const isReservationPageLoading = isLoadingSites || isLoadingCustomers || isLoadingReservations;
   const isSchedulePageLoading = isLoadingSites || isLoadingReservations;
   const isHistoryPageLoading = isLoadingReservations;
   const isMonthlyPageLoading = isLoadingReservations;
@@ -7977,7 +7950,7 @@ export default function App() {
     }
   }
 
-  function resetReservationForm(defaultSite = lastBookedSite) {
+  function resetReservationForm(defaultSite = null) {
     setReservationForm(createEmptyReservation(defaultSite));
     setIsReservationTotalOverridden(false);
     setIsReservationDepositOverridden(false);
@@ -8299,12 +8272,31 @@ export default function App() {
   }, [isUnlocked, activePage, arrivalTextMode]);
 
   async function sendLateArrivalTexts() {
+    if (arrivalSendInFlight.current) return;
     const recipients = (lateArrivalPreview?.recipients || []).filter(guest => guest.eligible && lateArrivalSelected[String(guest.id)]);
-    for (const guest of recipients) {
-      await sendTextMessage({ to: guest.phone, body: lateArrivalDrafts[String(guest.id)] || guest.body });
+    if (!recipients.length) return;
+    arrivalSendInFlight.current = true;
+    setIsSendingTextMessage(true);
+    setArrivalTextError("");
+    setTextMessageSuccess("");
+    try {
+      const { results } = await apiRequest("/messages/late-arrivals", {
+        method: "POST",
+        body: JSON.stringify({ reservationIds: recipients.map(guest => guest.id), customBodies: lateArrivalDrafts })
+      });
+      const sent = results.filter(result => result.state === "sent").length;
+      const skipped = results.filter(result => result.state === "skipped").length;
+      const problems = results.filter(result => !["sent", "skipped"].includes(result.state) || result.state === "sent" && result.message);
+      setTextMessageSuccess(`${sent} late-arrival texts queued. ${skipped} already sent or skipped. ${problems.length} need attention.`);
+      if (problems.length) setArrivalTextError(problems.map(result => `Booking #${result.id}: ${result.message}`).join(" "));
+      await Promise.all([loadLateArrivalPreview(), loadTextMessageHistory()]);
+    } catch (error) {
+      setArrivalTextError(`${error.message} Refresh late arrivals before retrying; accepted texts will be skipped.`);
+      await loadLateArrivalPreview();
+    } finally {
+      arrivalSendInFlight.current = false;
+      setIsSendingTextMessage(false);
     }
-    setTextMessageSuccess(`Sent late-arrival information to ${recipients.length} guest${recipients.length === 1 ? "" : "s"}, including payment links where needed.`);
-    await loadLateArrivalPreview();
   }
 
   async function sendTomorrowArrivalTexts() {
@@ -8471,7 +8463,7 @@ export default function App() {
       ...current,
       customerId: String(customer.id),
     }));
-    setCustomerSearch(`${customer.first_name} ${customer.last_name}`);
+    setCustomerSearch("");
     setCustomerForm({
       firstName: customer.first_name || "",
       lastName: customer.last_name || "",
@@ -8591,14 +8583,7 @@ export default function App() {
           return stay;
         }
 
-        if (field === "siteId") {
-          return {
-            ...stay,
-            siteId: value,
-          };
-        }
-
-        return { ...stay, [field]: value };
+        return updateStayField(stay, field, value);
       });
 
       return {
@@ -8768,6 +8753,9 @@ export default function App() {
 
   async function handleReservationCreate(event) {
     event.preventDefault();
+    if (reservationSubmitInFlight.current) return;
+    reservationSubmitInFlight.current = true;
+    setIsSavingReservation(true);
     const isSavingExistingReservation = Boolean(editingReservationId);
 
     if (isSavingExistingReservation) {
@@ -8931,7 +8919,7 @@ export default function App() {
       if (lastUsedSegment) {
         rememberedSite = {
           siteId: String(lastUsedSegment.siteId),
-          siteSearch: lastUsedSegment.siteSearch,
+          siteSearch: sites.find((site) => String(site.id) === String(lastUsedSegment.siteId))?.site_number || "",
         };
 
         setLastBookedSite(rememberedSite);
@@ -8947,6 +8935,8 @@ export default function App() {
         setReservationErrorMessage(error.message);
       }
     } finally {
+      reservationSubmitInFlight.current = false;
+      setIsSavingReservation(false);
       setIsPreparingCreatedTerminalPayment(false);
       if (isSavingExistingReservation) {
         setIsSavingAdminEdit(false);
@@ -9018,7 +9008,7 @@ export default function App() {
         notes: reservation.notes || "",
         siteStays: reservation.siteStays.map((segment) => ({
           siteId: String(segment.site_id),
-          siteSearch: segment.site_number,
+          siteSearch: "",
           arrivalDate: segment.arrival_date,
           leaveDate: isOpenEndedStay(segment.leave_date)
             ? ""
@@ -9027,7 +9017,7 @@ export default function App() {
       });
       setIsReservationTotalOverridden(true);
       setIsReservationDepositOverridden(true);
-      setCustomerSearch(`${reservation.first_name} ${reservation.last_name}`);
+      setCustomerSearch("");
       setCreatedReservation(null);
       scrollReservationEditor(focusSection);
     } catch (error) {
@@ -10352,14 +10342,7 @@ export default function App() {
             return stay;
           }
 
-          if (field === "siteId") {
-            return {
-              ...stay,
-              siteId: value,
-            };
-          }
-
-          return { ...stay, [field]: value };
+          return updateStayField(stay, field, value);
         }
       );
 
@@ -10605,7 +10588,7 @@ export default function App() {
       siteStays: [
         {
           siteId: String(site.id),
-          siteSearch: site.siteNumber,
+          siteSearch: "",
           arrivalDate: searchForm.arrivalDate,
           leaveDate: searchForm.leaveDate,
         },
@@ -10630,7 +10613,7 @@ export default function App() {
       rigLengthFeet: searchForm.rigLengthFeet,
       siteStays: switchPlan.map((segment) => ({
         siteId: String(segment.siteId),
-        siteSearch: segment.siteNumber,
+        siteSearch: "",
         arrivalDate: segment.arrivalDate,
         leaveDate: segment.leaveDate,
       })),
@@ -10919,7 +10902,7 @@ export default function App() {
           }}
           onOpenAdmin={() => {
             setErrorMessage("");
-            setActivePage("availability");
+            setActivePage("overview");
             window.scrollTo({ top: 0, behavior: "smooth" });
           }}
         />
@@ -10942,11 +10925,12 @@ export default function App() {
       <Box className="passcode-shell">
         <Paper
           component="form"
-          className="passcode-card"
+          className="passcode-card admin-signin"
           onSubmit={handleUnlock}
           elevation={0}>
           <Stack spacing={2.5}>
             <div>
+              <p className="admin-eyebrow">Riverpark RV Resort · Office</p>
               <Typography variant="h1">Admin Sign In</Typography>
               <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
                 Sign in with your admin username and password.
@@ -10954,6 +10938,7 @@ export default function App() {
             </div>
             <TextField
               label="Username"
+              autoComplete="username"
               value={adminLoginForm.username}
               onChange={(event) =>
                 setAdminLoginForm((current) => ({
@@ -10966,6 +10951,7 @@ export default function App() {
             <TextField
               label="Password"
               type="password"
+              autoComplete="current-password"
               value={adminLoginForm.password}
               onChange={(event) =>
                 setAdminLoginForm((current) => ({
@@ -11006,15 +10992,20 @@ export default function App() {
         component="header"
         className={`app-header ${isAdminHeaderCompact ? "compact" : ""}`}
         elevation={0}>
-        <Stack spacing={2.5} className="admin-header-stack">
+        <Stack spacing={0} className="admin-header-stack">
           <div>
             <div className="admin-title-row">
-              <Typography variant="h1">RV Park Reservations</Typography>
+              <div className="admin-brand">
+                <span className="admin-brand-mark" aria-hidden="true">
+                  <svg width="30" height="30" viewBox="0 0 32 32" fill="none"><path d="M4 18 12 7l7 11M16 18l5-7 7 10M4 24c4-4 8 4 12 0s8 4 12 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                </span>
+                <div><span className="admin-eyebrow">Riverpark RV Resort</span><Typography variant="h1">Office workspace</Typography></div>
+              </div>
               <div className="admin-header-actions">
                 <button
                   type="button"
                   className="admin-mobile-menu-button"
-                  aria-label="Open admin navigation"
+                  aria-label={isAdminMobileMenuOpen ? "Close admin navigation" : "Open admin navigation"}
                   aria-expanded={isAdminMobileMenuOpen}
                   aria-controls="admin-mobile-menu"
                   onClick={() =>
@@ -11073,18 +11064,21 @@ export default function App() {
               </div>
             </div>
             <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
-              Switch between pages from the top navigation.
+              {adminPages.find((page) => page.key === activePage)?.label} · Reservations, guests and park operations
             </Typography>
           </div>
-          {!isMobileAdminNav ? <div className="admin-navigation-row" aria-label="Primary">
-            <button
+          {!isMobileAdminNav ? <nav className="admin-navigation-row" aria-label="Admin navigation">
+            {appPages.map((page) => <button
+              key={page.key}
               type="button"
-              className={`admin-navigation-tab ${activePage === "checkin" ? "active" : ""}`}
-              onClick={() => setActivePage("checkin")}>Check In</button>
-            {adminDropdowns.filter((dropdown) => !(dropdown.label === "Finance & Setup" && dropdown.pages.some((page) => page.key === activePage))).map((dropdown) => (
+              className={`admin-navigation-tab ${activePage === page.key ? "active" : ""}`}
+              aria-current={activePage === page.key ? "page" : undefined}
+              onClick={() => setActivePage(page.key)}>{page.label}</button>)}
+            {adminDropdowns.map((dropdown) => (
               <label key={dropdown.label} className="admin-navigation-dropdown">
                 <span className="sr-only">{dropdown.label}</span>
                 <select
+                  aria-label={dropdown.label}
                   value={dropdown.pages.some((page) => page.key === activePage) ? activePage : ""}
                   onChange={(event) => event.target.value && setActivePage(event.target.value)}>
                   <option value="" aria-label={dropdown.label}>{dropdown.label}</option>
@@ -11094,11 +11088,7 @@ export default function App() {
                 </select>
               </label>
             ))}
-            <button
-              type="button"
-              className={`admin-navigation-tab ${activePage === "messages" ? "active" : ""}`}
-              onClick={() => setActivePage("messages")}>Text Messages</button>
-          </div> : null}
+          </nav> : null}
           {isMobileAdminNav && isAdminMobileMenuOpen ? (
             <div className="admin-mobile-menu-panel" id="admin-mobile-menu">
               {appPages.map((page) => (
@@ -11108,13 +11098,16 @@ export default function App() {
                   className={`admin-mobile-menu-item ${
                     activePage === page.key ? "active" : ""
                   }`}
+                  aria-current={activePage === page.key ? "page" : undefined}
                   onClick={() => setActivePage(page.key)}>
                   {page.label}
                 </button>
               ))}
-              {adminDropdowns.filter((dropdown) => !(dropdown.label === "Finance & Setup" && dropdown.pages.some((page) => page.key === activePage))).map((dropdown) => (
+              {adminDropdowns.map((dropdown) => (
                 <label key={dropdown.label} className="admin-mobile-menu-dropdown">
+                  <span>{dropdown.label}</span>
                   <select
+                    aria-label={dropdown.label}
                     value={dropdown.pages.some((page) => page.key === activePage) ? activePage : ""}
                     onChange={(event) => {
                       if (event.target.value) {
@@ -11181,6 +11174,17 @@ export default function App() {
       {floatingTerminalPayment}
 
       <main className="layout">
+        {activePage === "overview" ? (
+          <AdminOverview
+            reservations={reservations}
+            sites={sites}
+            today={today}
+            isLoading={!hasLoadedReservations || !hasLoadedSites}
+            onNavigate={setActivePage}
+            onOpenReservation={openScheduleReservation}
+            onRefresh={refreshSharedAdminData}
+          />
+        ) : null}
         {activePage === "checkin" ? (
           <CheckInPage
             reservations={reservations}
@@ -11595,7 +11599,7 @@ export default function App() {
           <Paper
             component="section"
             ref={reservationFormRef}
-            className="card"
+            className="card admin-reservation-card"
             elevation={0}>
             <div className="page-section-header">
               <h2>
@@ -11624,6 +11628,7 @@ export default function App() {
                 ) : null}
               </div>
               <form onSubmit={handleReservationCreate}>
+                <fieldset className="reservation-form-fields" disabled={isSavingReservation}>
                 <div className="field-grid">
                   <div
                     ref={reservationCustomerSectionRef}
@@ -11709,9 +11714,11 @@ export default function App() {
                     </div>
                   ) : null}
                   <label>
-                    Search customer name or phone
+                    Search customer name, email or phone
                     <input
-                      placeholder="Type a name or phone number"
+                      placeholder="Type a name, email or phone number"
+                      type="search"
+                      autoComplete="off"
                       value={customerSearch}
                       onChange={(event) =>
                         setCustomerSearch(event.target.value)
@@ -11721,6 +11728,7 @@ export default function App() {
                   <label>
                     Customer
                     <select
+                      aria-label="Customer"
                       value={reservationForm.customerId}
                       onChange={(event) => {
                         const selectedCustomerId = event.target.value;
@@ -11759,7 +11767,7 @@ export default function App() {
                   <div
                     ref={reservationDatesSectionRef}
                     className="reservation-form-anchor">
-                    <span className="small-text">Dates and site</span>
+                    <span className="small-text">Booking details</span>
                   </div>
                   <label>
                     Booked date
@@ -11898,6 +11906,29 @@ export default function App() {
                       />
                     </label>
                   ) : null}
+                </div>
+
+                <div ref={reservationSiteSectionRef} className="segment-list">
+                  <div className="reservation-form-anchor"><span className="small-text">Site & stay dates</span></div>
+                  {reservationForm.siteStays.map((segment, index) => (
+                    <SiteStayFields
+                      key={index}
+                      segment={segment}
+                      index={index}
+                      sites={sites}
+                      bookedRangesBySite={bookedRangesBySite}
+                      reservationTerm={reservationForm.reservationTerm}
+                      onChange={updateSiteStay}
+                      onRemove={removeSiteStay}
+                      canRemove={
+                        reservationForm.reservationTerm !== "yearly" &&
+                        reservationForm.siteStays.length > 1
+                      }
+                    />
+                  ))}
+                </div>
+
+                <div className="field-grid reservation-rig-grid">
                   <div
                     ref={reservationRigSectionRef}
                     className="reservation-form-anchor">
@@ -11993,25 +12024,6 @@ export default function App() {
                   </label>
                 </div>
 
-                <div ref={reservationSiteSectionRef} className="segment-list">
-                  {reservationForm.siteStays.map((segment, index) => (
-                    <SiteStayFields
-                      key={index}
-                      segment={segment}
-                      index={index}
-                      sites={sites}
-                      bookedRangesBySite={bookedRangesBySite}
-                      reservationTerm={reservationForm.reservationTerm}
-                      onChange={updateSiteStay}
-                      onRemove={removeSiteStay}
-                      canRemove={
-                        reservationForm.reservationTerm !== "yearly" &&
-                        reservationForm.siteStays.length > 1
-                      }
-                    />
-                  ))}
-                </div>
-
                 {reservationPricingPreview.length ? (
                   <div className="pricing-preview-card">
                     <h3>Booking price</h3>
@@ -12069,8 +12081,8 @@ export default function App() {
                   <button
                     type="submit"
                     className="primary-button"
-                    disabled={isSavingAdminEdit}>
-                    {editingReservationId
+                    disabled={isSavingReservation || isReservationPageLoading}>
+                    {isSavingReservation ? "Saving reservation…" : editingReservationId
                       ? isSavingAdminEdit
                         ? "Saving..."
                         : "Save reservation"
@@ -12502,6 +12514,7 @@ export default function App() {
                     </p>
                   </div>
                 ) : null}
+              </fieldset>
               </form>
             </div>
           </Paper>
@@ -13092,8 +13105,12 @@ export default function App() {
                   Site
                   <select
                     value={timelineSiteId}
-                    onChange={(event) => setTimelineSiteId(event.target.value)}
+                    onChange={(event) => {
+                      setTimelineSiteId(event.target.value);
+                      setTimelineSiteSearch("");
+                    }}
                     disabled={!timelineSiteOptions.length}>
+                    <option value="">Select a site</option>
                     {timelineSiteOptions.length ? (
                       timelineSiteOptions.map((site) => (
                         <option key={site.id} value={site.id}>
@@ -13850,7 +13867,7 @@ export default function App() {
             </details>
             <details className="sms-booking-details arrival-reminders" aria-label="Late arrival messages">
               <summary>Late arrival texts</summary>
-              <p>Guests scheduled to arrive today who do not have a check-in recorded yet. Guests with an unpaid balance also receive a separate secure payment-link text.</p>
+              <p>New same-day bookings made at or after 5:00 PM Pacific Time receive these instructions automatically. Guests with a balance receive a secure payment link in the message. Already-sent texts are skipped.</p>
               <div className="button-row">
                 <button type="button" className="primary-button" disabled={isSendingTextMessage || !isTextMessagingConfigured || !lateArrivalPreview?.recipients.some(guest => guest.eligible && lateArrivalSelected[String(guest.id)])} onClick={sendLateArrivalTexts}>
                   Send selected late-arrival texts ({lateArrivalPreview?.recipients.filter(guest => guest.eligible && lateArrivalSelected[String(guest.id)]).length || 0})
@@ -13862,7 +13879,7 @@ export default function App() {
                 <div className="arrival-message-drafts">
                   {lateArrivalPreview.recipients.map(guest => <div className="arrival-message-draft" key={guest.id}>
                     <label className="arrival-message-recipient"><input type="checkbox" checked={Boolean(lateArrivalSelected[String(guest.id)])} disabled={!guest.eligible || isSendingTextMessage} onChange={event => setLateArrivalSelected(current => ({ ...current, [String(guest.id)]: event.target.checked }))} /><strong>{guest.first_name} {guest.last_name}</strong></label><div className="admin-text-history-meta"><span>{guest.phone || "No valid mobile number"}</span><span>{guest.payment ? `Payment link: ${formatCurrency(guest.payment.amount)}` : "Paid in full"}</span></div>
-                    {guest.eligible ? <textarea aria-label={`Late arrival message for ${guest.first_name} ${guest.last_name}`} rows="12" value={lateArrivalDrafts[String(guest.id)] || ""} onChange={event => setLateArrivalDrafts(current => ({ ...current, [String(guest.id)]: event.target.value }))} /> : <p className="muted">This guest is missing a valid phone number.</p>}
+                    {guest.eligible ? <textarea aria-label={`Late arrival message for ${guest.first_name} ${guest.last_name}`} rows="12" value={lateArrivalDrafts[String(guest.id)] || ""} onChange={event => setLateArrivalDrafts(current => ({ ...current, [String(guest.id)]: event.target.value }))} /> : <p className="muted">{guest.skipReason || "This guest is missing a valid phone number."}</p>}
                   </div>)}
                 </div>
               </details> : lateArrivalPreview ? <p className="muted">No late arrivals found for today.</p> : null}
@@ -14766,9 +14783,9 @@ export default function App() {
                     <strong>Site {segment.site_number}</strong>: arrival{" "}
                     {formatDisplayDate(segment.arrival_date)} • leave{" "}
                     {formatLeaveDate(segment.leave_date)}
-                    {segment.numberOfNights
-                      ? ` • ${segment.numberOfNights} nights`
-                      : " • Yearly stay"}
+                    {isOpenEndedStay(segment.leave_date)
+                      ? " • Yearly stay"
+                      : ` • ${segment.numberOfNights ?? nightsBetween(segment.arrival_date, segment.leave_date)} nights`}
                   </li>
                 ))}
               </ol>
