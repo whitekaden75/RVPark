@@ -261,3 +261,57 @@ test("schedule and check-in reservation loaders both return the original quote",
   }
   assert.equal(quoteQueries, 2); // One lookup per load, not per reservation.
 });
+
+const movedPaidNight = () => ({
+  row: {...reservation, amount_paid:61.99, deposit_amount:70, requested_discounts:['Good Sam','Senior']},
+  source: {...booking({baseTotalPrice:60,totalPrice:61.99,paymentMethod:'card',discounts:['Good Sam','Senior']}),
+    arrival_date:'2026-10-14',leave_date:'2026-10-15',payment_status:'completed',amount_cents:'6199'},
+  segment: {...stay,site_id:2,arrival_date:'2026-10-13',leave_date:'2026-10-14'},
+});
+
+test('Dennis’s completed $61.99 night remains fully paid after a date/site move to the $72.99 card rate', () => {
+  const {row,source,segment}=movedPaidNight();
+  const live=[priceStay(segment,prices(75,70))];
+  const before=structuredClone(live);
+  const bill=summarize(row,source,live);
+  assert.equal(bill.amountPaid,61.99);assert.equal(bill.bankTotalPrice,60);assert.equal(bill.cardTotalPrice,61.99);
+  assert.equal(bill.paidStayNights,1);assert.equal(bill.unpaidStayNights,0);
+  assert.equal(bill.bankRemainingBalance,0);assert.equal(bill.cardRemainingBalance,0);assert.equal(bill.remainingBalance,0);
+  assert.deepEqual(bill.cardPaymentOptions,[]);assert.deepEqual(live,before);
+});
+
+test('extending a moved paid booking preserves its bought night and prices added unpaid nights at the new rate', () => {
+  const {row,source,segment}=movedPaidNight();
+  const bill=summarize(row,source,[priceStay({...segment,leave_date:'2026-10-16'},prices(75,70))]);
+  assert.equal(bill.paidStayNights,1);assert.equal(bill.unpaidStayNights,2);
+  assert.equal(bill.bankRemainingBalance,140);assert.equal(bill.cardRemainingBalance,145.98);
+  assert.deepEqual(bill.cardPaymentOptions,[{nights:1,amount:72.99},{nights:2,amount:145.98}]);
+  const partlyPaid=summarize({...row,amount_paid:131.99,payment_method:'bank'},source,
+    [priceStay({...segment,leave_date:'2026-10-16'},prices(75,70))],[
+      {id:2,amount:70,note:'Office cash payment. Price type: bank',recorded_at:'2026-10-13T18:00:00Z'},
+      {id:1,amount:61.99,note:'Stripe card deposit. Price type: card',recorded_at:'2026-10-02T18:00:00Z'},
+    ]);
+  assert.equal(partlyPaid.paidStayNights,2);assert.equal(partlyPaid.unpaidStayNights,1);
+  assert.equal(partlyPaid.bankRemainingBalance,70);assert.equal(partlyPaid.cardRemainingBalance,72.99);
+});
+
+test('paid-night protection spans consecutive site moves and preserves the free seventh night', () => {
+  const {row,source,segment}=movedPaidNight();
+  const paidWeek={...source,arrival_date:'2026-10-01',leave_date:'2026-10-08',amount_cents:'37194',
+    pricing_payload:{...source.pricing_payload,baseTotalPrice:360,totalPrice:371.94}};
+  const bill=summarize({...row,amount_paid:371.94},paidWeek,[
+    priceStay({...segment,leave_date:'2026-10-16'},prices(75,70)),
+    priceStay({...segment,site_id:3,arrival_date:'2026-10-16',leave_date:'2026-10-21'},prices(65,60)),
+  ]);
+  assert.equal(bill.totalStayNights,8);assert.equal(bill.paidStayNights,7);assert.equal(bill.unpaidStayNights,1);
+  assert.equal(bill.bankRemainingBalance,60);assert.equal(bill.cardRemainingBalance,61.99);
+});
+
+test('unpaid/partial checkouts and reduced payment amounts do not invent settled nights after a move', () => {
+  const {row,source,segment}=movedPaidNight();const live=[priceStay(segment,prices(75,70))];
+  for(const changed of [{...source,payment_status:'pending'},{...source,amount_cents:2000},
+    {...source,amount_cents:null},{...source,amount_cents:'invalid'}])assert.equal(applyBookedPricing(row,live,changed),live);
+  assert.equal(applyBookedPricing({...row,amount_paid:20},live,source),live);
+  assert.equal(applyBookedPricing({...row,requested_discounts:[]},live,source),live);
+  assert.equal(summarize({...row,amount_paid:20},source,live).paidStayNights,0);
+});

@@ -222,7 +222,15 @@ export function calculatePaidChargeableNights({
     }
   };
 
-  for (const paymentEvent of paymentEvents || []) {
+  // Apply older payments first: their quoted night may precede a later payment
+  // at a different price after a site move. Inbox/history rows arrive newest first.
+  const chronologicalEvents = [...(paymentEvents || [])].sort((left, right) => {
+    const leftTime = Date.parse(left.recorded_at ?? left.recordedAt ?? left.created_at ?? '');
+    const rightTime = Date.parse(right.recorded_at ?? right.recordedAt ?? right.created_at ?? '');
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return leftTime - rightTime;
+    return left.id != null && right.id != null ? Number(left.id) - Number(right.id) : 0;
+  });
+  for (const paymentEvent of chronologicalEvents) {
     if (unallocatedPaidAmount <= 0) break;
 
     const eventAmount = Math.min(
@@ -609,39 +617,46 @@ export function sumReservationTotals(siteStays) {
 
       chargeableNights += 1;
       coveredStayNightsByPaidNightCount[chargeableNights] = numberOfNights;
+      const settled = segment.settledNightlyPrices?.[nightIndex];
+      const normalDailyPrice = settled?.pricePrefix === 'normal' ? settled.bank : segment.normalDailyPrice;
+      const discountDailyPrice = settled?.pricePrefix === 'discount' ? settled.bank : segment.discountDailyPrice;
+      const normalCardDailyPrice = settled?.pricePrefix === 'normal' ? settled.card :
+        segment.normalCardDailyPrice ?? getCardPrice(normalDailyPrice);
+      const discountCardDailyPrice = settled?.pricePrefix === 'discount' ? settled.card :
+        segment.discountCardDailyPrice ?? getCardPrice(discountDailyPrice);
       normalPrice =
         normalPrice !== null &&
-        segment.normalDailyPrice !== null &&
-        segment.normalDailyPrice !== undefined
-          ? normalPrice + Number(segment.normalDailyPrice)
+        normalDailyPrice !== null &&
+        normalDailyPrice !== undefined
+          ? normalPrice + Number(normalDailyPrice)
           : null;
       discountPrice =
         discountPrice !== null &&
-        segment.discountDailyPrice !== null &&
-        segment.discountDailyPrice !== undefined
-          ? discountPrice + Number(segment.discountDailyPrice)
+        discountDailyPrice !== null &&
+        discountDailyPrice !== undefined
+          ? discountPrice + Number(discountDailyPrice)
           : null;
       normalCardPrice =
         normalCardPrice !== null &&
-        segment.normalDailyPrice !== null &&
-        segment.normalDailyPrice !== undefined
-          ? normalCardPrice + Number(segment.normalCardDailyPrice ?? getCardPrice(segment.normalDailyPrice))
+        normalDailyPrice !== null &&
+        normalDailyPrice !== undefined
+          ? normalCardPrice + Number(normalCardDailyPrice)
           : null;
       discountCardPrice =
         discountCardPrice !== null &&
-        segment.discountDailyPrice !== null &&
-        segment.discountDailyPrice !== undefined
-          ? discountCardPrice + Number(segment.discountCardDailyPrice ?? getCardPrice(segment.discountDailyPrice))
+        discountDailyPrice !== null &&
+        discountDailyPrice !== undefined
+          ? discountCardPrice + Number(discountCardDailyPrice)
           : null;
 
-      if (segment.normalDailyPrice !== null && segment.normalDailyPrice !== undefined) {
-        normalNightlyPrices.push(roundCurrency(segment.normalDailyPrice));
-        normalCardNightlyPrices.push(segment.normalCardDailyPrice ?? getCardPrice(segment.normalDailyPrice));
+      if (normalDailyPrice !== null && normalDailyPrice !== undefined) {
+        normalNightlyPrices.push(roundCurrency(normalDailyPrice));
+        normalCardNightlyPrices.push(normalCardDailyPrice);
       }
 
-      if (segment.discountDailyPrice !== null && segment.discountDailyPrice !== undefined) {
-        discountNightlyPrices.push(roundCurrency(segment.discountDailyPrice));
-        discountCardNightlyPrices.push(segment.discountCardDailyPrice ?? getCardPrice(segment.discountDailyPrice));
+      if (discountDailyPrice !== null && discountDailyPrice !== undefined) {
+        discountNightlyPrices.push(roundCurrency(discountDailyPrice));
+        discountCardNightlyPrices.push(discountCardDailyPrice);
       }
     }
 

@@ -6418,6 +6418,7 @@ export default function App() {
   const [reservationEditFocusSection, setReservationEditFocusSection] =
     useState("");
   const [reservationEditor, setReservationEditor] = useState(null);
+  const [isSavingBookingTools, setIsSavingBookingTools] = useState(false);
   const [reservationEditorErrorMessage, setReservationEditorErrorMessage] =
     useState("");
   const [reservationEditorSuccessMessage, setReservationEditorSuccessMessage] =
@@ -7760,6 +7761,13 @@ export default function App() {
     scheduleCardPayment?.amount !== null &&
     scheduleCardPayment?.amount !== undefined &&
     Boolean(scheduleCardPayment?.clientSecret);
+  const savedDatesBooking = reservationEditor?.originalReservation;
+  const dateEditorReservationFields = fields => fields ? {
+    ...fields, siteStays: fields.siteStays.map(({siteSearch, ...stay}) => stay),
+  } : null;
+  const hasUnsavedDateEditorChanges = Boolean(savedDatesBooking &&
+    JSON.stringify(dateEditorReservationFields(reservationEditor.reservation)) !==
+    JSON.stringify(dateEditorReservationFields(createReservationEditorState(savedDatesBooking).reservation)));
   const reservationEditFocusLabel = {
     customer: "customer information",
     dates: "dates and site",
@@ -10434,6 +10442,13 @@ export default function App() {
     setScheduleCardPayment(null);setGeneratedPaymentLink(null);
   }
 
+  function applySavedDateBookingTools(updated) {
+    applySavedBookingTools(updated);
+    setReservationEditor(current => current?.id === updated.id ? {
+      ...current, ...createReservationEditorState(updated), originalReservation: updated,
+    } : current);
+  }
+
   async function setScheduleBalanceWaiver(waive) {
     if (!activeScheduleReservation || balanceWaiverInFlight.current || isSavingAdminEdit) return;
     setSchedulePaymentErrorMessage("");
@@ -10477,6 +10492,7 @@ export default function App() {
         id: reservation.id,
         focusSection,
         ...createReservationEditorState(reservation),
+        originalReservation: reservation,
       });
     } catch (error) {
       setErrorMessage(error.message);
@@ -10511,6 +10527,7 @@ export default function App() {
   }
 
   async function saveReservationEditor() {
+    if (isSavingBookingTools) return;
     if (!reservationEditor) {
       return;
     }
@@ -13555,6 +13572,10 @@ export default function App() {
                               onClick: () => openScheduleReservation(reservation),
                             },
                             {
+                              label: "Edit dates/site",
+                              onClick: () => openReservationEditor(reservation.id, "dates"),
+                            },
+                            {
                               label: "Edit reservation",
                               onClick: () =>
                                 startEditingReservation(reservation.id, "dates"),
@@ -14587,6 +14608,15 @@ export default function App() {
                       </button>
                     ) : null}
                   </div>
+                  {savedDatesBooking ? <ReservationTools
+                    reservation={savedDatesBooking}
+                    reservations={reservations}
+                    request={apiRequest}
+                    onSaved={applySavedDateBookingTools}
+                    onRefresh={refreshSharedAdminData}
+                    disabled={isSavingAdminEdit || hasUnsavedDateEditorChanges}
+                    onBusyChange={setIsSavingBookingTools}
+                  /> : null}
                 </>
               ) : null}
               <div className="button-row">
@@ -14599,7 +14629,7 @@ export default function App() {
                 <button
                   type="button"
                   className="primary-button"
-                  disabled={isSavingAdminEdit}
+                  disabled={isSavingAdminEdit || isSavingBookingTools}
                   onClick={saveReservationEditor}>
                   {isSavingAdminEdit ? "Saving..." : "Save changes"}
                 </button>
@@ -14779,6 +14809,15 @@ export default function App() {
                     {isEditingSchedulePaymentInfo
                       ? "Hide payments"
                       : "Manage payments"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => {
+                      setActiveScheduleReservation(null);
+                      openReservationEditor(activeScheduleReservation.id, "dates");
+                    }}>
+                    Edit dates/site
                   </button>
                   <button
                     type="button"
@@ -15529,7 +15568,7 @@ export default function App() {
                   ) : null}
                 </div>
               ) : null}
-              <ReservationTools reservation={activeScheduleReservation} reservations={reservations} request={apiRequest} onSaved={applySavedBookingTools} onRefresh={refreshSharedAdminData}/>
+
               {!isEditingSchedulePaymentInfo &&
               activeScheduleReservation.status !== "canceled" &&
               hasPaymentDueForReservation(activeScheduleReservation) ? (

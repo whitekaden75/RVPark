@@ -85,8 +85,8 @@ export function createArrivalReminders({ pool, today = () => tomorrow(), tomorro
       // A durable claim protects against double clicks and simultaneous staff sessions.
       const claim = await pool.query(`
         INSERT INTO arrival_text_reminders (reservation_id,arrival_date,state)
-        SELECT $1,$2,'sending' FROM reservations r
-        WHERE r.id=$1 AND to_jsonb(r)->>'merged_into_reservation_id' IS NULL
+        SELECT $1::bigint,$2::date,'sending' FROM reservations r
+        WHERE r.id=$1::bigint AND to_jsonb(r)->>'merged_into_reservation_id' IS NULL
         ON CONFLICT (reservation_id,arrival_date) DO UPDATE SET state='sending',error_message=NULL,updated_at=now()
           WHERE arrival_text_reminders.state='failed'
         RETURNING reservation_id`, [recipient.id, date]);

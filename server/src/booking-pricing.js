@@ -35,6 +35,8 @@ export async function loadBookedPricing(queryable, reservationIds) {
   const result = await queryable.query(
     `SELECT DISTINCT ON (reservation_id)
        reservation_id, site_id, arrival_date::text, leave_date::text,
+       to_jsonb(public_booking_checkouts)->>'payment_status' AS payment_status,
+       to_jsonb(public_booking_checkouts)->>'amount_cents' AS amount_cents,
        jsonb_build_object(
          'baseTotalPrice', booking_payload->'baseTotalPrice',
          'totalPrice', booking_payload->'totalPrice',
@@ -52,7 +54,7 @@ export async function loadBookedPricing(queryable, reservationIds) {
 
 export function applyBookedPricing(reservation, siteStays, booking) {
   if (!booking || reservation.billing_mode !== "standard" ||
-      reservation.reservation_term === "yearly" || siteStays.length !== 1) {
+      reservation.reservation_term === "yearly" || !siteStays.length) {
     return siteStays;
   }
 
@@ -62,10 +64,7 @@ export function applyBookedPricing(reservation, siteStays, booking) {
   const discountQualified = hasDiscount(payload.discounts);
   // Ordinary check-in/contact/payment-method edits must not reprice the stay.
   // An explicit discount, pricing-category, or dates/site edit can reprice it.
-  if (Number(stay.site_id) !== Number(booking.site_id) ||
-      stay.arrival_date !== booking.arrival_date ||
-      stay.leave_date !== booking.leave_date ||
-      hasDiscount(reservation.requested_discounts) !== discountQualified ||
+  if (hasDiscount(reservation.requested_discounts) !== discountQualified ||
       (reservation.pricing_category_override &&
         reservation.pricing_category_override !== quote?.pricingCategory)) {
     return siteStays;
@@ -99,6 +98,32 @@ export function applyBookedPricing(reservation, siteStays, booking) {
   if (bankDailyPrice === null || cardDailyPrice === null) return siteStays;
 
   const pricePrefix = discountQualified ? "discount" : "normal";
+  const sameStay = siteStays.length === 1 && Number(stay.site_id) === Number(booking.site_id) &&
+    stay.arrival_date === booking.arrival_date && stay.leave_date === booking.leave_date;
+  if (!sameStay) {
+    // A completed checkout proves which nights were bought. Moving those nights
+    // to another date/site must not turn them into a new partial payment.
+    // Preserve their original prices; added unpaid nights use the current rates.
+    const collected = positivePrice(Number(booking.amount_cents) / 100);
+    const originalTotal = roundCurrency(chargeableNights * (payload.paymentMethod === 'card' ? cardDailyPrice : bankDailyPrice));
+    if (booking.payment_status !== 'completed' || collected === null ||
+        Math.abs(collected - originalTotal) > 0.011 || Number(reservation.amount_paid || 0) + 0.001 < collected) return siteStays;
+    let remainingSettledNights = chargeableNights, consecutiveNight = 0, previousLeaveDate = '';
+    return siteStays.map(segment => {
+      const nights = Number(segment.numberOfNights);
+      if (!Number.isInteger(nights) || nights <= 0 || nights > 28) return segment;
+      if (previousLeaveDate && segment.arrival_date !== previousLeaveDate) consecutiveNight = 0;
+      const settledNightlyPrices = [];
+      for (let index = 0; index < nights; index += 1) {
+        consecutiveNight += 1;
+        if (consecutiveNight % 7 === 0 || !remainingSettledNights) continue;
+        settledNightlyPrices[index] = {pricePrefix, bank: bankDailyPrice, card: cardDailyPrice};
+        remainingSettledNights -= 1;
+      }
+      previousLeaveDate = segment.leave_date;
+      return {...segment, settledNightlyPrices};
+    });
+  }
   return [{
     ...stay,
     numberOfNights,
