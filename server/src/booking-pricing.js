@@ -35,6 +35,12 @@ export async function loadBookedPricing(queryable, reservationIds) {
   const result = await queryable.query(
     `SELECT DISTINCT ON (reservation_id)
        reservation_id, site_id, arrival_date::text, leave_date::text,
+       (SELECT CASE
+          WHEN s.river_category = 'prime_river' THEN 'prime_river'
+          WHEN s.river_category = 'normal_river' THEN 'normal_river'
+          WHEN s.is_big_rig THEN 'off_river_big_rig'
+          ELSE 'off_river_small_rig'
+        END FROM rv_sites s WHERE s.id = public_booking_checkouts.site_id) AS booked_site_category,
        to_jsonb(public_booking_checkouts)->>'payment_status' AS payment_status,
        to_jsonb(public_booking_checkouts)->>'amount_cents' AS amount_cents,
        jsonb_build_object(
@@ -61,6 +67,7 @@ export function applyBookedPricing(reservation, siteStays, booking) {
   const stay = siteStays[0];
   const payload = booking.pricing_payload || {};
   const quote = payload.pricingQuote;
+  const bookedCategory = quote?.pricingCategory || booking.booked_site_category;
   const discountQualified = hasDiscount(payload.discounts);
   // Ordinary check-in/contact/payment-method edits must not reprice the stay.
   // An explicit discount, pricing-category, or dates/site edit can reprice it.
@@ -103,7 +110,9 @@ export function applyBookedPricing(reservation, siteStays, booking) {
   if (!sameStay) {
     // A completed checkout proves which nights were bought. Moving those nights
     // to another date/site must not turn them into a new partial payment.
-    // Preserve their original prices; added unpaid nights use the current rates.
+    // Preserve the quote within the original site category. A move to a new
+    // category must use its current prices so an upgrade remains collectible.
+    // Added unpaid nights also use the current rates.
     const collected = positivePrice(Number(booking.amount_cents) / 100);
     const originalTotal = roundCurrency(chargeableNights * (payload.paymentMethod === 'card' ? cardDailyPrice : bankDailyPrice));
     if (booking.payment_status !== 'completed' || collected === null ||
@@ -114,10 +123,15 @@ export function applyBookedPricing(reservation, siteStays, booking) {
       if (!Number.isInteger(nights) || nights <= 0 || nights > 28) return segment;
       if (previousLeaveDate && segment.arrival_date !== previousLeaveDate) consecutiveNight = 0;
       const settledNightlyPrices = [];
+      const sameCategory = bookedCategory
+        ? segment.pricingCategory === bookedCategory
+        : Number(segment.site_id) === Number(booking.site_id);
       for (let index = 0; index < nights; index += 1) {
         consecutiveNight += 1;
         if (consecutiveNight % 7 === 0 || !remainingSettledNights) continue;
-        settledNightlyPrices[index] = {pricePrefix, bank: bankDailyPrice, card: cardDailyPrice};
+        if (sameCategory) {
+          settledNightlyPrices[index] = {pricePrefix, bank: bankDailyPrice, card: cardDailyPrice};
+        }
         remainingSettledNights -= 1;
       }
       previousLeaveDate = segment.leave_date;

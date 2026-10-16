@@ -29,6 +29,7 @@ const priceStay = (segment = stay, lookup = prices()) => ({
 });
 const booking = (overrides = {}) => ({
   reservation_id: 42, site_id: 4, arrival_date: stay.arrival_date, leave_date: stay.leave_date,
+  booked_site_category: "off_river_small_rig",
   pricing_payload: { baseTotalPrice: 150, totalPrice: 155.98, paymentMethod: "card", discounts: [], ...overrides }
 });
 const summarize = (row = reservation, source = booking(), segments = [priceStay()], events) => {
@@ -314,4 +315,125 @@ test('unpaid/partial checkouts and reduced payment amounts do not invent settled
   assert.equal(applyBookedPricing({...row,amount_paid:20},live,source),live);
   assert.equal(applyBookedPricing({...row,requested_discounts:[]},live,source),live);
   assert.equal(summarize({...row,amount_paid:20},source,live).paidStayNights,0);
+});
+
+const riverUpgrade = ({ nightlyPrice = 80, amountPaid = 135.98, online = true } = {}) => {
+  const lookup = buildPricingRuleLookup([
+    { site_category: 'normal_river', number_of_days: 1, normal_price: nightlyPrice, discount_price: nightlyPrice - 10 }
+  ]);
+  const row = { ...reservation, amount_paid: amountPaid };
+  const source = online ? {
+    ...booking({ baseTotalPrice: 130, totalPrice: 135.98 }),
+    payment_status: 'completed', amount_cents: 13598
+  } : null;
+  const segment = priceStay({ ...stay, site_id: 9, river_category: 'normal_river' }, lookup);
+  return summarize(row, source, [segment]);
+};
+
+test('a fully paid two-night booking moved to river pricing owes only the $30 card difference', () => {
+  for (const online of [true, false]) {
+    const bill = riverUpgrade({ online });
+    assert.equal(bill.amountPaid, 135.98);
+    assert.equal(bill.cardTotalPrice, 165.98);
+    assert.equal(bill.cardRemainingBalance, 30);
+    assert.equal(bill.remainingBalance, 30);
+    assert.equal(bill.unpaidStayNights, 1);
+    assert.deepEqual(bill.cardPaymentOptions, [{ nights: 1, amount: 30 }]);
+    const settled = riverUpgrade({ online, amountPaid: 165.98 });
+    assert.equal(settled.cardRemainingBalance, 0);
+    assert.equal(settled.unpaidStayNights, 0);
+  }
+});
+
+test('covering the new cash total does not erase a card-priced upgrade balance', () => {
+  const bill = riverUpgrade({ nightlyPrice: 67 });
+  assert.ok(bill.amountPaid > bill.bankTotalPrice);
+  assert.equal(bill.cardRemainingBalance, 4);
+  assert.deepEqual(bill.cardPaymentOptions, [{ nights: 1, amount: 4 }]);
+});
+
+test('cash payments still settle the cash-priced upgrade without leaving a card fee due', () => {
+  const source = { ...booking({ baseTotalPrice: 130, totalPrice: 130, paymentMethod: 'bank' }),
+    payment_status: 'completed', amount_cents: 13000 };
+  const segments = riverUpgrade().siteStays;
+  const row = { ...reservation, payment_method: 'bank', amount_paid: 130 };
+  const events = [{ id: 1, amount: 130, note: 'Cash payment. Price type: bank' }];
+  const bill = summarize(row, source, segments, events);
+  assert.equal(bill.bankRemainingBalance, 30);
+  const settled = summarize({ ...row, amount_paid: 160 }, source, segments, [
+    ...events, { id: 2, amount: 30, note: 'Cash upgrade payment. Price type: bank' }
+  ]);
+  assert.equal(settled.bankRemainingBalance, 0);
+  assert.equal(settled.cardRemainingBalance, 0);
+  assert.equal(settled.unpaidStayNights, 0);
+});
+
+test('a split-site upgrade reprices only the moved night and keeps the original night quote', () => {
+  const row = { ...reservation, amount_paid: 135.98 };
+  const source = { ...booking({ baseTotalPrice: 130, totalPrice: 135.98 }),
+    payment_status: 'completed', amount_cents: 13598 };
+  const lookup = buildPricingRuleLookup([
+    { site_category: 'normal_river', number_of_days: 1, normal_price: 80, discount_price: 70 }
+  ]);
+  const bill = summarize(row, source, [
+    priceStay({ ...stay, leave_date: '2026-10-10' }, prices(90, 80)),
+    priceStay({ ...stay, site_id: 9, river_category: 'normal_river', arrival_date: '2026-10-10' }, lookup)
+  ]);
+  assert.deepEqual(bill.totals.normalCardNightlyPrices, [67.99, 82.99]);
+  assert.equal(bill.cardRemainingBalance, 15);
+});
+
+test('saved category quotes reprice river upgrades without relying on the original site category lookup', () => {
+  const source = { ...booking({ baseTotalPrice: 130, totalPrice: 135.98,
+    pricingQuote: createBookingPricingQuote(priceStay(stay, prices(65, 55)), []) }),
+    booked_site_category: undefined, payment_status: 'completed', amount_cents: 13598 };
+  const bill = riverUpgrade();
+  const repriced = summarize({ ...reservation, amount_paid: 135.98 }, source, bill.siteStays);
+  assert.equal(repriced.cardRemainingBalance, 30);
+});
+
+test('the terminal accepts the upgrade difference, caps overcharges, and rejects another charge once settled', async () => {
+  const source = readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+  const start = source.indexOf('app.post("/api/reservations/:id/terminal-payments",');
+  const end = source.indexOf('\napp.get("/api/stripe/terminal/payments/', start);
+  assert.ok(start >= 0 && end > start);
+  let handler;
+  let bill = riverUpgrade();
+  const intents = [], handoffs = [], records = [];
+  const reader = { id: 'tmr_test', status: 'online' };
+  const context = vm.createContext({
+    app: { post: (_path, callback) => { handler = callback; } },
+    ensureStripeConfigured: () => true,
+    toAmountCents: amount => Math.round(Number(amount) * 100),
+    stripeMotoEnabled: false,
+    syncOpenStripePayments: async () => {},
+    fetchReservationDetails: async () => ({ id: 42, status: 'active', ...bill }),
+    resolveStripeTerminalReader: async () => reader,
+    pool: { query: async (...args) => { records.push(args); } },
+    stripe: {
+      paymentIntents: { create: async params => { intents.push(params); return { id: 'pi_upgrade', currency: 'usd' }; } },
+      terminal: { readers: { processPaymentIntent: async (...args) => { handoffs.push(args); return reader; } } }
+    },
+    presentSimulatedTerminalPayment: async value => value,
+    serializeTerminalReader: value => value,
+    openEndedStayDate: '9999-12-31'
+  });
+  vm.runInContext(source.slice(start, end), context);
+  const send = async amount => {
+    const res = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+    await handler({ params: { id: '42' }, body: { amount } }, res);
+    return res;
+  };
+  assert.equal((await send('30.01')).code, 400);
+  assert.equal(intents.length, 0);
+  const result = await send('30.00');
+  assert.equal(result.code, 202);
+  assert.equal(result.body.amount, '30.00');
+  assert.equal(intents[0].amount, 3000);
+  assert.equal(intents[0].metadata.payment_price_type, 'card');
+  assert.equal(handoffs[0][1].payment_intent, 'pi_upgrade');
+  assert.equal(records.length, 1);
+  bill = riverUpgrade({ amountPaid: 165.98 });
+  assert.equal((await send('30.00')).code, 400);
+  assert.equal(intents.length, 1);
 });

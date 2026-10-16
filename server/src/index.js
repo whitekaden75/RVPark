@@ -7538,12 +7538,12 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
     );
 
     if (!customCharge && !maximumAmountCents) {
-      return res.status(400).json({ message: "This reservation does not have any unpaid nights." });
+      return res.status(400).json({ message: "This reservation does not have an outstanding balance." });
     }
 
     if (!customCharge && amountCents > maximumAmountCents) {
       return res.status(400).json({
-        message: `Payment cannot exceed the ${priceType} amount due for unpaid nights.`
+        message: `Payment cannot exceed the outstanding ${priceType} balance.`
       });
     }
 

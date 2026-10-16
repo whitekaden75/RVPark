@@ -311,7 +311,9 @@ export function buildBillingSummary(reservationRow, totals, paymentEvents = []) 
   const cardTotalPrice = usesDailyNightBilling
     ? roundCurrency(selectedCardDailyTotal)
     : getCardStayTotal(baseEffectiveTotalPrice, totals?.chargeableNights);
-  const calculatedPaymentProgress = usesDailyNightBilling
+  // Allocate actual payments at their bank/card price type. Covering the bank
+  // total alone does not settle a card-priced upgrade after a site move.
+  const paymentProgress = usesDailyNightBilling
     ? calculatePaidChargeableNights({
         amountPaid,
         paymentEvents,
@@ -320,16 +322,6 @@ export function buildBillingSummary(reservationRow, totals, paymentEvents = []) 
         totalChargeableNights
       })
     : null;
-  const normalStayPriceIsFullyPaid =
-    usesDailyNightBilling &&
-    Number.isFinite(Number(selectedDailyTotal)) &&
-    amountPaid + 0.001 >= Number(selectedDailyTotal);
-  const paymentProgress = normalStayPriceIsFullyPaid
-    ? {
-        paidNights: totalChargeableNights,
-        partialPaymentCredit: 0
-      }
-    : calculatedPaymentProgress;
   const paidChargeableNights = paymentProgress?.paidNights ?? null;
   const partialPaymentCredit = paymentProgress?.partialPaymentCredit ?? 0;
   const unpaidChargeableNights = usesDailyNightBilling
