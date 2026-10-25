@@ -392,7 +392,7 @@ test('saved category quotes reprice river upgrades without relying on the origin
   assert.equal(repriced.cardRemainingBalance, 30);
 });
 
-test('the terminal accepts the upgrade difference, caps overcharges, and rejects another charge once settled', async () => {
+test('the terminal accepts the entered amount above the calculated balance and when the balance is zero', async () => {
   const source = readFileSync(new URL('./index.js', import.meta.url), 'utf8');
   const start = source.indexOf('app.post("/api/reservations/:id/terminal-payments",');
   const end = source.indexOf('\napp.get("/api/stripe/terminal/payments/', start);
@@ -424,16 +424,22 @@ test('the terminal accepts the upgrade difference, caps overcharges, and rejects
     await handler({ params: { id: '42' }, body: { amount } }, res);
     return res;
   };
-  assert.equal((await send('30.01')).code, 400);
+  assert.equal((await send('0.00')).code, 400);
   assert.equal(intents.length, 0);
-  const result = await send('30.00');
+  const result = await send('45.00');
   assert.equal(result.code, 202);
-  assert.equal(result.body.amount, '30.00');
-  assert.equal(intents[0].amount, 3000);
+  assert.equal(result.body.amount, '45.00');
+  assert.equal(intents[0].amount, 4500);
   assert.equal(intents[0].metadata.payment_price_type, 'card');
   assert.equal(handoffs[0][1].payment_intent, 'pi_upgrade');
   assert.equal(records.length, 1);
   bill = riverUpgrade({ amountPaid: 165.98 });
+  assert.equal((await send('30.00')).code, 202);
+  assert.equal(intents.length, 2);
+  assert.equal(intents[1].amount, 3000);
+  assert.equal(handoffs.length, 2);
+  assert.equal(records.length, 2);
+  bill = { ...bill, status: 'canceled' };
   assert.equal((await send('30.00')).code, 400);
-  assert.equal(intents.length, 1);
+  assert.equal(intents.length, 2);
 });

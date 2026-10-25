@@ -12,6 +12,7 @@ import { createLateArrivalTexts } from "./late-arrivals.js";
 import { applyBalanceWaiver, registerBalanceWaiverRoutes } from "./pricing-waivers.js";
 import { registerAfterHoursCashRoutes } from "./after-hours-cash.js";
 import { registerCombinedBookingRoutes } from "./combined-bookings.js";
+import { createSavedPaymentMethods, storageConsentVersion, storageConsentText } from "./saved-payment-methods.js";
 import { registerBookkeepingRoutes } from "./bookkeeping.js";
 import { registerFinanceRoutes } from "./bookkeeping-finance.js";
 import { applyBookedPricing, createBookingPricingQuote, loadBookedPricing } from "./booking-pricing.js";
@@ -78,7 +79,7 @@ const allowedClientOrigins = String(process.env.CLIENT_ORIGIN || "")
   .filter(Boolean);
 const guestVerificationRequests = new Map();
 const guestVerificationAttempts = new Map();
-const publicBookingTermsVersion = "2026-08-15";
+const publicBookingTermsVersion = "2026-10-24";
 const checkInRulesVersion = "2026-08-24";
 const afterHoursExcludedSiteNumbers = new Set(["25T", "27T"]);
 const checkInRulesText = [
@@ -93,6 +94,15 @@ const adminSessionCookieName = "rvpark_admin_session";
 const stripe = stripeSecretKey
   ? new Stripe(stripeSecretKey, { apiVersion: stripeApiVersion })
   : null;
+const savedPaymentMethods = createSavedPaymentMethods({
+  pool, stripe, getReservation: fetchReservationDetails,
+  signToken: (payload, secret) => {
+    const encoded = encodeTokenPayload(payload);
+    return `${encoded}.${signTokenPayload(encoded, secret)}`;
+  },
+  readToken: readSignedToken, secret: guestAuthSecret, allowedOrigins: allowedClientOrigins,
+  syncPayments: syncOpenStripePayments, notify: broadcastAdminDataChange
+});
 const isWebPushConfigured = Boolean(vapidPublicKey && vapidPrivateKey);
 const isTwilioConfigured = Boolean(
   twilioAccountSid &&
@@ -2448,7 +2458,7 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
     ? " Guest opted in to reservation-related text messages and park-wide updates or alerts."
     : " Guest did not opt in to text messages.";
   const publicReservationNotes =
-    `${payload.afterHoursDriveUp ? "Created through the QR-only after-hours drive-up page." : "Created through public online checkout."} Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}. Terms ${payload.termsVersion || publicBookingTermsVersion} accepted and payment-method storage authorized.${smsConsentNote}${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
+    `${payload.afterHoursDriveUp ? "Created through the QR-only after-hours drive-up page." : "Created through public online checkout."} Payment choice: ${checkout.payment_method_type === "card" ? "card" : "bank account"}. Terms ${payload.termsVersion || publicBookingTermsVersion} accepted. Payment-method storage ${checkout.payment_method_storage_consent_at ? "authorized" : "not authorized"}.${smsConsentNote}${towVehicleNote}${towVehicleTypeNote}${discountNote}`;
   const reservationResult = await client.query(
     `
       INSERT INTO reservations (
@@ -2527,7 +2537,7 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
       )
       VALUES (
         $1, $2, $3, $4, 'usd', 'paid', FALSE, $5, $6, $7, $8, $9, $10,
-        $11, $12, NOW(), $13, $4, NOW(), $14
+        $11, $12, CASE WHEN $13::timestamptz IS NOT NULL THEN NOW() ELSE NULL END, $13, $4, NOW(), $14
       )
       RETURNING id
     `,
@@ -2548,6 +2558,20 @@ async function finalizePublicBookingCheckout(client, checkout, session) {
       session.status || "complete"
     ]
   );
+
+  if (checkout.payment_method_storage_consent_at) {
+    await savedPaymentMethods.rememberSession(session, { id: reservationId, customer_id: customerId },
+      stripeCustomerId, client, { at: checkout.payment_method_storage_consent_at,
+        version: payload.storageConsentVersion || "2026-08-15",
+        text: payload.storageConsentText || "I authorize the secure saving of my payment method for future reservation-related payments. Saving it does not authorize a new charge without my separate approval." });
+    await savedPaymentMethods.saveMethod(client, {
+      reservation: { id: reservationId, customer_id: customerId }, method: stripePaymentMethod,
+      stripeCustomerId, consentAt: checkout.payment_method_storage_consent_at,
+      consentVersion: payload.storageConsentVersion || "2026-08-15",
+      consentText: payload.storageConsentText || "I authorize the secure saving of my payment method for future reservation-related payments. Saving it does not authorize a new charge without my separate approval.",
+      source: "public_booking"
+    });
+  }
 
   await insertReservationPaymentEvent(client, {
     reservationId,
@@ -2682,6 +2706,8 @@ async function handleStripeWebhookEvent(event) {
       case "checkout.session.completed":
       case "checkout.session.async_payment_succeeded": {
         const session = event.data.object;
+        updatedReservationId = await savedPaymentMethods.completeSession(client, session);
+        if (session.mode === "setup") break;
         const publicCheckoutResult = await client.query(
           `
             SELECT *
@@ -5428,9 +5454,7 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
   const towVehicleType = String(req.body.towVehicleType || "");
   const rigOverTenYears = Boolean(req.body.rigOverTenYears);
   const termsAccepted = Boolean(req.body.termsAccepted);
-  const paymentMethodStorageAccepted = Boolean(
-    req.body.paymentMethodStorageAccepted
-  );
+  const paymentMethodStorageAccepted = req.body.paymentMethodStorageAccepted === true;
   const paymentMethodType = req.body.paymentMethod === "bank"
     ? "us_bank_account"
     : req.body.paymentMethod === "card"
@@ -5483,12 +5507,6 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
   if (!termsAccepted) {
     return res.status(400).json({
       message: "Accept the Terms & Conditions before continuing."
-    });
-  }
-
-  if (!paymentMethodStorageAccepted) {
-    return res.status(400).json({
-      message: "Authorize us to securely save the payment method before continuing."
     });
   }
 
@@ -5691,7 +5709,9 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       siteNumber: site.site_number,
       termsAccepted: true,
       termsVersion: publicBookingTermsVersion,
-      paymentMethodStorageAccepted: true,
+      paymentMethodStorageAccepted,
+      storageConsentVersion: paymentMethodStorageAccepted ? storageConsentVersion : null,
+      storageConsentText: paymentMethodStorageAccepted ? storageConsentText : null,
       smsConsent: Boolean(req.body.smsConsent),
       afterHoursDriveUp: isAfterHoursDriveUp
     };
@@ -5709,7 +5729,7 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
       },
       payment_intent_data: {
         receipt_email: email,
-        setup_future_usage: "off_session",
+        ...(paymentMethodStorageAccepted ? { setup_future_usage: "off_session" } : {}),
         metadata: {
           public_booking_checkout_token: checkoutToken,
           payment_method_type: paymentMethodType
@@ -5751,7 +5771,7 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
           payment_method_storage_consent_at,
           expires_at
         )
-        VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8, $9::jsonb, $10, $11, NOW(), NOW(), $12)
+        VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8, $9::jsonb, $10, $11, NOW(), CASE WHEN $13::boolean THEN NOW() ELSE NULL END, $12)
       `,
       [
         checkoutToken,
@@ -5765,7 +5785,8 @@ app.post("/api/guest/booking-checkouts", async (req, res) => {
         JSON.stringify(bookingPayload),
         stripeCustomer.id,
         publicBookingTermsVersion,
-        expiresAt.toISOString()
+        expiresAt.toISOString(),
+        paymentMethodStorageAccepted
       ]
     );
     await client.query("COMMIT");
@@ -6718,10 +6739,12 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
     const cancelUrl = `${baseUrl}/?pay=${encodeURIComponent(
       req.params.token
     )}&pay_status=cancel&payment_choice=${paymentChoice}`;
+    const savePaymentMethod = req.body.paymentMethodStorageAccepted === true;
+    const stripeCustomerId = savePaymentMethod ? await savedPaymentMethods.customerFor(reservation) : null;
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: [paymentMethod],
-      customer_email: reservation.email || undefined,
+      ...(stripeCustomerId ? { customer: stripeCustomerId } : { customer_email: reservation.email || undefined }),
       client_reference_id: String(reservation.id),
       success_url: returnUrl,
       cancel_url: cancelUrl,
@@ -6734,6 +6757,7 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
       },
       payment_intent_data: {
         receipt_email: reservation.email || undefined,
+        ...(savePaymentMethod ? { setup_future_usage: "off_session" } : {}),
         metadata: {
           reservation_id: String(reservation.id),
           payment_amount_cents: String(amountCents),
@@ -6758,6 +6782,8 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
         }
       ]
     });
+
+    if (savePaymentMethod) await savedPaymentMethods.rememberSession(session, reservation, stripeCustomerId);
 
     await pool.query(
       `
@@ -7531,21 +7557,8 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
       });
     }
 
-    const maximumAmountCents = toAmountCents(
-      priceType === "card"
-        ? reservation.cardRemainingBalance
-        : reservation.bankRemainingBalance ?? reservation.remainingBalance
-    );
-
-    if (!customCharge && !maximumAmountCents) {
-      return res.status(400).json({ message: "This reservation does not have an outstanding balance." });
-    }
-
-    if (!customCharge && amountCents > maximumAmountCents) {
-      return res.status(400).json({
-        message: `Payment cannot exceed the outstanding ${priceType} balance.`
-      });
-    }
+    // Staff may collect site upgrades and other adjustments even when the
+    // calculated reservation balance does not reflect the amount being charged.
 
     if (reader.status !== "online") {
       return res.status(409).json({
@@ -9225,6 +9238,7 @@ registerFinanceRoutes(app, { pool, stripe, notify: broadcastAdminDataChange });
 registerAfterHoursCashRoutes(app, {pool,getReservation:fetchReservationDetails,insertPayment:insertReservationPaymentEvent,findOverlap:findReservationOverlap,notify:broadcastAdminDataChange});
 registerBalanceWaiverRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
 registerCombinedBookingRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
+savedPaymentMethods.registerRoutes(app);
 
 app.listen(port, () => {
   console.log(`RV Park server listening on port ${port}`);

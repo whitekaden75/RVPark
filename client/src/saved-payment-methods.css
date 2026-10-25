@@ -1,0 +1,14 @@
+.saved-payment-panel { margin: 1rem 0; padding: 1rem; min-width: 0; }
+.saved-payment-panel > summary { cursor: pointer; font-weight: 700; }
+.saved-payment-content { display: grid; gap: 1rem; margin-top: 1rem; }
+.saved-payment-content > p { margin: 0; }
+.saved-payment-content label, .saved-payment-link { display: grid; gap: .5rem; min-width: 0; }
+.saved-payment-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 1rem; }
+.saved-payment-consent { align-items: start; margin: 1rem 0; line-height: 1.55; font-weight: 400; }
+.saved-payment-content .saved-payment-consent { display: flex; }
+.saved-payment-consent input[type="checkbox"] { flex: 0 0 auto; width: 1.1rem; margin-top: .25rem; }
+.saved-payment-panel input, .saved-payment-panel select { width: 100%; box-sizing: border-box; }
+.saved-payment-panel .saved-payment-consent input { width: 1.1rem; }
+.saved-payment-link { padding: 1rem; border: 1px solid #ccd9cd; border-radius: .75rem; }
+.saved-payment-link input { font-size: .85rem; }
+@media (max-width: 650px) { .saved-payment-fields { grid-template-columns: 1fr; } .saved-payment-panel summary span { display: block; } }

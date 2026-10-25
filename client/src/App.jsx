@@ -27,6 +27,7 @@ import CheckInPage from "./CheckInPage.jsx";
 import MessageInbox from "./MessageInbox.jsx";
 import AdminOverview from "./AdminOverview.jsx";
 import ReservationTools from "./ReservationTools.jsx";
+import { PaymentMethodSetupPage, SavedPaymentMethodsPanel, SavePaymentConsent } from "./SavedPaymentMethods.jsx";
 import { adminPrimaryPages, adminPageGroups, adminPages, getSiteOptions, updateStayField } from "./admin-ui.js";
 const BookkeepingPage = lazy(() => import("./BookkeepingPage.jsx"));
 
@@ -2080,7 +2081,7 @@ function PublicTermsAndConditions() {
         </a>
         <p className="eyebrow">Booking policies</p>
         <h1>Terms &amp; Conditions</h1>
-        <p className="public-terms-updated">Effective August 15, 2026</p>
+        <p className="public-terms-updated">Effective October 24, 2026</p>
 
         <section>
           <h2>Reservations and deposits</h2>
@@ -2138,7 +2139,8 @@ function PublicTermsAndConditions() {
             </strong>
           </p>
           <p>
-            With the guest’s separate consent during booking, our payment
+            Saving is optional. With the guest’s separate consent during booking
+            or through a secure card-save link, our payment
             processor securely saves the payment method and provides Riverpark
             RV Resort with a reusable payment-method reference and limited
             details such as the payment type, brand, expiration date, and last
@@ -2148,7 +2150,8 @@ function PublicTermsAndConditions() {
           </p>
           <p>
             Saving a payment method does not by itself authorize a new charge.
-            It may be used for a future reservation-related payment only after
+            It may be used for a future reservation-related payment, including
+            monthly rent and utilities, only after
             the guest separately authorizes that payment. Guests may request
             removal of a saved payment method by calling or texting
             541-295-1269.
@@ -2322,6 +2325,7 @@ function PublicPaymentPage({ token }) {
   const [isLoading, setIsLoading] = useState(true);
   const [openingPaymentMethod, setOpeningPaymentMethod] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [storageAccepted, setStorageAccepted] = useState(false);
   const params = new URLSearchParams(window.location.search);
   const returnStatus = params.get("pay_status") || "";
   const returnPaymentChoice = params.get("payment_choice") || "";
@@ -2369,6 +2373,7 @@ function PublicPaymentPage({ token }) {
           method: "POST",
           body: JSON.stringify({
             paymentMethod,
+            paymentMethodStorageAccepted: storageAccepted,
             baseUrl: window.location.origin,
           }),
         }
@@ -2445,6 +2450,7 @@ function PublicPaymentPage({ token }) {
                 <p className="public-payment-help public-payment-action-heading">
                   <strong>Click here to pay by bank/card.</strong>
                 </p>
+                <SavePaymentConsent checked={storageAccepted} onChange={setStorageAccepted} disabled={Boolean(openingPaymentMethod)} />
                 <div className="public-payment-options">
                   <article>
                     <span className="eyebrow">Bank price</span>
@@ -2705,7 +2711,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
       ...form,
       accessToken,
       afterHoursAccessToken: accessToken,
-      paymentMethodStorageAccepted: form.termsAccepted,
+      paymentMethodStorageAccepted: form.paymentMethodStorageAccepted === true,
       discounts: form.discounts,
       siteId: selectedSite.id,
       arrivalDate: today,
@@ -3205,6 +3211,7 @@ function AfterHoursDriveUpPage({ accessToken }) {
                 Pay the full stay total securely now. Your reservation is
                 created after Stripe confirms payment.
               </p>
+              <SavePaymentConsent checked={form.paymentMethodStorageAccepted} onChange={(value) => updateForm("paymentMethodStorageAccepted", value)} disabled={isSubmitting} />
               <button
                 type="button"
                 className="public-search-button"
@@ -3494,7 +3501,7 @@ function PublicHome({
         method: "POST",
         body: JSON.stringify({
           ...publicBookingForm,
-          paymentMethodStorageAccepted: publicBookingForm.termsAccepted,
+          paymentMethodStorageAccepted: publicBookingForm.paymentMethodStorageAccepted === true,
           discounts: publicBookingForm.discounts,
           paymentMethod,
           baseUrl: window.location.origin,
@@ -4297,9 +4304,10 @@ function PublicHome({
                             rel="noreferrer">
                             Terms &amp; Conditions
                           </a>
-                          , including the saved-payment authorization.
+                          .
                         </span>
                       </label>
+                      <SavePaymentConsent checked={publicBookingForm.paymentMethodStorageAccepted} onChange={(value) => setPublicBookingForm((current) => ({ ...current, paymentMethodStorageAccepted: value }))} disabled={isCreatingPublicReservation} />
                     </div>
                     <div className="public-reservation-review">
                       <span>{formatDisplayDate(searchForm.arrivalDate)}</span>
@@ -6434,10 +6442,6 @@ export default function App() {
   const [reservationCheckNumber, setReservationCheckNumber] = useState("");
   const [activeSchedulePaymentAmount, setActiveSchedulePaymentAmount] =
     useState("");
-  const [activeSchedulePaymentNights, setActiveSchedulePaymentNights] =
-    useState("");
-  const [activeSchedulePaymentMethod, setActiveSchedulePaymentMethod] =
-    useState("");
   const [activeScheduleCashCheckPaymentAmount, setActiveScheduleCashCheckPaymentAmount] =
     useState("");
   const [activeScheduleCheckNumber, setActiveScheduleCheckNumber] = useState("");
@@ -6463,8 +6467,6 @@ export default function App() {
   const [reservationCardPayment, setReservationCardPayment] = useState(null);
   const [scheduleCardPayment, setScheduleCardPayment] = useState(null);
   const [openCardActionMenuId, setOpenCardActionMenuId] = useState("");
-  const [isEditingSchedulePaymentInfo, setIsEditingSchedulePaymentInfo] =
-    useState(false);
   const [isEditingSchedulePricingCategory, setIsEditingSchedulePricingCategory] =
     useState(false);
   const [activeSiteEditorId, setActiveSiteEditorId] = useState(null);
@@ -7054,14 +7056,12 @@ export default function App() {
 
   useEffect(() => {
     if (!activeScheduleReservation) {
-      setIsEditingSchedulePaymentInfo(false);
       setIsEditingSchedulePricingCategory(false);
       setSchedulePaymentForm(createSchedulePaymentForm());
       setSchedulePaymentErrorMessage("");
       setSchedulePaymentSuccessMessage("");
       setActiveScheduleCashCheckPaymentAmount("");
       setActiveScheduleCheckNumber("");
-      setActiveSchedulePaymentMethod("");
       return;
     }
 
@@ -7077,7 +7077,6 @@ export default function App() {
         : ""
     );
     setActiveScheduleCheckNumber("");
-    setActiveSchedulePaymentMethod("");
     setPaymentLinkNights("1");
     setIsEditingSchedulePricingCategory(false);
     setSchedulePaymentErrorMessage("");
@@ -7087,7 +7086,6 @@ export default function App() {
   useEffect(() => {
     if (!activeScheduleReservation) {
       setActiveSchedulePaymentAmount("");
-      setActiveSchedulePaymentNights("");
       return;
     }
 
@@ -7102,9 +7100,6 @@ export default function App() {
       activeScheduleReservation.cardRemainingBalance ??
       activeScheduleReservation.remainingBalance;
 
-    setActiveSchedulePaymentNights(
-      fullStayOption?.nights ? String(fullStayOption.nights) : ""
-    );
     setActiveSchedulePaymentAmount(
       Number(currentCardAmount || 0) > 0
         ? Number(currentCardAmount).toFixed(2)
@@ -7114,7 +7109,7 @@ export default function App() {
     activeScheduleReservation?.id,
     activeScheduleReservation?.cardRemainingBalance,
     activeScheduleReservation?.remainingBalance,
-    activeScheduleReservation?.cardPaymentOptions,
+    activeScheduleReservation?.amountPaid,
   ]);
 
   useEffect(() => {
@@ -8026,7 +8021,6 @@ export default function App() {
       setIsArrivalsTodayOpen(false);
       setIsSiteMovesOpen(false);
       setActiveScheduleReservation(null);
-      setIsEditingSchedulePaymentInfo(false);
       return;
     }
 
@@ -10105,7 +10099,6 @@ export default function App() {
       setAdminSaveNotice(
         `Payment information for reservation #${updatedReservation.id} was saved.`
       );
-      setIsEditingSchedulePaymentInfo(false);
     } catch (error) {
       setSchedulePaymentErrorMessage(error.message);
     } finally {
@@ -10413,9 +10406,7 @@ export default function App() {
     );
   }
 
-  function openScheduleReservation(reservation, options = {}) {
-    const { openPaymentEditor = false } = options;
-
+  function openScheduleReservation(reservation) {
     const terminalBalance =
       reservation.cardRemainingBalance ?? reservation.remainingBalance;
     setActiveSchedulePaymentAmount(
@@ -10430,7 +10421,6 @@ export default function App() {
     setSchedulePaymentErrorMessage("");
     setSchedulePaymentSuccessMessage("");
     setBalanceWaiverReason("");
-    setIsEditingSchedulePaymentInfo(openPaymentEditor);
     setActiveScheduleReservation(reservation);
   }
 
@@ -10926,6 +10916,11 @@ export default function App() {
 
   if (publicPaymentToken) {
     return <PublicPaymentPage token={publicPaymentToken} />;
+  }
+
+  const paymentMethodSetupToken = new URLSearchParams(window.location.search).get("save_payment");
+  if (paymentMethodSetupToken) {
+    return <PaymentMethodSetupPage token={paymentMethodSetupToken} request={guestApiRequest} />;
   }
 
   if (afterHoursAccessToken) {
@@ -12718,11 +12713,9 @@ export default function App() {
                                       openScheduleReservation(reservation),
                                   },
                                   {
-                                    label: "Edit payment info",
+                                    label: "Manage payments",
                                     onClick: () =>
-                                      openScheduleReservation(reservation, {
-                                        openPaymentEditor: true,
-                                      }),
+                                      openScheduleReservation(reservation),
                                   },
                                 ].concat(
                                   buildReservationEditActions(reservation.id)
@@ -12830,11 +12823,9 @@ export default function App() {
                                           openScheduleReservation(reservation),
                                       },
                                       {
-                                        label: "Edit payment info",
+                                        label: "Manage payments",
                                         onClick: () =>
-                                          openScheduleReservation(reservation, {
-                                            openPaymentEditor: true,
-                                          }),
+                                          openScheduleReservation(reservation),
                                       },
                                     ].concat(
                                       buildReservationEditActions(
@@ -12960,11 +12951,9 @@ export default function App() {
                                           openScheduleReservation(reservation),
                                       },
                                       {
-                                        label: "Edit payment info",
+                                        label: "Manage payments",
                                         onClick: () =>
-                                          openScheduleReservation(reservation, {
-                                            openPaymentEditor: true,
-                                          }),
+                                          openScheduleReservation(reservation),
                                       },
                                     ].concat(
                                       buildReservationEditActions(
@@ -13095,11 +13084,9 @@ export default function App() {
                                           openScheduleReservation(reservation),
                                       },
                                       {
-                                        label: "Edit payment info",
+                                        label: "Manage payments",
                                         onClick: () =>
-                                          openScheduleReservation(reservation, {
-                                            openPaymentEditor: true,
-                                          }),
+                                          openScheduleReservation(reservation),
                                       },
                                     ].concat(
                                       buildReservationEditActions(
@@ -13244,11 +13231,9 @@ export default function App() {
                                     openScheduleReservation(entry.reservation),
                                 },
                                 {
-                                  label: "Edit payment info",
+                                  label: "Manage payments",
                                   onClick: () =>
-                                    openScheduleReservation(entry.reservation, {
-                                      openPaymentEditor: true,
-                                    }),
+                                    openScheduleReservation(entry.reservation),
                                 },
                               ].concat(
                                 buildReservationEditActions(entry.reservationId)
@@ -13357,11 +13342,9 @@ export default function App() {
                                     openScheduleReservation(reservation),
                                 },
                                 {
-                                  label: "Edit payment info",
+                                  label: "Manage payments",
                                   onClick: () =>
-                                    openScheduleReservation(reservation, {
-                                      openPaymentEditor: true,
-                                    }),
+                                    openScheduleReservation(reservation),
                                 },
                               ].concat(
                                 buildReservationEditActions(reservation.id)
@@ -13730,6 +13713,7 @@ export default function App() {
                           <p className="muted small-text">Connect the office Terminal, then refresh its status above to collect payment.</p>
                         ) : null}
                       </div>
+                      <SavedPaymentMethodsPanel key={`monthly-saved-${reservation.id}`} reservation={reservation} request={apiRequest} amount={chargeAmount} onPayment={refreshReservationAndSiteData} />
                       {terminalPayment?.reservationId === reservation.id ? (
                         <TerminalPaymentPanel
                           reader={terminalReader}
@@ -13805,11 +13789,9 @@ export default function App() {
                                   openScheduleReservation(reservation),
                               },
                               {
-                                label: "Edit payment info",
+                                label: "Manage payments",
                                 onClick: () =>
-                                  openScheduleReservation(reservation, {
-                                    openPaymentEditor: true,
-                                  }),
+                                  openScheduleReservation(reservation),
                               },
                               ...buildReservationEditActions(reservation.id),
                               {
@@ -14801,19 +14783,6 @@ export default function App() {
                     type="button"
                     className="ghost-button"
                     onClick={() => {
-                      if (!isEditingSchedulePaymentInfo) {
-                        setActiveSchedulePaymentMethod("");
-                      }
-                      setIsEditingSchedulePaymentInfo((current) => !current);
-                    }}>
-                    {isEditingSchedulePaymentInfo
-                      ? "Hide payments"
-                      : "Manage payments"}
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => {
                       setActiveScheduleReservation(null);
                       openReservationEditor(activeScheduleReservation.id, "dates");
                     }}>
@@ -14828,7 +14797,7 @@ export default function App() {
                 </div>
               </div>
               <p className="muted">
-                Booked{" "}
+                Booking #{activeScheduleReservation.id} · Booked{" "}
                 {formatDisplayDate(activeScheduleReservation.booked_date)} •{" "}
                 {formatReservationTerm(
                   activeScheduleReservation.reservation_term
@@ -14919,43 +14888,283 @@ export default function App() {
                   </ul>
                 </div>
               ) : null}
-              {isEditingSchedulePaymentInfo ? (
-                <div className="payment-panel payment-center">
-                  <div className="payment-center-heading">
-                    <div>
-                      <span className="payment-center-eyebrow">Payment center</span>
-                      <h3>Collect or record a payment</h3>
+              <div className="payment-panel payment-center">
+                <div className="payment-center-heading">
+                  <div>
+                    <span className="payment-center-eyebrow">Payment center</span>
+                    <h3>Manage payments</h3>
+                    <p className="muted">
+                      Send a card payment to the terminal, record cash or a check,
+                      send a payment link, or adjust the booking price here.
+                    </p>
+                  </div>
+                  <div className="payment-balance-hero">
+                    <span>Card balance due</span>
+                    <strong>
+                      {formatCurrency(
+                        activeScheduleReservation.cardRemainingBalance || 0
+                      )}
+                    </strong>
+                    <small>
+                      {formatCurrency(
+                        activeScheduleReservation.bankRemainingBalance ??
+                          activeScheduleReservation.remainingBalance ??
+                          0
+                      )}{" "}
+                      if paying by cash or check
+                    </small>
+                  </div>
+                </div>
+                <div className="payment-center-progress">
+                  <NightPaymentStatus
+                    reservation={activeScheduleReservation}
+                    showNightlyRates
+                  />
+                  <span>
+                    Paid so far: {formatCurrency(activeScheduleReservation.amountPaid || 0)}
+                  </span>
+                </div>
+                <div className="payment-edit-sections">
+                  {activeScheduleReservation.status !== "canceled" ? <SavedPaymentMethodsPanel key={`saved-${activeScheduleReservation.id}`} reservation={activeScheduleReservation} request={apiRequest} amount={activeSchedulePaymentAmount} onPayment={async () => {
+                    const updated = await apiRequest(`/reservations/${activeScheduleReservation.id}`);
+                    applySavedBookingTools(updated);
+                    await refreshReservationAndSiteData();
+                  }} /> : null}
+                  {activeScheduleReservation.status !== "canceled" ? (
+                    <div className="timeline-card payment-edit-card payment-method-card payment-method-card-primary">
+                      <div className="payment-method-heading">
+                        <span className="payment-method-icon" aria-hidden="true">
+                          $
+                        </span>
+                        <div>
+                          <h4>Pay by card</h4>
+                          <span className="muted">
+                            Collect a card payment for booking #{activeScheduleReservation.id}.
+                          </span>
+                        </div>
+                      </div>
+                      <div className="payment-action-layout">
+                        <label className="payment-amount-field">
+                          Amount to send to terminal
+                          <div className="currency-input">
+                            <span aria-hidden="true">$</span>
+                            <input
+                              type="number"
+                              inputMode="decimal"
+                              min="0.01"
+                              step="0.01"
+                              value={activeSchedulePaymentAmount}
+                              onChange={(event) => {
+                                setActiveSchedulePaymentAmount(event.target.value);
+                                setScheduleCardPayment(null);
+                                setPaymentLinkSuccessMessage("");
+                              }}
+                              onWheel={(event) => event.currentTarget.blur()}
+                            />
+                          </div>
+                        </label>
+                        <div className="payment-total-preview">
+                          <span>Total to charge</span>
+                          <strong>{formatCurrency(activeSchedulePaymentAmount)}</strong>
+                          <small>Booking #{activeScheduleReservation.id}</small>
+                        </div>
+                      </div>
                       <p className="muted">
-                        Choose how the guest is paying. Card and cash prices are
-                        shown separately so the correct amount is always clear.
+                        Enter any amount for this booking, including upgrades or additional charges.
+                        The amount can exceed the displayed balance.
+                      </p>
+                      {activeScheduleReservation.cardPaymentOptions?.length ? (
+                        <label className="payment-days-field">
+                          Fill from nightly pricing (optional)
+                          <select
+                            value=""
+                            onChange={(event) => {
+                              const option = activeScheduleReservation.cardPaymentOptions.find(
+                                (item) => String(item.nights) === event.target.value
+                              );
+                              if (!option) return;
+                              setActiveSchedulePaymentAmount(Number(option.amount).toFixed(2));
+                              setScheduleCardPayment(null);
+                              setPaymentLinkSuccessMessage("");
+                            }}>
+                            <option value="">Choose an amount</option>
+                            {activeScheduleReservation.cardPaymentOptions.map((option) => (
+                              <option key={option.nights} value={option.nights}>
+                                {option.nights} {option.nights === 1 ? "night" : "nights"} · {formatCurrency(option.amount)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      <TerminalPaymentPanel
+                        reader={terminalReader}
+                        payment={terminalPayment}
+                        reservationId={activeScheduleReservation.id}
+                        errorMessage={terminalPaymentError}
+                        onRetry={retryTerminalPayment}
+                        onCancel={cancelTerminalPayment}
+                        onCancelAll={cancelAllTerminalPayments}
+                        isCancelingAll={isCancelingAllTerminalPayments}
+                      />
+                      <div className="payment-primary-actions">
+                        <button
+                          type="button"
+                          className="primary-button terminal-send-button"
+                          disabled={
+                            terminalReader?.status !== "online" ||
+                            Number(activeSchedulePaymentAmount || 0) <= 0 ||
+                            startingTerminalReservationId ===
+                              activeScheduleReservation.id ||
+                            (terminalPayment?.reservationId ===
+                              activeScheduleReservation.id &&
+                              ["in_progress", "failed", "finalizing"].includes(
+                                terminalPayment.status
+                              ))
+                          }
+                          onClick={() =>
+                            startTerminalPayment(
+                              activeScheduleReservation,
+                              activeSchedulePaymentAmount,
+                              "card"
+                            )
+                          }>
+                          {startingTerminalReservationId ===
+                          activeScheduleReservation.id
+                            ? "Sending to reader…"
+                            : `Charge ${formatCurrency(
+                                activeSchedulePaymentAmount
+                              )} on terminal`}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button phone-payment-button"
+                          disabled={
+                            !terminalReader?.motoEnabled ||
+                            terminalReader?.status !== "online" ||
+                            Number(activeSchedulePaymentAmount || 0) <= 0 ||
+                            startingTerminalReservationId ===
+                              activeScheduleReservation.id ||
+                            (terminalPayment?.reservationId ===
+                              activeScheduleReservation.id &&
+                              ["in_progress", "failed", "finalizing"].includes(
+                                terminalPayment.status
+                              ))
+                          }
+                          onClick={() =>
+                            startTerminalPayment(
+                              activeScheduleReservation,
+                              activeSchedulePaymentAmount,
+                              "card",
+                              { moto: true }
+                            )
+                          }>
+                          Take payment over phone
+                        </button>
+                      </div>
+                      <p className="payment-method-help">
+                        {terminalReader?.motoEnabled
+                          ? "For phone payments, enter the card details securely on the Stripe reader."
+                          : "Phone payments will become available here when MOTO is enabled on the server."}
                       </p>
                     </div>
-                    <div className="payment-balance-hero">
-                      <span>Card balance due</span>
-                      <strong>
-                        {formatCurrency(
-                          activeScheduleReservation.cardRemainingBalance || 0
-                        )}
-                      </strong>
-                      <small>
-                        {formatCurrency(
-                          activeScheduleReservation.bankRemainingBalance ??
-                            activeScheduleReservation.remainingBalance ??
-                            0
-                        )}{" "}
-                        if paying by cash or check
-                      </small>
+                  ) : null}
+
+                  {activeScheduleReservation.status !== "canceled" ? (
+                  <div className="timeline-card payment-edit-card payment-method-card">
+                    <div className="payment-method-heading">
+                      <span className="payment-method-icon payment-method-icon-cash" aria-hidden="true">
+                        ✓
+                      </span>
+                      <div>
+                        <h4>Cash or check</h4>
+                        <span className="muted">
+                          Record money already received. This does not charge
+                          a card.
+                        </span>
+                      </div>
+                    </div>
+                    <div className="payment-action-layout payment-action-layout-cash">
+                      <label className="payment-amount-field">
+                        Amount received
+                        <div className="currency-input">
+                          <span aria-hidden="true">$</span>
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={activeScheduleCashCheckPaymentAmount}
+                            disabled={isRecordingOfficePayment}
+                            onChange={(event) =>
+                              setActiveScheduleCashCheckPaymentAmount(
+                                event.target.value
+                              )
+                            }
+                            onWheel={(event) => event.currentTarget.blur()}
+                          />
+                        </div>
+                      </label>
+                      <label>
+                        Check number <span className="optional-label">check only</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          maxLength="50"
+                          value={activeScheduleCheckNumber}
+                          disabled={isRecordingOfficePayment}
+                          onChange={(event) =>
+                            setActiveScheduleCheckNumber(event.target.value)
+                          }
+                          placeholder="Enter for check"
+                        />
+                      </label>
+                    </div>
+                    <div className="payment-primary-actions">
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={
+                          isRecordingOfficePayment ||
+                          Number(activeScheduleCashCheckPaymentAmount || 0) <= 0
+                        }
+                        onClick={() =>
+                          recordCashCheckPayment(
+                            activeScheduleReservation,
+                            activeScheduleCashCheckPaymentAmount,
+                            "cash"
+                          ).catch(() => {})
+                        }>
+                        {isRecordingOfficePayment
+                          ? "Recording…"
+                          : `Record ${formatCurrency(
+                              activeScheduleCashCheckPaymentAmount
+                            )} cash`}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={
+                          isRecordingOfficePayment ||
+                          Number(activeScheduleCashCheckPaymentAmount || 0) <= 0 ||
+                          !activeScheduleCheckNumber.trim()
+                        }
+                        onClick={() =>
+                          recordCashCheckPayment(
+                            activeScheduleReservation,
+                            activeScheduleCashCheckPaymentAmount,
+                            "check",
+                            activeScheduleCheckNumber
+                          ).catch(() => {})
+                        }>
+                        {isRecordingOfficePayment
+                          ? "Recording…"
+                          : `Record ${formatCurrency(
+                              activeScheduleCashCheckPaymentAmount
+                            )} check`}
+                      </button>
                     </div>
                   </div>
-                  <div className="payment-center-progress">
-                    <NightPaymentStatus
-                      reservation={activeScheduleReservation}
-                      showNightlyRates
-                    />
-                    <span>
-                      Paid so far: {formatCurrency(activeScheduleReservation.amountPaid || 0)}
-                    </span>
-                  </div>
+                  ) : null}
+
                   <div className="payment-link-generator-card">
                     <div>
                       <strong>Send a payment link</strong>
@@ -14998,774 +15207,301 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                  <div className="payment-pricing-category-control">
-                    <span>
-                      Pricing category: {formatPricingCategory(
-                        activeScheduleReservation.pricingCategoryOverride ||
-                          activeScheduleReservation.siteStays?.[0]
-                            ?.pricingCategory
-                      )}
-                    </span>
-                    {isEditingSchedulePricingCategory ? (
-                      <div className="payment-pricing-category-editor">
-                        <select
-                          aria-label="Pricing category"
-                          value={schedulePaymentForm.pricingCategory}
-                          disabled={isSavingAdminEdit}
-                          onChange={(event) =>
-                            updateSchedulePaymentField(
-                              "pricingCategory",
-                              event.target.value
-                            )
-                          }>
-                          <option value="">Use site default</option>
-                          <option value="off_river_small_rig">
-                            Off river — not big rig
-                          </option>
-                          <option value="off_river_big_rig">
-                            Off river — big rig
-                          </option>
-                          <option value="normal_river">On river</option>
-                          <option value="prime_river">Prime river</option>
-                        </select>
-                        <button
-                          type="button"
-                          className="primary-button compact-button"
-                          disabled={isSavingAdminEdit}
-                          onClick={saveSchedulePaymentInfo}>
-                          {isSavingAdminEdit ? "Saving…" : "Save"}
-                        </button>
+                  <details className="payment-adjustments">
+                    <summary>
+                      <span>
+                        <strong>Adjust pricing or paid amount</strong>
+                        <small>For corrections and special cases</small>
+                      </span>
+                      <span aria-hidden="true">⌄</span>
+                    </summary>
+                    <div className="timeline-card payment-edit-card payment-adjustments-body">
+                    <div className="result-header">
+                      <h4>Reservation amounts</h4>
+                      <span className="muted">
+                        These settings change the reservation totals. They do
+                        not collect money.
+                      </span>
+                    </div>
+                    <div className="payment-pricing-category-control">
+                      <span>
+                        Pricing category: {formatPricingCategory(
+                          activeScheduleReservation.pricingCategoryOverride ||
+                            activeScheduleReservation.siteStays?.[0]
+                              ?.pricingCategory
+                        )}
+                      </span>
+                      {isEditingSchedulePricingCategory ? (
+                        <div className="payment-pricing-category-editor">
+                          <select
+                            aria-label="Pricing category"
+                            value={schedulePaymentForm.pricingCategory}
+                            disabled={isSavingAdminEdit}
+                            onChange={(event) =>
+                              updateSchedulePaymentField(
+                                "pricingCategory",
+                                event.target.value
+                              )
+                            }>
+                            <option value="">Use site default</option>
+                            <option value="off_river_small_rig">
+                              Off river — not big rig
+                            </option>
+                            <option value="off_river_big_rig">
+                              Off river — big rig
+                            </option>
+                            <option value="normal_river">On river</option>
+                            <option value="prime_river">Prime river</option>
+                          </select>
+                          <button
+                            type="button"
+                            className="primary-button compact-button"
+                            disabled={isSavingAdminEdit}
+                            onClick={saveSchedulePaymentInfo}>
+                            {isSavingAdminEdit ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button compact-button"
+                            disabled={isSavingAdminEdit}
+                            onClick={() => {
+                              updateSchedulePaymentField(
+                                "pricingCategory",
+                                activeScheduleReservation.pricingCategoryOverride ||
+                                  ""
+                              );
+                              setIsEditingSchedulePricingCategory(false);
+                            }}>
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
                         <button
                           type="button"
                           className="ghost-button compact-button"
-                          disabled={isSavingAdminEdit}
-                          onClick={() => {
-                            updateSchedulePaymentField(
-                              "pricingCategory",
-                              activeScheduleReservation.pricingCategoryOverride ||
-                                ""
-                            );
-                            setIsEditingSchedulePricingCategory(false);
-                          }}>
-                          Cancel
+                          onClick={() => setIsEditingSchedulePricingCategory(true)}>
+                          Edit pricing category
                         </button>
+                      )}
+                    </div>
+                    <div className="balance-waiver-card">
+                      <div><h4>{activeScheduleReservation.balanceWaiver?.active ? "Balance waived" : "Waive the remaining balance"}</h4>
+                        <p>Use this when the office decides no more payment is needed. Payments already collected stay on record. Changing stay dates or charge settings ends the waiver.</p>
                       </div>
-                    ) : (
-                      <button
-                        type="button"
-                        className="ghost-button compact-button"
-                        onClick={() => setIsEditingSchedulePricingCategory(true)}>
-                        Edit pricing category
-                      </button>
-                    )}
-                  </div>
-                  <div className="payment-edit-sections">
-                    <div
-                      className="payment-choice-grid"
-                      aria-label="Choose payment method">
-                      <button
-                        type="button"
-                        className={`payment-choice ${
-                          activeSchedulePaymentMethod === "card"
-                            ? "selected"
-                            : ""
-                        }`}
-                        aria-expanded={
-                          activeSchedulePaymentMethod === "card"
-                        }
-                        disabled={
-                          activeScheduleReservation.status === "canceled" ||
-                          !hasPaymentDueForReservation(
-                            activeScheduleReservation
-                          )
-                        }
-                        onClick={() =>
-                          setActiveSchedulePaymentMethod((current) =>
-                            current === "card" ? "" : "card"
-                          )
-                        }>
-                        <span className="payment-choice-icon" aria-hidden="true">
-                          $
-                        </span>
-                        <span className="payment-choice-copy">
-                          <strong>Card</strong>
-                          <small>In person or over the phone</small>
-                        </span>
-                        <span className="payment-choice-total">
-                          {formatCurrency(
-                            activeScheduleReservation.cardRemainingBalance || 0
-                          )}
-                          <small>due</small>
-                        </span>
-                        <span className="payment-choice-chevron" aria-hidden="true">
-                          ›
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className={`payment-choice ${
-                          activeSchedulePaymentMethod === "cash_check"
-                            ? "selected"
-                            : ""
-                        }`}
-                        aria-expanded={
-                          activeSchedulePaymentMethod === "cash_check"
-                        }
-                        disabled={
-                          activeScheduleReservation.status === "canceled" ||
-                          !hasPaymentDueForReservation(
-                            activeScheduleReservation
-                          )
-                        }
-                        onClick={() =>
-                          setActiveSchedulePaymentMethod((current) =>
-                            current === "cash_check" ? "" : "cash_check"
-                          )
-                        }>
-                        <span
-                          className="payment-choice-icon payment-choice-icon-cash"
-                          aria-hidden="true">
-                          ✓
-                        </span>
-                        <span className="payment-choice-copy">
-                          <strong>Cash or check</strong>
-                          <small>Record payment received</small>
-                        </span>
-                        <span className="payment-choice-total">
-                          {formatCurrency(
-                            activeScheduleReservation.bankRemainingBalance ??
-                              activeScheduleReservation.remainingBalance ??
-                              0
-                          )}
-                          <small>due</small>
-                        </span>
-                        <span className="payment-choice-chevron" aria-hidden="true">
-                          ›
-                        </span>
+                      {activeScheduleReservation.balanceWaiver?.active ? <p className="balance-waiver-note">{activeScheduleReservation.balanceWaiver.reason || "Waived by the office."}</p> : <>
+                        {activeScheduleReservation.balanceWaiver?.scopeChanged ? <p className="balance-waiver-note">The previous waiver ended because the booking changed. Review the balance before waiving it again.</p> : null}
+                        <label>Office note (optional)<input value={balanceWaiverReason} maxLength={500} placeholder="For example: courtesy adjustment" disabled={isSavingBalanceWaiver} onChange={event => setBalanceWaiverReason(event.target.value)} /></label>
+                      </>}
+                      <button type="button" className="ghost-button" disabled={isSavingAdminEdit || isSavingBalanceWaiver || activeScheduleReservation.status !== "active"}
+                        onClick={() => setScheduleBalanceWaiver(!activeScheduleReservation.balanceWaiver?.active)}>
+                        {isSavingBalanceWaiver ? "Saving waiver…" : activeScheduleReservation.balanceWaiver?.active ? "Restore balance" : "Waive remaining balance"}
                       </button>
                     </div>
-                    {activeScheduleReservation.status !== "canceled" &&
-                    hasPaymentDueForReservation(activeScheduleReservation) &&
-                    activeSchedulePaymentMethod === "card" ? (
-                      <div className="timeline-card payment-edit-card payment-method-card payment-method-card-primary">
-                        <div className="payment-method-heading">
-                          <span className="payment-method-icon" aria-hidden="true">
-                            $
-                          </span>
-                          <div>
-                            <h4>Pay by card</h4>
-                            <span className="muted">
-                              Use the reader for a guest in front of you or for
-                              an approved phone payment.
-                            </span>
-                          </div>
-                        </div>
-                        <div className="payment-action-layout">
-                          {activeScheduleReservation.cardPaymentOptions
-                            ?.length ? (
-                            <label className="payment-days-field">
-                              Days to charge
-                              <select
-                                value={activeSchedulePaymentNights}
-                                onChange={(event) => {
-                                  const selectedNights = event.target.value;
-                                  const selectedOption =
-                                    activeScheduleReservation.cardPaymentOptions.find(
-                                      (option) =>
-                                        String(option.nights) === selectedNights
-                                    );
-
-                                  setActiveSchedulePaymentNights(
-                                    selectedNights
-                                  );
-                                  setActiveSchedulePaymentAmount(
-                                    selectedOption
-                                      ? Number(selectedOption.amount).toFixed(2)
-                                      : ""
-                                  );
-                                  setScheduleCardPayment(null);
-                                  setPaymentLinkSuccessMessage("");
-                                }}>
-                                {activeScheduleReservation.cardPaymentOptions.map(
-                                  (option) => (
-                                    <option
-                                      key={option.nights}
-                                      value={option.nights}>
-                                      {option.nights}{" "}
-                                      {option.nights === 1 ? "day" : "days"}
-                                    </option>
-                                  )
-                                )}
-                              </select>
-                            </label>
-                          ) : (
-                            <label className="payment-amount-field">
-                              Custom payment total
-                              <div className="currency-input">
-                                <span aria-hidden="true">$</span>
-                                <input
-                                  type="number"
-                                  min="0.01"
-                                  step="0.01"
-                                  value={activeSchedulePaymentAmount}
-                                  onChange={(event) => {
-                                    setActiveSchedulePaymentAmount(
-                                      event.target.value
-                                    );
-                                    setScheduleCardPayment(null);
-                                    setPaymentLinkSuccessMessage("");
-                                  }}
-                                  onWheel={(event) => event.currentTarget.blur()}
-                                />
-                              </div>
-                            </label>
-                          )}
-                          <div className="payment-total-preview">
-                            <span>Total to charge</span>
-                            <strong>
-                              {formatCurrency(activeSchedulePaymentAmount)}
-                            </strong>
-                            {activeSchedulePaymentNights ? (
-                              <small>
-                                Covers {activeSchedulePaymentNights}{" "}
-                                {Number(activeSchedulePaymentNights) === 1
-                                  ? "day"
-                                  : "days"}
-                              </small>
-                            ) : null}
-                          </div>
-                        </div>
-                        <TerminalPaymentPanel
-                          reader={terminalReader}
-                          payment={terminalPayment}
-                          reservationId={activeScheduleReservation.id}
-                          errorMessage={terminalPaymentError}
-                          onRetry={retryTerminalPayment}
-                          onCancel={cancelTerminalPayment}
-                          onCancelAll={cancelAllTerminalPayments}
-                          isCancelingAll={isCancelingAllTerminalPayments}
+                    <label className="checkbox-row compact-checkbox payment-discount-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={schedulePaymentForm.discountQualified}
+                        onChange={(event) =>
+                          updateScheduleDiscountQualification(
+                            event.target.checked
+                          )
+                        }
+                      />
+                      <span>
+                        <strong>Guest qualifies for the discounted price</strong>
+                        <small>
+                          Saving will update the nightly price and paid-night
+                          count using this stay’s discount pricing.
+                        </small>
+                      </span>
+                    </label>
+                    <div className="pricing-summary payment-discount-preview">
+                      <span>
+                        Standard daily price:{" "}
+                        {formatCurrency(
+                          activeScheduleReservation.totals
+                            ?.normalNightlyPrices?.[0]
+                        )}
+                      </span>
+                      <span>
+                        Discounted daily price:{" "}
+                        {formatCurrency(
+                          activeScheduleReservation.totals
+                            ?.discountNightlyPrices?.[0]
+                        )}
+                      </span>
+                    </div>
+                    <div className="field-grid compact-grid">
+                      <label>
+                        Deposit amount
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={schedulePaymentForm.depositAmount}
+                          onChange={(event) =>
+                            updateSchedulePaymentField(
+                              "depositAmount",
+                              event.target.value
+                            )
+                          }
+                          onWheel={(event) => event.currentTarget.blur()}
                         />
-                        <div className="payment-primary-actions">
-                          <button
-                            type="button"
-                            className="primary-button terminal-send-button"
-                            disabled={
-                              terminalReader?.status !== "online" ||
-                              Number(activeSchedulePaymentAmount || 0) <= 0 ||
-                              startingTerminalReservationId ===
-                                activeScheduleReservation.id ||
-                              (terminalPayment?.reservationId ===
-                                activeScheduleReservation.id &&
-                                ["in_progress", "failed", "finalizing"].includes(
-                                  terminalPayment.status
-                                ))
-                            }
-                            onClick={() =>
-                              startTerminalPayment(
-                                activeScheduleReservation,
-                                activeSchedulePaymentAmount,
-                                "card"
-                              )
-                            }>
-                            {startingTerminalReservationId ===
-                            activeScheduleReservation.id
-                              ? "Sending to reader…"
-                              : `Charge ${formatCurrency(
-                                  activeSchedulePaymentAmount
-                                )} in person`}
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button phone-payment-button"
-                            disabled={
-                              !terminalReader?.motoEnabled ||
-                              terminalReader?.status !== "online" ||
-                              Number(activeSchedulePaymentAmount || 0) <= 0 ||
-                              startingTerminalReservationId ===
-                                activeScheduleReservation.id ||
-                              (terminalPayment?.reservationId ===
-                                activeScheduleReservation.id &&
-                                ["in_progress", "failed", "finalizing"].includes(
-                                  terminalPayment.status
-                                ))
-                            }
-                            onClick={() =>
-                              startTerminalPayment(
-                                activeScheduleReservation,
-                                activeSchedulePaymentAmount,
-                                "card",
-                                { moto: true }
-                              )
-                            }>
-                            Take payment over phone
-                          </button>
-                        </div>
-                        <p className="payment-method-help">
-                          {terminalReader?.motoEnabled
-                            ? "For phone payments, enter the card details securely on the Stripe reader."
-                            : "Phone payments will become available here when MOTO is enabled on the server."}
-                        </p>
-                      </div>
-                    ) : null}
-
-                    {activeSchedulePaymentMethod === "cash_check" ? (
-                    <div className="timeline-card payment-edit-card payment-method-card">
-                      <div className="payment-method-heading">
-                        <span className="payment-method-icon payment-method-icon-cash" aria-hidden="true">
-                          ✓
-                        </span>
-                        <div>
-                          <h4>Cash or check</h4>
-                          <span className="muted">
-                            Record money already received. This does not charge
-                            a card.
-                          </span>
-                        </div>
-                      </div>
-                      <div className="payment-action-layout payment-action-layout-cash">
-                        <label className="payment-amount-field">
-                          Amount received
-                          <div className="currency-input">
-                            <span aria-hidden="true">$</span>
-                            <input
-                              type="number"
-                              min="0.01"
-                              step="0.01"
-                              value={activeScheduleCashCheckPaymentAmount}
-                              disabled={isRecordingOfficePayment}
-                              onChange={(event) =>
-                                setActiveScheduleCashCheckPaymentAmount(
-                                  event.target.value
-                                )
-                              }
-                              onWheel={(event) => event.currentTarget.blur()}
-                            />
-                          </div>
-                        </label>
+                      </label>
+                      {activeScheduleReservation.effectiveBillingMode !==
+                      "standard" ? (
                         <label>
-                          Check number <span className="optional-label">check only</span>
+                          Manual stay price
                           <input
-                            type="text"
-                            inputMode="numeric"
-                            maxLength="50"
-                            value={activeScheduleCheckNumber}
-                            disabled={isRecordingOfficePayment}
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={schedulePaymentForm.totalPrice}
                             onChange={(event) =>
-                              setActiveScheduleCheckNumber(event.target.value)
+                              updateSchedulePaymentField(
+                                "totalPrice",
+                                event.target.value
+                              )
                             }
-                            placeholder="Enter for check"
+                            onWheel={(event) => event.currentTarget.blur()}
                           />
                         </label>
-                      </div>
-                      <div className="payment-primary-actions">
+                      ) : null}
+                      <label>
+                        Amount paid
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={schedulePaymentForm.amountPaid}
+                          onChange={(event) =>
+                            updateSchedulePaymentField(
+                              "amountPaid",
+                              event.target.value
+                            )
+                          }
+                          onWheel={(event) => event.currentTarget.blur()}
+                        />
+                      </label>
+                    </div>
+                      <div className="payment-adjustments-actions">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() =>
+                            setSchedulePaymentForm(
+                              createSchedulePaymentForm(
+                                activeScheduleReservation
+                              )
+                            )
+                          }>
+                          Reset changes
+                        </button>
                         <button
                           type="button"
                           className="primary-button"
-                          disabled={
-                            isRecordingOfficePayment ||
-                            Number(activeScheduleCashCheckPaymentAmount || 0) <= 0
-                          }
-                          onClick={() =>
-                            recordCashCheckPayment(
-                              activeScheduleReservation,
-                              activeScheduleCashCheckPaymentAmount,
-                              "cash"
-                            ).catch(() => {})
-                          }>
-                          {isRecordingOfficePayment
-                            ? "Recording…"
-                            : `Record ${formatCurrency(
-                                activeScheduleCashCheckPaymentAmount
-                              )} cash`}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          disabled={
-                            isRecordingOfficePayment ||
-                            Number(activeScheduleCashCheckPaymentAmount || 0) <= 0 ||
-                            !activeScheduleCheckNumber.trim()
-                          }
-                          onClick={() =>
-                            recordCashCheckPayment(
-                              activeScheduleReservation,
-                              activeScheduleCashCheckPaymentAmount,
-                              "check",
-                              activeScheduleCheckNumber
-                            ).catch(() => {})
-                          }>
-                          {isRecordingOfficePayment
-                            ? "Recording…"
-                            : `Record ${formatCurrency(
-                                activeScheduleCashCheckPaymentAmount
-                              )} check`}
+                          disabled={isSavingAdminEdit || isSavingBalanceWaiver}
+                          onClick={saveSchedulePaymentInfo}>
+                          {isSavingAdminEdit
+                            ? "Saving changes…"
+                            : "Save pricing changes"}
                         </button>
                       </div>
                     </div>
-                    ) : null}
-
-                    <details className="payment-adjustments">
-                      <summary>
-                        <span>
-                          <strong>Adjust pricing or paid amount</strong>
-                          <small>For corrections and special cases</small>
-                        </span>
-                        <span aria-hidden="true">⌄</span>
-                      </summary>
-                      <div className="timeline-card payment-edit-card payment-adjustments-body">
-                      <div className="result-header">
-                        <h4>Reservation amounts</h4>
-                        <span className="muted">
-                          These settings change the reservation totals. They do
-                          not collect money.
-                        </span>
-                      </div>
-                      <div className="balance-waiver-card">
-                        <div><h4>{activeScheduleReservation.balanceWaiver?.active ? "Balance waived" : "Waive the remaining balance"}</h4>
-                          <p>Use this when the office decides no more payment is needed. Payments already collected stay on record. Changing stay dates or charge settings ends the waiver.</p>
-                        </div>
-                        {activeScheduleReservation.balanceWaiver?.active ? <p className="balance-waiver-note">{activeScheduleReservation.balanceWaiver.reason || "Waived by the office."}</p> : <>
-                          {activeScheduleReservation.balanceWaiver?.scopeChanged ? <p className="balance-waiver-note">The previous waiver ended because the booking changed. Review the balance before waiving it again.</p> : null}
-                          <label>Office note (optional)<input value={balanceWaiverReason} maxLength={500} placeholder="For example: courtesy adjustment" disabled={isSavingBalanceWaiver} onChange={event => setBalanceWaiverReason(event.target.value)} /></label>
-                        </>}
-                        <button type="button" className="ghost-button" disabled={isSavingAdminEdit || isSavingBalanceWaiver || activeScheduleReservation.status !== "active"}
-                          onClick={() => setScheduleBalanceWaiver(!activeScheduleReservation.balanceWaiver?.active)}>
-                          {isSavingBalanceWaiver ? "Saving waiver…" : activeScheduleReservation.balanceWaiver?.active ? "Restore balance" : "Waive remaining balance"}
-                        </button>
-                      </div>
-                      <label className="checkbox-row compact-checkbox payment-discount-checkbox">
-                        <input
-                          type="checkbox"
-                          checked={schedulePaymentForm.discountQualified}
-                          onChange={(event) =>
-                            updateScheduleDiscountQualification(
-                              event.target.checked
-                            )
-                          }
-                        />
-                        <span>
-                          <strong>Guest qualifies for the discounted price</strong>
-                          <small>
-                            Saving will update the nightly price and paid-night
-                            count using this stay’s discount pricing.
-                          </small>
-                        </span>
-                      </label>
-                      <div className="pricing-summary payment-discount-preview">
-                        <span>
-                          Standard daily price:{" "}
-                          {formatCurrency(
-                            activeScheduleReservation.totals
-                              ?.normalNightlyPrices?.[0]
-                          )}
-                        </span>
-                        <span>
-                          Discounted daily price:{" "}
-                          {formatCurrency(
-                            activeScheduleReservation.totals
-                              ?.discountNightlyPrices?.[0]
-                          )}
-                        </span>
-                      </div>
-                      <div className="field-grid compact-grid">
-                        <label>
-                          Deposit amount
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={schedulePaymentForm.depositAmount}
-                            onChange={(event) =>
-                              updateSchedulePaymentField(
-                                "depositAmount",
-                                event.target.value
-                              )
-                            }
-                            onWheel={(event) => event.currentTarget.blur()}
-                          />
-                        </label>
-                        {activeScheduleReservation.effectiveBillingMode !==
-                        "standard" ? (
-                          <label>
-                            Manual stay price
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={schedulePaymentForm.totalPrice}
-                              onChange={(event) =>
-                                updateSchedulePaymentField(
-                                  "totalPrice",
-                                  event.target.value
-                                )
-                              }
-                              onWheel={(event) => event.currentTarget.blur()}
-                            />
-                          </label>
-                        ) : null}
-                        <label>
-                          Amount paid
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={schedulePaymentForm.amountPaid}
-                            onChange={(event) =>
-                              updateSchedulePaymentField(
-                                "amountPaid",
-                                event.target.value
-                              )
-                            }
-                            onWheel={(event) => event.currentTarget.blur()}
-                          />
-                        </label>
-                      </div>
-                        <div className="payment-adjustments-actions">
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() =>
-                              setSchedulePaymentForm(
-                                createSchedulePaymentForm(
-                                  activeScheduleReservation
-                                )
-                              )
-                            }>
-                            Reset changes
-                          </button>
-                          <button
-                            type="button"
-                            className="primary-button"
-                            disabled={isSavingAdminEdit || isSavingBalanceWaiver}
-                            onClick={saveSchedulePaymentInfo}>
-                            {isSavingAdminEdit
-                              ? "Saving changes…"
-                              : "Save pricing changes"}
-                          </button>
-                        </div>
-                      </div>
-                    </details>
-                  </div>
-                  {schedulePaymentErrorMessage ? (
-                    <div className="message error">
-                      {schedulePaymentErrorMessage}
-                    </div>
-                  ) : null}
-                  {schedulePaymentSuccessMessage ? (
-                    <div className="message success">
-                      {schedulePaymentSuccessMessage}
-                    </div>
-                  ) : null}
-                  {paymentLinkErrorMessage ? (
-                    <div className="message error">
-                      {paymentLinkErrorMessage}
-                    </div>
-                  ) : null}
-                  {paymentLinkSuccessMessage ? (
-                    <div className="message success">
-                      {paymentLinkSuccessMessage}
-                    </div>
-                  ) : null}
+                  </details>
                 </div>
-              ) : null}
-
-              {!isEditingSchedulePaymentInfo &&
-              activeScheduleReservation.status !== "canceled" &&
-              hasPaymentDueForReservation(activeScheduleReservation) ? (
-                <div className="payment-panel">
-                  <div className="result-header">
-                    <h3>Collect payment on terminal</h3>
+                {schedulePaymentErrorMessage ? (
+                  <div className="message error">
+                    {schedulePaymentErrorMessage}
                   </div>
-                  <div className="payment-grid">
+                ) : null}
+                {schedulePaymentSuccessMessage ? (
+                  <div className="message success">
+                    {schedulePaymentSuccessMessage}
+                  </div>
+                ) : null}
+                {paymentLinkErrorMessage ? (
+                  <div className="message error">
+                    {paymentLinkErrorMessage}
+                  </div>
+                ) : null}
+                {paymentLinkSuccessMessage ? (
+                  <div className="message success">
+                    {paymentLinkSuccessMessage}
+                  </div>
+                ) : null}
+                {generatedPaymentLink?.reservationId ===
+                activeScheduleReservation.id ? (
+                  <div className="generated-payment-link-card">
+                    <div>
+                      <span>Bank payment</span>
+                      <strong>
+                        {formatCurrency(generatedPaymentLink.bankAmount)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Credit card payment</span>
+                      <strong>
+                        {formatCurrency(generatedPaymentLink.cardAmount)}
+                      </strong>
+                    </div>
                     <label>
-                      Terminal payment amount
+                      Riverpark payment link
                       <input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={activeSchedulePaymentAmount}
-                        onChange={(event) => {
-                          setActiveSchedulePaymentAmount(event.target.value);
-                          setScheduleCardPayment(null);
-                          setPaymentLinkSuccessMessage("");
-                        }}
-                        onWheel={(event) => event.currentTarget.blur()}
+                        readOnly
+                        value={generatedPaymentLink.checkoutUrl}
+                        onFocus={(event) => event.target.select()}
                       />
                     </label>
-                    <div className="pricing-summary">
-                      <NightPaymentStatus
-                        reservation={activeScheduleReservation}
-                        showNightlyRates
-                      />
-                      <span>
-                        Status:{" "}
-                        {formatReservationStatus(
-                          activeScheduleReservation.status
-                        )}
-                      </span>
-                      <span>Terminal accepts card payments only.</span>
-                    </div>
-                  </div>
-                  <TerminalPaymentPanel
-                    reader={terminalReader}
-                    payment={terminalPayment}
-                    reservationId={activeScheduleReservation.id}
-                    errorMessage={terminalPaymentError}
-                    onRetry={retryTerminalPayment}
-                    onCancel={cancelTerminalPayment}
-                    onCancelAll={cancelAllTerminalPayments}
-                    isCancelingAll={isCancelingAllTerminalPayments}
-                  />
-                  <div className="button-row">
-                    <button
-                      type="button"
-                      className="primary-button terminal-send-button"
-                      disabled={
-                        terminalReader?.status !== "online" ||
-                        Number(activeSchedulePaymentAmount || 0) <= 0 ||
-                        (terminalPayment?.reservationId ===
-                          activeScheduleReservation.id &&
-                          ["in_progress", "failed", "finalizing"].includes(
-                            terminalPayment.status
-                          ))
-                      }
-                      onClick={() =>
-                        startTerminalPayment(
-                          activeScheduleReservation,
-                          activeSchedulePaymentAmount,
-                          "card"
-                        )
-                      }>
-                      Pay by card {formatCurrency(activeSchedulePaymentAmount)}
-                    </button>
-                    {terminalReader?.motoEnabled ? (
+                    <div className="button-row">
                       <button
                         type="button"
                         className="ghost-button"
-                        disabled={
-                          terminalReader?.status !== "online" ||
-                          Number(activeSchedulePaymentAmount || 0) <= 0 ||
-                          (terminalPayment?.reservationId ===
-                            activeScheduleReservation.id &&
-                            ["in_progress", "failed", "finalizing"].includes(
-                              terminalPayment.status
-                            ))
-                        }
+                        onClick={copyPaymentLinkToClipboard}>
+                        Copy link
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
                         onClick={() =>
-                          startTerminalPayment(
-                            activeScheduleReservation,
-                            activeSchedulePaymentAmount,
-                            "card",
-                            { moto: true }
+                          openPaymentLinkTextMessage(
+                            activeScheduleReservation
                           )
                         }>
-                        Collect card over phone
+                        Text link
                       </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="primary-button"
-                      disabled={
-                        Number(
-                          activeScheduleReservation.remainingBalance || 0
-                        ) <= 0
-                      }
-                      onClick={() =>
-                        generatePaymentLink(
-                          activeScheduleReservation,
-                          "Stay payment link"
-                        )
-                      }>
-                      Generate payment link
-                    </button>
+                      <a
+                        className="ghost-button"
+                        href={generatedPaymentLink.checkoutUrl}
+                        target="_blank"
+                        rel="noreferrer">
+                        Open link
+                      </a>
+                    </div>
                   </div>
-                  <p className="muted">
-                    {terminalReader?.motoEnabled
-                      ? "Phone payments use Stripe MOTO and are entered securely on the office reader."
-                      : "Phone card entry is disabled until Stripe approves MOTO for this account. Prefer the secure payment link."}
-                  </p>
-                  {paymentLinkErrorMessage ? (
-                    <div className="message error">
-                      {paymentLinkErrorMessage}
-                    </div>
-                  ) : null}
-                  {paymentLinkSuccessMessage ? (
-                    <div className="message success">
-                      {paymentLinkSuccessMessage}
-                    </div>
-                  ) : null}
-                  {generatedPaymentLink?.reservationId ===
-                  activeScheduleReservation.id ? (
-                    <div className="generated-payment-link-card">
-                      <div>
-                        <span>Bank payment</span>
-                        <strong>
-                          {formatCurrency(generatedPaymentLink.bankAmount)}
-                        </strong>
-                      </div>
-                      <div>
-                        <span>Credit card payment</span>
-                        <strong>
-                          {formatCurrency(generatedPaymentLink.cardAmount)}
-                        </strong>
-                      </div>
-                      <label>
-                        Riverpark payment link
-                        <input
-                          readOnly
-                          value={generatedPaymentLink.checkoutUrl}
-                          onFocus={(event) => event.target.select()}
-                        />
-                      </label>
-                      <div className="button-row">
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          onClick={copyPaymentLinkToClipboard}>
-                          Copy link
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          onClick={() =>
-                            openPaymentLinkTextMessage(
-                              activeScheduleReservation
-                            )
-                          }>
-                          Text link
-                        </button>
-                        <a
-                          className="ghost-button"
-                          href={generatedPaymentLink.checkoutUrl}
-                          target="_blank"
-                          rel="noreferrer">
-                          Open link
-                        </a>
-                      </div>
-                    </div>
-                  ) : null}
-                  {hasScheduleCardPayment ? (
-                    <Elements stripe={getStripePromise()}>
-                      <CardPaymentForm
-                        amountLabel={formatCurrency(scheduleCardPayment.amount)}
-                        clientSecret={scheduleCardPayment.clientSecret}
-                        reservation={activeScheduleReservation}
-                        onCancel={() => setScheduleCardPayment(null)}
-                        onSuccess={async () => {
-                          const refreshedReservation =
-                            await finalizeCardPayment(
-                              activeScheduleReservation.id
-                            );
-                          setScheduleCardPayment(null);
-                          setPaymentLinkSuccessMessage(
-                            `Card payment completed for reservation #${refreshedReservation.id}.`
+                ) : null}
+                {hasScheduleCardPayment ? (
+                  <Elements stripe={getStripePromise()}>
+                    <CardPaymentForm
+                      amountLabel={formatCurrency(scheduleCardPayment.amount)}
+                      clientSecret={scheduleCardPayment.clientSecret}
+                      reservation={activeScheduleReservation}
+                      onCancel={() => setScheduleCardPayment(null)}
+                      onSuccess={async () => {
+                        const refreshedReservation =
+                          await finalizeCardPayment(
+                            activeScheduleReservation.id
                           );
-                        }}
-                      />
-                    </Elements>
-                  ) : null}
-                </div>
-              ) : null}
+                        setScheduleCardPayment(null);
+                        setPaymentLinkSuccessMessage(
+                          `Card payment completed for reservation #${refreshedReservation.id}.`
+                        );
+                      }}
+                    />
+                  </Elements>
+                ) : null}
+              </div>
+
               {activeScheduleReservation.notes ? (
                 <p className="muted">
                   Notes: {activeScheduleReservation.notes}
