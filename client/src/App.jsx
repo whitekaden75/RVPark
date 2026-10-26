@@ -1161,7 +1161,7 @@ function buildReservationConfirmationText(reservation, paymentLink) {
     "",
     "Deposit",
     "Non Refundable",
-    "A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. (No Debit cards.) You may pay for unpaid nights by check or cash upon arrival.",
+    "A one-night deposit is required for stays of 7 nights or fewer. Stays longer than 7 nights require a two-night deposit. Bank and card payments have separate displayed daily prices. You may pay for unpaid nights by check or cash upon arrival.",
     `Deposit amount: ${depositAmount}`,
     "",
     ...(siteStays.length
@@ -2474,13 +2474,12 @@ function PublicPaymentPage({ token }) {
                   </article>
                   <article>
                     <span className="eyebrow">Card price</span>
-                    <h2>Credit card</h2>
+                    <h2>Credit or debit card</h2>
                     <strong className="public-payment-amount">
                       {formatCurrency(paymentDetails.cardAmount)}
                     </strong>
                     <p>
-                      Pay the displayed card price by credit card. Debit cards
-                      are not accepted.
+                      Pay the displayed card price by credit or debit card.
                     </p>
                     <button
                       type="button"
@@ -2489,7 +2488,7 @@ function PublicPaymentPage({ token }) {
                       onClick={() => startPayment("card")}>
                       {openingPaymentMethod === "card"
                         ? "Opening secure payment..."
-                        : "Pay by credit card"}
+                        : "Pay by credit or debit card"}
                     </button>
                   </article>
                 </div>

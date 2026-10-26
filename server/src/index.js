@@ -363,13 +363,17 @@ function createAdminSessionToken(adminUser) {
 }
 
 function createGuestPaymentLinkToken(reservationId, amount = null, description = "", cardAmount = null) {
+  const bankAmount = Number.isFinite(Number(amount)) && Number(amount) > 0 ? roundCurrency(amount) : null;
+  const resolvedCardAmount = Number.isFinite(Number(cardAmount)) && Number(cardAmount) > 0
+    ? roundCurrency(cardAmount)
+    : bankAmount !== null ? getCardPrice(bankAmount) : null;
   const payload = {
     type: "guest_payment_link",
     reservationId: Number(reservationId),
     nonce: randomBytes(12).toString("hex"),
     expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 90,
-    ...(Number.isFinite(Number(amount)) && Number(amount) > 0 ? { customAmount: roundCurrency(amount) } : {}),
-    ...(Number.isFinite(Number(cardAmount)) && Number(cardAmount) > 0 ? { customCardAmount: roundCurrency(cardAmount) } : {}),
+    ...(bankAmount !== null ? { customAmount: bankAmount } : {}),
+    ...(resolvedCardAmount !== null ? { customCardAmount: resolvedCardAmount } : {}),
     ...(String(description || "").trim() ? { description: String(description).trim().slice(0, 200) } : {})
   };
   const encodedPayload = encodeTokenPayload(payload);
@@ -6657,7 +6661,7 @@ app.get("/api/guest/payment-links/:token", async (req, res) => {
 
     const { bankAmount: remainingBankAmount, cardAmount: remainingCardAmount } = getRemainingBalancePaymentAmounts(reservation);
     const bankAmount = link.customAmount || remainingBankAmount;
-    const cardAmount = link.customCardAmount || (link.customAmount ? link.customAmount : remainingCardAmount);
+    const cardAmount = link.customCardAmount || (link.customAmount ? getCardPrice(link.customAmount) : remainingCardAmount);
 
     return res.json({
       reservationId: reservation.id,
@@ -6722,7 +6726,7 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
 
     const { bankAmount: remainingBankAmount, cardAmount: remainingCardAmount } = getRemainingBalancePaymentAmounts(reservation);
     const bankAmount = link.customAmount || remainingBankAmount;
-    const cardAmount = link.customCardAmount || (link.customAmount ? link.customAmount : remainingCardAmount);
+    const cardAmount = link.customCardAmount || (link.customAmount ? getCardPrice(link.customAmount) : remainingCardAmount);
     const paymentAmount = paymentMethod === "card" ? cardAmount : bankAmount;
     const amountCents = toAmountCents(paymentAmount);
 
