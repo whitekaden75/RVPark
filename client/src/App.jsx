@@ -6460,6 +6460,8 @@ export default function App() {
   const [monthlySearch, setMonthlySearch] = useState("");
   const [monthlySiteFilter, setMonthlySiteFilter] = useState("");
   const [generatedPaymentLink, setGeneratedPaymentLink] = useState(null);
+  const [paymentLinkStates, setPaymentLinkStates] = useState({});
+  const pendingPaymentLinks = useRef(new Set());
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] =
     useState("");
@@ -9338,11 +9340,22 @@ export default function App() {
   }
 
   async function generatePaymentLink(reservation, label = "Payment link", options = {}) {
+    const reservationId = reservation?.id;
+    if (pendingPaymentLinks.current.has(reservationId)) return null;
+    pendingPaymentLinks.current.add(reservationId);
+    setPaymentLinkStates((current) => ({
+      ...current, [reservationId]: { isLoading: true, error: "", link: null },
+    }));
     setPaymentLinkErrorMessage("");
     setPaymentLinkSuccessMessage("");
 
     try {
-      if (!reservation?.id || Number(reservation.remainingBalance || 0) <= 0) {
+      if (!reservationId) throw new Error("Choose a reservation first.");
+      const hasCustomAmount = options.customAmount !== undefined && options.customAmount !== null;
+      if (hasCustomAmount && (!Number.isFinite(Number(options.customAmount)) || Number(options.customAmount) <= 0)) {
+        throw new Error("Enter a payment amount greater than zero.");
+      }
+      if (!hasCustomAmount && Number(reservation.remainingBalance || 0) <= 0) {
         throw new Error("This reservation does not have any unpaid nights.");
       }
 
@@ -9359,21 +9372,31 @@ export default function App() {
         }
       );
 
-      setGeneratedPaymentLink({
+      const link = {
         reservationId: reservation.id,
         amount: result.bankAmount,
         bankAmount: result.bankAmount,
         cardAmount: result.cardAmount,
         checkoutUrl: result.paymentUrl || result.checkoutUrl,
         label,
-      });
+      };
+      if (!link.checkoutUrl) throw new Error("The payment link was not returned. Please try again.");
+      setGeneratedPaymentLink(link);
+      setPaymentLinkStates((current) => ({
+        ...current, [reservationId]: { isLoading: false, error: "", link },
+      }));
       setPaymentLinkSuccessMessage(
         `${label} generated for reservation #${reservation.id}.`
       );
       return result;
     } catch (error) {
       setPaymentLinkErrorMessage(error.message);
+      setPaymentLinkStates((current) => ({
+        ...current, [reservationId]: { isLoading: false, error: error.message, link: null },
+      }));
       return null;
+    } finally {
+      pendingPaymentLinks.current.delete(reservationId);
     }
   }
 
@@ -13508,6 +13531,7 @@ export default function App() {
             ) : filteredMonthlyReservations.length ? (
               <div className="schedule-list monthly-reservation-list">
                 {filteredMonthlyReservations.map((reservation) => {
+                  const paymentLinkState = paymentLinkStates[reservation.id];
                   const currentStays = getCurrentMonthlyStays(reservation, today);
                   const nextStay = (reservation.siteStays || []).find((stay) => stay.arrival_date > today);
                   const displayStay = currentStays[0] || nextStay || reservation.siteStays?.at(-1);
@@ -13643,18 +13667,48 @@ export default function App() {
                           />
                         </label>
                         <p className="muted small-text monthly-charge-help">Enter rent, utilities, or another amount to collect.</p>
-                        <div className="button-row monthly-charge-actions">
+                        <div className="monthly-payment-link-area">
                           <button
                             type="button"
                             className="ghost-button"
-                            disabled={Number(chargeAmount || 0) <= 0}
+                            disabled={!Number.isFinite(Number(chargeAmount)) || Number(chargeAmount || 0) <= 0 || paymentLinkState?.isLoading}
+                            aria-busy={paymentLinkState?.isLoading || false}
                             onClick={() => generatePaymentLink(
                               reservation,
                               "Monthly payment link",
                               { customAmount: chargeAmount, description: monthlyChargeForms[reservation.id]?.description || "Monthly charges" }
                             )}>
-                            Create payment link
+                            {paymentLinkState?.isLoading ? "Creating payment link…" : "Create payment link"}
                           </button>
+                          <div className="monthly-payment-link-feedback" aria-live="polite">
+                            {paymentLinkState?.isLoading ? (
+                              <p className="monthly-payment-link-loading" role="status"><span className="terminal-payment-spinner" aria-hidden="true" />Creating your secure payment link…</p>
+                            ) : null}
+                            {paymentLinkState?.error ? <div className="message error" role="alert">{paymentLinkState.error}</div> : null}
+                            {paymentLinkState?.link ? (
+                              <div className="monthly-payment-link-result">
+                                <label className="payment-link-inline-field">
+                                  Monthly payment link
+                                  <input aria-label={`Payment link for ${reservation.first_name} ${reservation.last_name}`} readOnly value={paymentLinkState.link.checkoutUrl} onFocus={(event) => event.target.select()} />
+                                </label>
+                                <p className="muted small-text">{formatCurrency(paymentLinkState.link.bankAmount)} bank · {formatCurrency(paymentLinkState.link.cardAmount)} card</p>
+                                <div className="button-row">
+                                  <button type="button" className="ghost-button" onClick={async () => {
+                                    try {
+                                      await navigator.clipboard.writeText(paymentLinkState.link.checkoutUrl);
+                                      setPaymentLinkStates((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], copyMessage: "Link copied.", error: "" } }));
+                                    } catch {
+                                      setPaymentLinkStates((current) => ({ ...current, [reservation.id]: { ...current[reservation.id], error: "Could not copy automatically. Select the link above and copy it." } }));
+                                    }
+                                  }}>Copy link</button>
+                                  <a className="ghost-button" href={paymentLinkState.link.checkoutUrl} target="_blank" rel="noreferrer">Open payment link</a>
+                                </div>
+                                {paymentLinkState.copyMessage ? <p role="status">{paymentLinkState.copyMessage}</p> : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="button-row monthly-charge-actions">
                           <button
                             type="button"
                             className="primary-button terminal-send-button"
@@ -13703,12 +13757,6 @@ export default function App() {
                             Charge by phone
                           </button>
                         </div>
-                        {generatedPaymentLink?.reservationId === reservation.id ? (
-                          <label className="payment-link-inline-field">
-                            Payment link ({generatedPaymentLink.label})
-                            <input readOnly value={generatedPaymentLink.checkoutUrl} onFocus={(event) => event.target.select()} />
-                          </label>
-                        ) : null}
                         {terminalReader?.status !== "online" ? (
                           <p className="muted small-text">Connect the office Terminal, then refresh its status above to collect payment.</p>
                         ) : null}

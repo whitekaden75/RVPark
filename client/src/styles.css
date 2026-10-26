@@ -2119,6 +2119,43 @@ select option {
   flex: 1 1 180px;
 }
 
+.monthly-payment-link-area,
+.monthly-payment-link-result {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.monthly-payment-link-feedback:empty {
+  display: none;
+}
+
+.monthly-payment-link-result {
+  padding: 14px;
+  border: 1px solid rgba(36, 74, 49, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.monthly-payment-link-result input {
+  width: 100%;
+  min-width: 0;
+  font-size: 0.95rem;
+}
+
+.monthly-payment-link-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.monthly-payment-link-loading .terminal-payment-spinner {
+  width: 18px;
+  height: 18px;
+  flex-basis: 18px;
+  border-width: 2px;
+}
+
 .monthly-rate-defaults,
 .monthly-settings-grid {
   display: grid;
