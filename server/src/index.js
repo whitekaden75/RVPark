@@ -4108,27 +4108,29 @@ async function fetchReservationList(queryable) {
     loadBookedPricing(queryable, reservationIds)
   ]);
 
+  // PostgreSQL int4 IDs are numbers; bigint foreign keys are strings.
+  // Normalize both sides or schedule summaries silently lose payment history.
   const paymentEventsByReservationId = new Map();
   for (const row of paymentEventsResult.rows) {
     const reservationPaymentEvents =
-      paymentEventsByReservationId.get(row.reservation_id) || [];
+      paymentEventsByReservationId.get(String(row.reservation_id)) || [];
     reservationPaymentEvents.push(row);
-    paymentEventsByReservationId.set(row.reservation_id, reservationPaymentEvents);
+    paymentEventsByReservationId.set(String(row.reservation_id), reservationPaymentEvents);
   }
 
   const activeStaysByReservationId = new Map();
   for (const row of activeStaysResult.rows) {
-    const reservationStays = activeStaysByReservationId.get(row.reservation_id) || [];
+    const reservationStays = activeStaysByReservationId.get(String(row.reservation_id)) || [];
     reservationStays.push(row);
-    activeStaysByReservationId.set(row.reservation_id, reservationStays);
+    activeStaysByReservationId.set(String(row.reservation_id), reservationStays);
   }
 
   const checkInsByReservationId = new Map();
   for (const row of checkInsResult.rows) {
     const reservationCheckIns =
-      checkInsByReservationId.get(Number(row.reservation_id)) || [];
+      checkInsByReservationId.get(String(row.reservation_id)) || [];
     reservationCheckIns.push(row);
-    checkInsByReservationId.set(Number(row.reservation_id), reservationCheckIns);
+    checkInsByReservationId.set(String(row.reservation_id), reservationCheckIns);
   }
 
   const canceledSiteIds = [
@@ -4161,7 +4163,7 @@ async function fetchReservationList(queryable) {
 
   return reservationRows.map((reservationRow) => {
     const paymentEventRows =
-      paymentEventsByReservationId.get(reservationRow.id) || [];
+      paymentEventsByReservationId.get(String(reservationRow.id)) || [];
     let stayRows = [];
 
     if (reservationRow.status === "canceled") {
@@ -4189,7 +4191,7 @@ async function fetchReservationList(queryable) {
         })
         .filter(Boolean);
     } else {
-      stayRows = activeStaysByReservationId.get(reservationRow.id) || [];
+      stayRows = activeStaysByReservationId.get(String(reservationRow.id)) || [];
     }
 
     return buildReservationDetailsFromParts(
@@ -4197,7 +4199,7 @@ async function fetchReservationList(queryable) {
       paymentEventRows,
       stayRows,
       pricingLookup,
-      checkInsByReservationId.get(Number(reservationRow.id)) || [],
+      checkInsByReservationId.get(String(reservationRow.id)) || [],
       bookedPricing.get(Number(reservationRow.id))
     );
   });

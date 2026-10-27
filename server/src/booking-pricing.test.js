@@ -443,3 +443,51 @@ test('the terminal accepts the entered amount above the calculated balance and w
   assert.equal((await send('30.00')).code, 400);
   assert.equal(intents.length, 2);
 });
+
+test('schedule attaches mixed bank/card payments when PostgreSQL returns integer reservation IDs and bigint event IDs', async () => {
+  const source = readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+  const declarations = ['nightsBetween', 'isOpenEndedSegment', 'fetchReservationDetails', 'buildReservationDetailsFromParts', 'fetchReservationList'].map(name => {
+    const start = source.includes(`async function ${name}(`) ? source.indexOf(`async function ${name}(`) : source.indexOf(`function ${name}(`);
+    return source.slice(start, source.indexOf('\n}\n', start) + 3);
+  });
+  for (const reservationId of [42, '42']) for (const childId of [42, '42']) {
+    for (const scenario of [
+      { paid: 152.99, method: 'bank', events: [[77.99, 'card'], [75, 'bank']], due: 0 },
+      { paid: 152.99, method: 'card', events: [[75, 'bank'], [77.99, 'card']], due: 0 },
+      { paid: 100, method: 'card', events: [[77.99, 'card'], [22.01, 'card']], due: 55.98 },
+    ]) {
+      const row = { ...reservation, id: reservationId, status: 'active', payment_method: scenario.method, amount_paid: scenario.paid };
+      const events = scenario.events.map(([amount, type], index) => ({ id: String(index + 1), reservation_id: childId, amount: String(amount), note: `Payment. Price type: ${type}`, recorded_at: `2026-10-0${index + 1}T18:00:00Z` }));
+      const db = { query: async sql => {
+        let rows;
+        if (sql.includes('FROM reservations r')) rows = [row];
+        else if (sql.includes('FROM reservation_payment_events')) rows = [...events].reverse();
+        else if (sql.includes('FROM reservation_check_ins')) rows = [];
+        else if (sql.includes('FROM reservation_site_stays rss')) rows = [{ ...stay, reservation_id: childId, id: 10 }];
+        else if (sql.includes('FROM public_booking_checkouts')) rows = [booking()];
+        else assert.fail(`Unexpected loader query: ${sql}`);
+        return { rowCount: rows.length, rows };
+      } };
+      const loaders = vm.runInNewContext(`${declarations.join('\n')}\n({fetchReservationDetails,fetchReservationList})`, {
+        applyBookedPricing, loadBookedPricing, buildPricingRuleLookup, getPricingForSiteAndNights,
+        sumReservationTotals, buildBillingSummary, applyBalanceWaiver,
+        toPriceNumber: value => value == null ? null : Number(value), serializeReservationCheckIn: value => value || null,
+        loadPricingRules: async () => [{site_category:'off_river_small_rig',number_of_days:1,normal_price:65,discount_price:55}],
+        openEndedStayDate:'9999-12-31',
+      });
+      const detail = await loaders.fetchReservationDetails(db, reservationId);
+      const [schedule] = await loaders.fetchReservationList(db);
+      assert.equal(detail.cardRemainingBalance, scenario.due);
+      assert.equal(schedule.paymentEvents.length, 2, `Schedule discarded payments for reservation ${typeof reservationId} and child ${typeof childId}`);
+      assert.equal(schedule.siteStays.length, 1);
+      assert.equal(schedule.cardRemainingBalance, detail.cardRemainingBalance);
+      assert.equal(schedule.bankRemainingBalance, detail.bankRemainingBalance);
+      assert.equal(schedule.unpaidStayNights, detail.unpaidStayNights);
+      if (scenario.due === 0) {
+        assert.equal(schedule.remainingBalance, 0);
+        assert.equal(schedule.unpaidStayNights, 0);
+        assert.equal(schedule.cardPaymentOptions.length, 0);
+      }
+    }
+  }
+});

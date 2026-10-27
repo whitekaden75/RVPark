@@ -7,6 +7,7 @@ import OpenAI from "openai";
 import { extractBookkeepingDocument } from "./bookkeeping-extraction.js";
 import { loadBookkeepingAudit, statementAudit } from "./bookkeeping-audit.js";
 import { bookkeepingRoutes } from "./bookkeeping-http.js";
+import { bookkeepingStorageConfig, bookkeepingStorageErrorMessage, storageCopySource } from "./bookkeeping-storage.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -16,16 +17,6 @@ const upload = multer({
     callback(null, allowed.has(file.mimetype));
   }
 });
-
-function createStorageClient() {
-  if (!process.env.RAILWAY_BUCKET_ENDPOINT || !process.env.RAILWAY_BUCKET_ACCESS_KEY || !process.env.RAILWAY_BUCKET_SECRET_KEY) return null;
-  return new S3Client({
-    endpoint: process.env.RAILWAY_BUCKET_ENDPOINT,
-    region: process.env.RAILWAY_BUCKET_REGION || "auto",
-    forcePathStyle: true,
-    credentials: { accessKeyId: process.env.RAILWAY_BUCKET_ACCESS_KEY, secretAccessKey: process.env.RAILWAY_BUCKET_SECRET_KEY }
-  });
-}
 
 function normalizeTransactionType(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/[ -]+/g, "_");
@@ -55,8 +46,8 @@ async function extractDocument(file, note = "", categories = []) {
 
 export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   const routes = bookkeepingRoutes(app);
-  const bucket = process.env.RAILWAY_BUCKET_NAME || process.env.RAILWAY_BUCKET;
-  const storage = createStorageClient();
+  const { bucket, options: storageOptions, error: storageConfigError } = bookkeepingStorageConfig();
+  const storage = storageOptions ? new S3Client(storageOptions) : null;
 
   routes.get("/api/bookkeeping/categories", async (_req, res) => {
     const result = await pool.query("SELECT id, name, category_type FROM bookkeeping_categories WHERE is_active = TRUE ORDER BY category_type, name");
@@ -79,7 +70,7 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
 
   routes.post("/api/bookkeeping/documents", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ message: "Upload a PDF, CSV, JPG, PNG, or WEBP file." });
-    if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
+    if (!storage || !bucket) return res.status(503).json({ message: storageConfigError });
     const hash = createHash("sha256").update(req.file.buffer).digest("hex");
     const existing = await pool.query("SELECT id, processing_status FROM bookkeeping_documents WHERE sha256_hash = $1", [hash]);
     if (existing.rowCount) return res.status(409).json({ message: "This document was already uploaded.", document: existing.rows[0] });
@@ -99,7 +90,7 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   });
 
   routes.get("/api/bookkeeping/documents/:id/download", async (req, res) => {
-    if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
+    if (!storage || !bucket) return res.status(503).json({ message: storageConfigError });
     const result = await pool.query("SELECT storage_key, original_filename, mime_type FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
     if (!result.rowCount) return res.status(404).json({ message: "Document not found." });
     const url = await getSignedUrl(storage, new GetObjectCommand({ Bucket: bucket, Key: result.rows[0].storage_key, ResponseContentDisposition: `inline; filename=\"${result.rows[0].original_filename.replaceAll('"', '')}\"` }), { expiresIn: 900 });
@@ -112,7 +103,7 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     if (!["uploaded", "queued", "failed", "rejected", "needs_review"].includes(result.rows[0].processing_status)) {
       return res.status(409).json({ message: "Processed documents cannot be deleted from here." });
     }
-    if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
+    if (!storage || !bucket) return res.status(503).json({ message: storageConfigError });
     const records = await pool.query('SELECT id FROM bookkeeping_transactions WHERE document_id=$1 LIMIT 1',[req.params.id]);
     if(records.rowCount) return res.status(409).json({message:'Preserve processed source documents. Exclude individual transactions from the review panel instead.'});
     await pool.query("DELETE FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
@@ -122,10 +113,11 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   });
 
   async function processDocument(req, res) {
-    if (!storage || !bucket) return res.status(503).json({ message: "Railway Bucket storage is not configured." });
+    if (!storage || !bucket) return res.status(503).json({ message: storageConfigError });
     const client = await pool.connect();
     let claimed = false;
     let processingLockHeld = false;
+    let processingStage = 'claim';
     try {
       const lockResult = await client.query("SELECT pg_try_advisory_lock(2147483001) AS locked");
       if (!lockResult.rows[0].locked) {
@@ -148,9 +140,11 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
         await client.query("UPDATE bookkeeping_documents SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{note}', to_jsonb($2::text)) WHERE id = $1", [document.id, adminNote]);
         document.metadata = { ...(document.metadata || {}), note: adminNote };
       }
+      processingStage = 'download';
       const storageObject = await storage.send(new GetObjectCommand({ Bucket: bucket, Key: document.storage_key }));
       const chunks = [];
       for await (const chunk of storageObject.Body) chunks.push(chunk);
+      processingStage = 'extraction';
       const categories = await client.query("SELECT name, category_type FROM bookkeeping_categories WHERE is_active = TRUE ORDER BY category_type, name");
       const extracted = await extractDocument({ buffer: Buffer.concat(chunks), mimetype: document.mime_type, originalname: document.original_filename }, document.metadata?.note || "", categories.rows);
       const firstTransaction = Array.isArray(extracted.transactions) ? extracted.transactions[0] : null;
@@ -158,8 +152,10 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
       const renamedFilename = `${safeFilenamePart(extracted.documentType, "document")}-${safeFilenamePart(firstTransaction?.vendor, "unknown-vendor")}-${safeFilenamePart(firstTransaction?.transactionDate, new Date().toISOString().slice(0, 10))}${extension}`;
       const renamedKey = `${document.storage_key.slice(0, document.storage_key.lastIndexOf("/") + 1)}${document.id}-${renamedFilename}`;
       if (renamedKey !== document.storage_key) {
-        await storage.send(new CopyObjectCommand({ Bucket: bucket, CopySource: `${bucket}/${document.storage_key}`, Key: renamedKey, ContentType: document.mime_type, MetadataDirective: "REPLACE" }));
+        processingStage = 'copy';
+        await storage.send(new CopyObjectCommand({ Bucket: bucket, CopySource: storageCopySource(bucket, document.storage_key), Key: renamedKey, ContentType: document.mime_type, MetadataDirective: "REPLACE" }));
       }
+      processingStage = 'save';
       await client.query("BEGIN");
       await client.query("INSERT INTO bookkeeping_extractions (document_id, model, extracted_json, confidence) VALUES ($1,$2,$3,$4)", [document.id, process.env.OPENAI_BOOKKEEPING_MODEL || "gpt-5", extracted, extracted.confidence || null]);
       for (const item of Array.isArray(extracted.transactions) ? extracted.transactions : []) {
@@ -173,11 +169,19 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
       return res.json({ extracted });
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
+      const message = ['download', 'copy'].includes(processingStage)
+        ? bookkeepingStorageErrorMessage(error, processingStage) : error.message;
+      if (['download', 'copy'].includes(processingStage)) {
+        console.warn('Bookkeeping storage request failed', {
+          documentId: req.params.id, operation: processingStage, code: error.name || error.code,
+          statusCode: error.$metadata?.httpStatusCode, requestId: error.$metadata?.requestId
+        });
+      }
       if (claimed) {
-        await pool.query("UPDATE bookkeeping_documents SET processing_status='failed', error_message=$2,metadata=COALESCE(metadata,'{}'::jsonb) || '{\"ai_queued\":false}'::jsonb WHERE id=$1", [req.params.id, error.message]);
+        await pool.query("UPDATE bookkeeping_documents SET processing_status='failed', error_message=$2,metadata=COALESCE(metadata,'{}'::jsonb) || '{\"ai_queued\":false}'::jsonb WHERE id=$1", [req.params.id, message]);
         notify({ reason: "bookkeeping_changed" });
       }
-      return res.status(500).json({ message: error.message });
+      return res.status(500).json({ message });
     } finally {
       if (processingLockHeld) await client.query("SELECT pg_advisory_unlock(2147483001)").catch(() => {});
       client.release();

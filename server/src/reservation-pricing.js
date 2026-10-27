@@ -186,6 +186,18 @@ export function calculatePaidChargeableNights({
   let paidNights = 0;
   let partialPaymentCredit = 0;
 
+  // Older imported payments do not always record a bank/card price type. If
+  // their saved aggregate exactly pays a full known total, use that same price
+  // for every untyped fragment. Guessing each fragment independently can invent
+  // card fees even though the stay is fully paid. Explicit price types win.
+  const hasRecordedPriceType = (paymentEvents || []).some(event => getPaymentEventPriceType(event));
+  const matchesFullTotal = prices => prices.length === totalChargeableNights &&
+    prices.every(price => Number.isFinite(Number(price)) && Number(price) > 0) &&
+    Math.abs(roundCurrency(prices.reduce((total, price) => total + Number(price), 0)) - unallocatedPaidAmount) < 0.001;
+  const settledUntypedPriceType = !hasRecordedPriceType
+    ? matchesFullTotal(bankNightlyPrices) ? 'bank' : matchesFullTotal(cardNightlyPrices) ? 'card' : ''
+    : '';
+
   const allocateAmountToNights = (amount, preferredPriceType = "") => {
     partialPaymentCredit = roundCurrency(
       partialPaymentCredit + Math.max(Number(amount) || 0, 0)
@@ -242,13 +254,13 @@ export function calculatePaidChargeableNights({
 
     allocateAmountToNights(
       eventAmount,
-      getPaymentEventPriceType(paymentEvent)
+      getPaymentEventPriceType(paymentEvent) || settledUntypedPriceType
     );
     unallocatedPaidAmount -= eventAmount;
   }
 
   if (unallocatedPaidAmount > 0) {
-    allocateAmountToNights(unallocatedPaidAmount);
+    allocateAmountToNights(unallocatedPaidAmount, settledUntypedPriceType);
   }
 
   return {
