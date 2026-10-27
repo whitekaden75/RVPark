@@ -1,4 +1,5 @@
 import { bookkeepingRoutes } from './bookkeeping-http.js';
+import { registerBookkeepingAuditRoutes } from './bookkeeping-audit.js';
 const pacificDate = value => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
 export const cents = value => Math.round(Number(value || 0) * 100);
 const money = value => Math.round(value) / 100;
@@ -91,6 +92,7 @@ export function csvReport(entries) {
 
 export function registerFinanceRoutes(app, { pool, stripe, notify = () => {} }) {
   const routes = bookkeepingRoutes(app);
+  registerBookkeepingAuditRoutes(app, { pool, notify });
   const mode = !String(process.env.STRIPE_SECRET_KEY || '').includes('_test_');
   const errorResponse = (res, error) => res.status(['42P01','42703'].includes(error.code) ? 503 : ['23505','23514','23503'].includes(error.code) ? 409 : error.statusCode || 500).json({ message: ['42P01','42703'].includes(error.code) ? 'Run sql/2026-10-06_bookkeeping_finance.sql on the server database to enable the finance dashboard.' : error.code === '23505' ? 'This record has already been matched or used to pay another bill. Refresh and try again.' : error.message });
 

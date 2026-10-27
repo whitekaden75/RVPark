@@ -5,7 +5,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from "multer";
 import OpenAI from "openai";
 import { extractBookkeepingDocument } from "./bookkeeping-extraction.js";
-import { reconcileTransactions } from "./bookkeeping-reconciliation.js";
+import { loadBookkeepingAudit, statementAudit } from "./bookkeeping-audit.js";
 import { bookkeepingRoutes } from "./bookkeeping-http.js";
 
 const upload = multer({
@@ -237,30 +237,23 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     res.json({transaction:result.rows[0]});
   });
 
-  routes.post("/api/bookkeeping/documents/:id/reconcile", async (req, res) => {
-    const statement = await pool.query("SELECT id, document_type FROM bookkeeping_documents WHERE id=$1", [req.params.id]);
-    if (!statement.rowCount) return res.status(404).json({message:"Statement not found."});
-    if (!["bank_statement","credit_card_statement"].includes(statement.rows[0].document_type)) return res.status(400).json({message:"Choose a bank or credit-card statement."});
-    const statements = await pool.query("SELECT * FROM bookkeeping_transactions WHERE document_id=$1 AND status<>'void' ORDER BY transaction_date,id", [req.params.id]);
-    if (!statements.rowCount) return res.status(400).json({message:"Process this statement first, or choose a statement with transactions."});
-    const receipts = await pool.query(`SELECT t.*,d.original_filename AS source_filename FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id=t.document_id WHERE (d.document_type IN ('receipt','invoice') OR t.document_id IS NULL) AND t.document_id IS DISTINCT FROM $1::bigint AND t.status<>'void' AND t.transaction_date BETWEEN (SELECT min(transaction_date)-3 FROM bookkeeping_transactions WHERE document_id=$1 AND status<>'void') AND (SELECT max(transaction_date)+3 FROM bookkeeping_transactions WHERE document_id=$1 AND status<>'void') ORDER BY t.transaction_date,t.id`, [req.params.id]);
-    const report = reconcileTransactions(statements.rows,receipts.rows);
+  async function compareStatement(req, res) {
     const client = await pool.connect();
     try {
-      await client.query("BEGIN");
-      const run = await client.query("INSERT INTO bookkeeping_reconciliation_runs (statement_document_id,created_by_admin_user_id,summary_json) VALUES ($1,$2,$3) RETURNING id", [req.params.id,req.adminUser.id,JSON.stringify({...report,matchedCount:report.matched.length})]);
-      for (const match of report.consolidated) await client.query("INSERT INTO bookkeeping_reconciliation_matches (run_id,statement_transaction_id,receipt_transaction_id,match_status,match_score,details) VALUES ($1,$2,$3,$4,$5,$6)",[run.rows[0].id,match.statementTransaction.id,match.receiptTransaction?.id || null,match.status,match.score,JSON.stringify(match.details)]);
-      await client.query("COMMIT");
-      notify({reason:"bookkeeping_changed"});
-      return res.json({runId:run.rows[0].id,...report});
-    } catch(error) { await client.query("ROLLBACK"); return res.status(500).json({message:error.message}); } finally {client.release();}
-  });
-
-  routes.get("/api/bookkeeping/documents/:id/reconcile", async (req,res) => {
-    const result = await pool.query("SELECT id,created_at,summary_json FROM bookkeeping_reconciliation_runs WHERE statement_document_id=$1 ORDER BY id DESC LIMIT 1",[req.params.id]);
-    const run = result.rows[0];
-    res.json({report:run && Array.isArray(run.summary_json?.matched) ? {runId:run.id,createdAt:run.created_at,...run.summary_json} : null});
-  });
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const document = await client.query('SELECT id,document_type FROM bookkeeping_documents WHERE id=$1', [req.params.id]);
+      if (!document.rowCount) throw Object.assign(new Error('Statement not found.'), { statusCode: 404 });
+      if (!['bank_statement','credit_card_statement'].includes(document.rows[0].document_type)) throw Object.assign(new Error('Choose a bank or credit-card statement.'), { statusCode: 400 });
+      const transactions = await client.query('SELECT * FROM bookkeeping_transactions WHERE document_id=$1 ORDER BY transaction_date,id', [req.params.id]);
+      if (!transactions.rowCount) throw Object.assign(new Error('Process this statement first.'), { statusCode: 400 });
+      const report = statementAudit(await loadBookkeepingAudit(client), req.params.id, transactions.rows);
+      await client.query('COMMIT');
+      res.json(req.method === 'GET' ? { report } : report);
+    } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+    finally { client.release(); }
+  }
+  routes.post('/api/bookkeeping/documents/:id/reconcile', compareStatement);
+  routes.get('/api/bookkeeping/documents/:id/reconcile', compareStatement);
 
   routes.patch("/api/bookkeeping/transactions/:id", async (req, res) => {
     const body = req.body || {};
