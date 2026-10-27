@@ -232,11 +232,11 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
     const requestedLimit = Number(req.query.limit);
     const limit = Number.isInteger(requestedLimit) ? Math.max(1,Math.min(5000,requestedLimit)) : 500;
     const order = requestedStatus === 'pending' ? 't.id DESC' : 't.transaction_date DESC NULLS LAST, t.id DESC';
-    const result = await pool.query(`SELECT t.*, d.original_filename AS source_filename FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id = t.document_id WHERE ${statusClause} ORDER BY ${order} LIMIT ${limit}`, params);
+    const result = await pool.query(`SELECT t.*, d.original_filename AS source_filename, d.document_type AS source_document_type FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id = t.document_id WHERE ${statusClause} ORDER BY ${order} LIMIT ${limit}`, params);
     return res.json({ transactions: result.rows });
   });
   routes.get('/api/bookkeeping/transactions/:id', async(req,res) => {
-    const result = await pool.query('SELECT t.*,d.original_filename AS source_filename FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id=t.document_id WHERE t.id=$1',[req.params.id]);
+    const result = await pool.query('SELECT t.*,d.original_filename AS source_filename,d.document_type AS source_document_type FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id=t.document_id WHERE t.id=$1',[req.params.id]);
     if(!result.rowCount) return res.status(404).json({message:'Transaction not found.'});
     res.json({transaction:result.rows[0]});
   });

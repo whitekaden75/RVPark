@@ -39,7 +39,7 @@ export function buildFinanceReport({ stripeRows = [], officeRows = [], transacti
   }
   for (const row of transactions) {
     if (row.status !== 'approved' || (row.currency || 'USD').toUpperCase() !== 'USD') continue;
-    entries.push({ id: `document:${row.id}`, transactionId: row.id, documentId: row.document_id, source: 'document', date: isoDate(row.transaction_date), vendor: row.vendor || 'Manual entry', description: row.description || '', type: row.transaction_type, amount: Math.abs(Number(row.total || 0)), fees: 0, category: row.category || 'Uncategorized', status: row.status });
+    entries.push({ id: `document:${row.id}`, transactionId: row.id, documentId: row.document_id, documentType: row.source_document_type || null, sourceFilename: row.source_filename || null, source: 'document', date: isoDate(row.transaction_date), vendor: row.vendor || 'Manual entry', description: row.description || '', type: row.transaction_type, amount: Math.abs(Number(row.total || 0)), fees: 0, category: row.category || 'Uncategorized', status: row.status });
   }
   const summary = { stripeGross: 0, officeRevenue: 0, otherRevenue: 0, refunds: 0, fees: 0, expenses: 0, disputes: 0, payouts: 0 };
   const months = new Map();
@@ -101,7 +101,7 @@ export function registerFinanceRoutes(app, { pool, stripe, notify = () => {} }) 
     const [stripeResult, officeResult, documentResult, tasks, sync, bills] = await Promise.all([
       pool.query(`SELECT * FROM bookkeeping_stripe_activity WHERE livemode = $3 AND occurred_at >= ($1::date::timestamp AT TIME ZONE 'America/Los_Angeles') AND occurred_at < (($2::date + 1)::timestamp AT TIME ZONE 'America/Los_Angeles')`, [from, to, mode]),
       pool.query(`SELECT e.*, concat(c.first_name, ' ', c.last_name) AS guest_name FROM reservation_payment_events e LEFT JOIN reservations r ON r.id=e.reservation_id LEFT JOIN customers c ON c.id=r.customer_id WHERE e.payment_source <> 'stripe' AND e.stripe_payment_record_id IS NULL AND e.recorded_at >= ($1::date::timestamp AT TIME ZONE 'America/Los_Angeles') AND e.recorded_at < (($2::date + 1)::timestamp AT TIME ZONE 'America/Los_Angeles')`, [from, to]),
-      pool.query(`SELECT * FROM bookkeeping_transactions WHERE status = 'approved' AND transaction_date BETWEEN $1 AND $2`, [from, to]),
+      pool.query(`SELECT t.*, d.document_type AS source_document_type, d.original_filename AS source_filename FROM bookkeeping_transactions t LEFT JOIN bookkeeping_documents d ON d.id=t.document_id WHERE t.status = 'approved' AND t.transaction_date BETWEEN $1 AND $2`, [from, to]),
       pool.query(`SELECT (SELECT count(*) FROM bookkeeping_transactions WHERE status='pending') AS review_count, (SELECT count(*) FROM bookkeeping_transactions WHERE status='approved' AND category IS NULL) AS uncategorized_count, (SELECT count(*) FROM bookkeeping_documents WHERE processing_status IN ('uploaded','queued','failed')) AS document_count, (SELECT count(*) FROM bookkeeping_documents WHERE processing_status='processing') AS processing_count, (SELECT count(*) FROM bookkeeping_consolidations) AS consolidated_count`),
       pool.query('SELECT * FROM bookkeeping_finance_sync WHERE id = true AND livemode=$1',[mode]),
       pool.query(`SELECT b.*, d.original_filename AS source_filename FROM bookkeeping_bills b LEFT JOIN bookkeeping_documents d ON d.id=b.document_id WHERE b.status <> 'void' ORDER BY b.status DESC, b.due_date, b.id`)

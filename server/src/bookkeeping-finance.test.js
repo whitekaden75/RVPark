@@ -5,6 +5,19 @@ import { reconcileTransactions } from './bookkeeping-reconciliation.js';
 
 const stripe = (id,amount,fee,type='charge') => ({id,amount_cents:amount,fee_cents:fee,net_cents:amount-fee,reporting_category:type,activity_type:type,currency:'usd',occurred_at:'2026-10-06T20:00:00Z',balance_status:'available'});
 const tx = (id,overrides={}) => ({id,status:'approved',transaction_date:'2026-10-06',vendor:'Chevron',transaction_type:'expense',total:'40.00',currency:'USD',category:'Fuel',...overrides});
+test('approved transactions retain their document provenance without changing ledger sources or totals',()=>{
+  const report=buildFinanceReport({transactions:[
+    tx(1,{document_id:20,source_document_type:'bank_statement',source_filename:'October bank statement.pdf'}),
+    tx(2,{document_id:21,source_document_type:'receipt',source_filename:'Fuel receipt.jpg'}),
+    tx(3,{document_id:null})
+  ]});
+  const statement=report.entries.find(row=>row.transactionId===1);
+  assert.equal(statement.documentType,'bank_statement');assert.equal(statement.sourceFilename,'October bank statement.pdf');
+  assert.equal(report.entries.find(row=>row.transactionId===2).documentType,'receipt');
+  assert.equal(report.entries.find(row=>row.transactionId===3).documentType,null);
+  assert.ok(report.entries.every(row=>row.source==='document'));
+  assert.equal(report.summary.totalExpenses,120);
+});
 test('Stripe gross, refunds, fees and payouts are distinct; pending expenses are excluded',()=>{
   const report=buildFinanceReport({stripeRows:[stripe('charge',10000,300),stripe('refund',-2000,0,'refund'),stripe('payout',-7700,0,'payout')],officeRows:[{id:1,amount:25,recorded_at:'2026-10-06T20:00:00Z'}],transactions:[tx(1),tx(2,{status:'pending',total:100}),tx(3,{transaction_type:'income',total:10})]});
   assert.equal(report.summary.grossCollections,135);assert.equal(report.summary.netRevenue,115);
