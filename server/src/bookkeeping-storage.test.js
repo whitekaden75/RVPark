@@ -75,7 +75,7 @@ test('queue failures preserve the failed document, identify the storage operatio
     };
     const pool={query,connect:async()=>({query,release(){}})};
     const app=Object.fromEntries(['get','post','patch','delete'].map(method=>[method,(path,...handlers)=>routes.set(`${method} ${path}`,handlers.at(-1))]));
-    const context=vm.createContext({Buffer,process:{env:{}},bookkeepingRoutes:()=>app,
+    const context=vm.createContext({Buffer,process:{env:{}},bookkeepingRoutes:()=>app,registerDocumentEntryResetRoutes:()=>{},
       bookkeepingStorageConfig:()=>bookkeepingStorageConfig(env),bookkeepingStorageErrorMessage,storageCopySource,
       upload:{single:()=>()=>{}},GetObjectCommand,CopyObjectCommand,PutObjectCommand,DeleteObjectCommand,
       setInterval:()=>({unref(){}}),console:{warn:(...args)=>logs.push(args)},

@@ -8,6 +8,7 @@ import { extractBookkeepingDocument } from "./bookkeeping-extraction.js";
 import { loadBookkeepingAudit, statementAudit } from "./bookkeeping-audit.js";
 import { bookkeepingRoutes } from "./bookkeeping-http.js";
 import { bookkeepingStorageConfig, bookkeepingStorageErrorMessage, storageCopySource } from "./bookkeeping-storage.js";
+import { registerDocumentEntryResetRoutes } from "./bookkeeping-document-reset.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -46,6 +47,7 @@ async function extractDocument(file, note = "", categories = []) {
 
 export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   const routes = bookkeepingRoutes(app);
+  registerDocumentEntryResetRoutes(app, { pool, notify });
   const { bucket, options: storageOptions, error: storageConfigError } = bookkeepingStorageConfig();
   const storage = storageOptions ? new S3Client(storageOptions) : null;
 
@@ -85,8 +87,32 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   });
 
   routes.get("/api/bookkeeping/documents", async (_req, res) => {
-    const result = await pool.query("SELECT * FROM bookkeeping_documents ORDER BY uploaded_at DESC LIMIT 200");
+    const result = await pool.query(`SELECT d.*,COALESCE(counts.transaction_count,0) AS transaction_count
+      FROM (SELECT * FROM bookkeeping_documents ORDER BY uploaded_at DESC,id DESC LIMIT 200) d
+      LEFT JOIN (SELECT t.document_id,count(*)::integer AS transaction_count FROM bookkeeping_transactions t
+        WHERE t.status<>'void' GROUP BY t.document_id) counts ON counts.document_id=d.id
+      ORDER BY d.uploaded_at DESC,d.id DESC`);
     return res.json({ documents: result.rows });
+  });
+
+  routes.get('/api/bookkeeping/documents/:id/transactions', async (req, res) => {
+    if (!/^[1-9]\d*$/.test(String(req.params.id || ''))) return res.status(400).json({ message: 'Choose a valid document.' });
+    const client = await pool.connect();
+    try {
+      // Read the processing state and every saved entry from the same snapshot.
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const document = await client.query(`SELECT id,original_filename,document_type,processing_status,processed_at,error_message,metadata
+        FROM bookkeeping_documents WHERE id=$1`, [req.params.id]);
+      if (!document.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ message: 'Document not found.' });
+      }
+      const transactions = await client.query(`SELECT t.*,t.transaction_date::text FROM bookkeeping_transactions t
+        WHERE t.document_id=$1 ORDER BY t.transaction_date ASC NULLS LAST,t.id ASC`, [req.params.id]);
+      await client.query('COMMIT');
+      return res.json({ document: document.rows[0], transactions: transactions.rows });
+    } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+    finally { client.release(); }
   });
 
   routes.get("/api/bookkeeping/documents/:id/download", async (req, res) => {
