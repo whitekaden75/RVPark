@@ -10,6 +10,7 @@ import { bookkeepingRoutes } from "./bookkeeping-http.js";
 import { bookkeepingStorageConfig, bookkeepingStorageErrorMessage, storageCopySource } from "./bookkeeping-storage.js";
 import { registerDocumentEntryResetRoutes } from "./bookkeeping-document-reset.js";
 import { deleteBookkeepingDocument } from "./bookkeeping-document-deletion.js";
+import { documentApprovalPreviews, approveDocumentTransactions } from "./bookkeeping-document-approval.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -120,9 +121,17 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
       const transactions = await client.query(`SELECT t.*,t.transaction_date::text FROM bookkeeping_transactions t
         WHERE t.document_id=$1 ORDER BY t.transaction_date ASC NULLS LAST,t.id ASC`, [req.params.id]);
       await client.query('COMMIT');
-      return res.json({ document: document.rows[0], transactions: transactions.rows });
+      return res.json({ document: document.rows[0], transactions: transactions.rows,
+        approvalPreviews: documentApprovalPreviews(document.rows[0], transactions.rows) });
     } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
     finally { client.release(); }
+  });
+
+  routes.post('/api/bookkeeping/documents/:id/approve-transactions', async (req, res) => {
+    const result = await approveDocumentTransactions({ pool, documentId: req.params.id,
+      transactionType: req.body?.transactionType, snapshot: req.body?.snapshot, adminUserId: req.adminUser.id });
+    notify({ reason: 'bookkeeping_changed' });
+    return res.json(result);
   });
 
   routes.get("/api/bookkeeping/documents/:id/download", async (req, res) => {
