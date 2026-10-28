@@ -33,3 +33,17 @@
 .fin-new-statement-entry{padding:12px;background:#f5f8f5;border:1px solid #d5e4d8;border-radius:8px;margin-bottom:14px}
 @container (max-width:350px){.fin-inline-review .fin-form-grid{grid-template-columns:minmax(0,1fr)}.fin-inline-review .fin-span-2{grid-column:span 1}}
 @container (min-width:600px){.fin-inline-review .fin-form-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+
+.fin-lodging-method{font-size:12px;line-height:1.65;color:var(--fin-muted);margin:0 0 18px!important;max-width:960px}
+.fin-lodging-table{width:100%;border-collapse:collapse;font-size:12px;text-align:left}
+.fin-lodging-table th,.fin-lodging-table td{padding:12px 10px;border-bottom:1px solid var(--fin-line);vertical-align:top}
+.fin-lodging-table th{font-size:10px;background:#f5f8f5;white-space:nowrap;color:#596a61}
+.fin-lodging-table small{display:block;font-size:10px;color:var(--fin-muted);line-height:1.5;margin-top:5px;white-space:normal}
+.fin-lodging-table td{min-width:95px}.fin-lodging-table td:first-child{min-width:150px}
+.fin-lodging-table td:last-child{min-width:210px;max-width:350px}
+.fin-lodging-detail-controls{margin-top:26px;align-items:flex-start}
+.fin-lodging-detail-controls>.fin-actions{width:100%;margin-bottom:8px}
+.fin-lodging-table .fin-lodging-issue{color:#946b22}
+.fin-lodging-rent{min-width:180px;margin-top:10px}
+.fin-lodging-assignments td:last-child{min-width:280px}
+.fin-lodging-panel .fin-filter-row>label:not(.fin-search){min-width:220px}

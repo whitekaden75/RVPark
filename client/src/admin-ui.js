@@ -27,7 +27,6 @@ export const adminPageGroups = [
     label: "Finance & Setup",
     pages: [
       { key: "monthly", label: "Monthly" },
-      { key: "yearly", label: "Yearly" },
       { key: "bookkeeping", label: "Bookkeeping" },
       { key: "sites", label: "Sites" },
     ],
@@ -160,3 +159,15 @@ export function getAdminOverview(reservations, sites, today) {
     cashFollowUps: getAfterHoursCashFollowUps(reservations, today),
   };
 }
+
+// Legacy yearly/open-ended accounts use the same monthly office workflow.
+export function isMonthlyGuest(reservation) {
+  if (!reservation || reservation.status === 'canceled' || reservation.merged_into_reservation_id) return false;
+  const stays=reservation.siteStays || [];
+  return Boolean(reservation.monthly_classification || reservation.reservation_term === 'yearly' ||
+    reservation.effectiveBillingMode === 'monthly' || reservation.billing_mode === 'monthly' ||
+    stays.some(stay => stay.leave_date === '9999-12-31') ||
+    stays.reduce((sum,stay) => sum + Math.max(Number(stay.numberOfNights ?? (Date.parse(stay.leave_date)-Date.parse(stay.arrival_date))/86400000) || 0,0),0)>=28);
+}
+
+export const normalizeAdminPage = value => value === 'yearly' ? 'monthly' : value;

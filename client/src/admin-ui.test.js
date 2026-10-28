@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adminPages, getSiteOptions, updateStayField, getAdminOverview, getPaymentFollowUps, getAfterHoursCashFollowUps, sameBookingGuest } from "./admin-ui.js";
+import { adminPages, getSiteOptions, updateStayField, getAdminOverview, getPaymentFollowUps, getAfterHoursCashFollowUps, sameBookingGuest, isMonthlyGuest, normalizeAdminPage } from "./admin-ui.js";
 
 const sites = [
   { id: 1, site_number: "10" },
@@ -37,10 +37,21 @@ test("moving arrival past departure clears the invalid range; valid departures s
 });
 
 test("all admin destinations can be opened by URL", () => {
-  for (const key of ["overview", "reservation", "availability", "schedule", "history", "monthly", "yearly", "bookkeeping", "sites", "checkin", "messages"]) {
+  for (const key of ["overview", "reservation", "availability", "schedule", "history", "monthly", "bookkeeping", "sites", "checkin", "messages"]) {
     assert.ok(adminPages.some((page) => page.key === key), key);
   }
   assert.equal(new Set(adminPages.map((page) => page.key)).size, adminPages.length);
+});
+
+test('legacy yearly links and all open-ended residents use the monthly page',()=>{
+  assert.equal(normalizeAdminPage('yearly'),'monthly');
+  assert.equal(normalizeAdminPage('bookkeeping'),'bookkeeping');
+  assert.ok(!adminPages.some(page=>page.key==='yearly'));
+  for(const row of [{reservation_term:'yearly'},{billing_mode:'monthly'},{monthly_classification:true},
+    {siteStays:[{arrival_date:'2026-08-01',leave_date:'9999-12-31'}]},
+    {siteStays:[{arrival_date:'2026-08-01',leave_date:'2026-08-29'}]}])assert.equal(isMonthlyGuest({status:'active',...row}),true);
+  assert.equal(isMonthlyGuest({status:'active',siteStays:[{arrival_date:'2026-08-01',leave_date:'2026-08-05'}]}),false);
+  assert.equal(isMonthlyGuest({status:'canceled',reservation_term:'yearly'}),false);
 });
 
 const stay = (siteId, arrival, leave) => ({ site_id: siteId, site_number: sites.find((site) => site.id === siteId)?.site_number, arrival_date: arrival, leave_date: leave });

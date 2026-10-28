@@ -28,7 +28,7 @@ import MessageInbox from "./MessageInbox.jsx";
 import AdminOverview from "./AdminOverview.jsx";
 import ReservationTools from "./ReservationTools.jsx";
 import { PaymentMethodSetupPage, SavedPaymentMethodsPanel, SavePaymentConsent } from "./SavedPaymentMethods.jsx";
-import { adminPrimaryPages, adminPageGroups, adminPages, getSiteOptions, updateStayField } from "./admin-ui.js";
+import { adminPrimaryPages, adminPageGroups, adminPages, getSiteOptions, updateStayField, isMonthlyGuest, normalizeAdminPage } from "./admin-ui.js";
 const BookkeepingPage = lazy(() => import("./BookkeepingPage.jsx"));
 
 const apiBaseUrl = (
@@ -492,17 +492,7 @@ function getReservationStayNights(reservation) {
   }, 0);
 }
 
-function isMonthlyReservation(reservation) {
-  if (!reservation || reservation.status === "canceled") return false;
-
-  return (
-    reservation.monthly_classification ||
-    reservation.effectiveBillingMode === "monthly" ||
-    reservation.billing_mode === "monthly" ||
-    (reservation.reservation_term !== "yearly" &&
-      getReservationStayNights(reservation) >= 28)
-  );
-}
+const isMonthlyReservation = isMonthlyGuest;
 
 function getCurrentMonthlyStays(reservation, today) {
   return (reservation.siteStays || []).filter(
@@ -1009,7 +999,7 @@ function getReservationStatusClass(value) {
 }
 
 function formatReservationTerm(value) {
-  return value === "yearly" ? "Yearly" : "Standard";
+  return value === "yearly" ? "Monthly" : "Standard";
 }
 
 function isOpenEndedStay(dateString) {
@@ -1174,7 +1164,7 @@ function buildReservationConfirmationText(reservation, paymentLink) {
           "(Check-in 1:00 P.M.)",
           `Depart: ${
             stay.isOpenEnded
-              ? "Open-ended yearly stay"
+              ? "Open-ended monthly stay"
               : stay.leave_date
                 ? formatShortDate(stay.leave_date)
                 : "Not set"
@@ -1545,7 +1535,7 @@ function BookingSiteCalendar({
       </div>
       <p className="muted calendar-hint">
         {reservationTerm === "yearly"
-          ? "Click an arrival day for an open-ended yearly stay."
+          ? "Click an arrival day for an open-ended monthly stay."
           : "Click once for arrival. Click a later day for the departure date."}
       </p>
       <div className="calendar-grid calendar-weekdays">
@@ -5781,7 +5771,7 @@ function SiteStayFields({
       {segment.arrivalDate ? (
         <p className="muted">
           {reservationTerm === "yearly"
-            ? `Yearly stay starts ${formatDisplayDate(
+            ? `Monthly stay starts ${formatDisplayDate(
                 segment.arrivalDate
               )} and continues until canceled.`
             : segment.leaveDate
@@ -6414,7 +6404,7 @@ export default function App() {
     }
 
     const params = new URLSearchParams(window.location.search);
-    const requestedAdminPage = params.get("admin");
+    const requestedAdminPage = normalizeAdminPage(params.get("admin"));
 
     if (adminPages.some((page) => page.key === requestedAdminPage)) {
       return requestedAdminPage;
@@ -6803,8 +6793,7 @@ export default function App() {
           activePage === "checkin" ||
           activePage === "schedule" ||
           activePage === "history" ||
-          activePage === "monthly" ||
-          activePage === "yearly"
+          activePage === "monthly"
         ) {
           await Promise.all([
             ensureSitesLoaded(),
@@ -7507,15 +7496,6 @@ export default function App() {
     /\D/g,
     ""
   );
-  const yearlyReservations = reservations
-    .filter(
-      (reservation) =>
-        reservation.reservation_term === "yearly" &&
-        reservation.status !== "canceled"
-    )
-    .sort((left, right) =>
-      (left.booked_date || "").localeCompare(right.booked_date || "")
-    );
   const today = getParkDateFromTimestamp(new Date());
   const monthlyReservations = reservations
     .filter(isMonthlyReservation)
@@ -7774,7 +7754,6 @@ export default function App() {
   const isSchedulePageLoading = isLoadingSites || isLoadingReservations;
   const isHistoryPageLoading = isLoadingReservations;
   const isMonthlyPageLoading = isLoadingReservations;
-  const isYearlyPageLoading = isLoadingReservations;
   const isSitesPageLoading = isLoadingSites;
 
   function scrollReservationEditor(sectionKey = "") {
@@ -11583,7 +11562,7 @@ export default function App() {
                       <h3>Make this stay fit</h3>
                       <p className="muted optimization-intro">
                         These plans keep every rig within its site-size rules.
-                        Current guests, yearly stays, open-ended stays, and
+                        Current guests, monthly stays, open-ended stays, and
                         reservations without a saved rig size are not moved.
                         Payment holds stay locked too. Plans avoiding Sites 17
                         and 23 are shown first.
@@ -11899,7 +11878,7 @@ export default function App() {
                         }));
                       }}>
                       <option value="standard">Standard</option>
-                      <option value="yearly">Yearly</option>
+                      <option value="yearly">Monthly (open-ended)</option>
                     </select>
                   </label>
                   {reservationForm.reservationTerm !== "yearly" ? (
@@ -13788,105 +13767,6 @@ export default function App() {
           </Paper>
         ) : null}
 
-        {activePage === "yearly" ? (
-          <Paper component="section" className="card" elevation={0}>
-            <div className="page-section-header">
-              <h2>Yearly Bookings</h2>
-              <div className="section-actions">
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={() => clearSection("yearly")}>
-                  Clear section
-                </button>
-              </div>
-            </div>
-            <>
-              <div className="section-heading">
-                <p>
-                  Manage open-ended yearly guests with quick booking, edit, and
-                  cancel actions.
-                </p>
-                {isYearlyPageLoading ? (
-                  <p className="muted">Loading yearly bookings...</p>
-                ) : null}
-              </div>
-              {isYearlyPageLoading && !hasLoadedReservations ? (
-                <p className="muted">Loading yearly bookings...</p>
-              ) : yearlyReservations.length ? (
-                <div className="schedule-list">
-                  {yearlyReservations.map((reservation) => (
-                    <article
-                      key={reservation.id}
-                      className="timeline-card history-reservation-card">
-                      <div className="result-header">
-                        <h3>
-                          {reservation.first_name} {reservation.last_name}
-                        </h3>
-                        <div className="button-row schedule-card-actions">
-                          <CardActionMenu
-                            menuId={`yearly-${reservation.id}`}
-                            openMenuId={openCardActionMenuId}
-                            onToggle={toggleCardActionMenu}
-                            onClose={closeCardActionMenu}
-                            actions={[
-                              {
-                                label: "View booking",
-                                onClick: () =>
-                                  openScheduleReservation(reservation),
-                              },
-                              {
-                                label: "Manage payments",
-                                onClick: () =>
-                                  openScheduleReservation(reservation),
-                              },
-                              ...buildReservationEditActions(reservation.id),
-                              {
-                                label: "Cancel",
-                                onClick: () =>
-                                  cancelReservation(reservation.id),
-                                danger: true,
-                              },
-                            ]}
-                          />
-                        </div>
-                      </div>
-                      <p className="muted">
-                        Site{" "}
-                        {reservation.siteStays[0]?.site_number || "Not set"} •
-                        Starts{" "}
-                        {reservation.siteStays[0]?.arrival_date
-                          ? formatDisplayDate(
-                              reservation.siteStays[0].arrival_date
-                            )
-                          : "Not set"}{" "}
-                        • {reservation.rv_kind}
-                        {formatMotorhomeDetails(reservation)}
-                        {reservation.rig_length_feet
-                          ? ` • ${reservation.rig_length_feet} ft rig`
-                          : ""}
-                      </p>
-                      <div className="pricing-summary">
-                        <span>Email: {reservation.email || "Not set"}</span>
-                        <span>
-                          Phone:{" "}
-                          {formatPhoneNumber(reservation.phone_number || "") ||
-                            "Not set"}
-                        </span>
-                        <span>
-                          Stay price: {formatCurrency(reservation.effectiveTotalPrice)}
-                        </span>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <p className="muted">No active yearly bookings.</p>
-              )}
-            </>
-          </Paper>
-        ) : null}
-
         {activePage === "bookkeeping" ? <Suspense fallback={<Paper className="card" role="status" elevation={0}>Loading bookkeeping workspace…</Paper>}><BookkeepingPage apiRequest={apiRequest} /></Suspense> : null}
 
         {activePage === "messages" ? (
@@ -14601,7 +14481,7 @@ export default function App() {
                           )
                         }>
                         <option value="standard">Standard</option>
-                        <option value="yearly">Yearly</option>
+                        <option value="yearly">Monthly (open-ended)</option>
                       </select>
                     </label>
                   </div>
@@ -14898,7 +14778,7 @@ export default function App() {
                     {formatDisplayDate(segment.arrival_date)} • leave{" "}
                     {formatLeaveDate(segment.leave_date)}
                     {isOpenEndedStay(segment.leave_date)
-                      ? " • Yearly stay"
+                      ? " • Monthly stay"
                       : ` • ${segment.numberOfNights ?? nightsBetween(segment.arrival_date, segment.leave_date)} nights`}
                   </li>
                 ))}

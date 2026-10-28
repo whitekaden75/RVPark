@@ -15,6 +15,7 @@ import { registerCombinedBookingRoutes } from "./combined-bookings.js";
 import { createSavedPaymentMethods, storageConsentVersion, storageConsentText } from "./saved-payment-methods.js";
 import { registerBookkeepingRoutes } from "./bookkeeping.js";
 import { registerFinanceRoutes } from "./bookkeeping-finance.js";
+import { registerLodgingRoutes } from "./bookkeeping-lodging.js";
 import { applyBookedPricing, createBookingPricingQuote, loadBookedPricing } from "./booking-pricing.js";
 import {
   toPriceNumber,
@@ -1022,7 +1023,7 @@ function buildReservationConfirmationEmail(reservation) {
         siteNumber: stay.site_number || "To be assigned",
         arrivalDate: stay.arrival_date ? formatDisplayDate(stay.arrival_date) : "Not set",
         departureDate: stay.isOpenEnded
-          ? "Open-ended yearly stay"
+          ? "Open-ended monthly stay"
           : stay.leave_date
             ? formatDisplayDate(stay.leave_date)
             : "Not set"
@@ -1187,7 +1188,7 @@ function buildReservationCancellationEmail(reservation) {
         siteNumber: stay.site_number || "Not assigned",
         arrivalDate: stay.arrival_date ? formatDisplayDate(stay.arrival_date) : "Not set",
         departureDate: stay.isOpenEnded
-          ? "Open-ended yearly stay"
+          ? "Open-ended monthly stay"
           : stay.leave_date
             ? formatDisplayDate(stay.leave_date)
             : "Not set"
@@ -7552,6 +7553,7 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
     }, 0);
     const isMonthlyStay =
       reservation.monthly_classification ||
+      reservation.reservation_term === "yearly" ||
       reservation.effectiveBillingMode === "monthly" ||
       reservation.billing_mode === "monthly" ||
       (reservation.reservation_term !== "yearly" &&
@@ -9241,6 +9243,7 @@ app.delete("/api/reservations/:id", async (req, res) => {
 
 registerBookkeepingRoutes(app, { pool, notify: broadcastAdminDataChange });
 registerFinanceRoutes(app, { pool, stripe, notify: broadcastAdminDataChange });
+registerLodgingRoutes(app, { pool, notify: broadcastAdminDataChange });
 registerAfterHoursCashRoutes(app, {pool,getReservation:fetchReservationDetails,insertPayment:insertReservationPaymentEvent,findOverlap:findReservationOverlap,notify:broadcastAdminDataChange});
 registerBalanceWaiverRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
 registerCombinedBookingRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
