@@ -9,6 +9,7 @@ import { loadBookkeepingAudit, statementAudit } from "./bookkeeping-audit.js";
 import { bookkeepingRoutes } from "./bookkeeping-http.js";
 import { bookkeepingStorageConfig, bookkeepingStorageErrorMessage, storageCopySource } from "./bookkeeping-storage.js";
 import { registerDocumentEntryResetRoutes } from "./bookkeeping-document-reset.js";
+import { deleteUnprocessedDocument } from "./bookkeeping-document-deletion.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -87,10 +88,13 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   });
 
   routes.get("/api/bookkeeping/documents", async (_req, res) => {
-    const result = await pool.query(`SELECT d.*,COALESCE(counts.transaction_count,0) AS transaction_count
+    const result = await pool.query(`SELECT d.*,COALESCE(counts.transaction_count,0) AS transaction_count,
+      COALESCE(counts.history_count,0)>0 AS has_transaction_history,
+      EXISTS(SELECT 1 FROM bookkeeping_extractions e WHERE e.document_id=d.id) AS has_extraction_history,
+      EXISTS(SELECT 1 FROM bookkeeping_bills b WHERE b.document_id=d.id) AS has_bill_links
       FROM (SELECT * FROM bookkeeping_documents ORDER BY uploaded_at DESC,id DESC LIMIT 200) d
-      LEFT JOIN (SELECT t.document_id,count(*)::integer AS transaction_count FROM bookkeeping_transactions t
-        WHERE t.status<>'void' GROUP BY t.document_id) counts ON counts.document_id=d.id
+      LEFT JOIN (SELECT t.document_id,count(*) FILTER (WHERE t.status<>'void')::integer AS transaction_count,
+        count(*)::integer AS history_count FROM bookkeeping_transactions t GROUP BY t.document_id) counts ON counts.document_id=d.id
       ORDER BY d.uploaded_at DESC,d.id DESC`);
     return res.json({ documents: result.rows });
   });
@@ -124,16 +128,7 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   });
 
   routes.delete("/api/bookkeeping/documents/:id", async (req, res) => {
-    const result = await pool.query("SELECT storage_key, processing_status FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
-    if (!result.rowCount) return res.status(404).json({ message: "Document not found." });
-    if (!["uploaded", "queued", "failed", "rejected", "needs_review"].includes(result.rows[0].processing_status)) {
-      return res.status(409).json({ message: "Processed documents cannot be deleted from here." });
-    }
-    if (!storage || !bucket) return res.status(503).json({ message: storageConfigError });
-    const records = await pool.query('SELECT id FROM bookkeeping_transactions WHERE document_id=$1 LIMIT 1',[req.params.id]);
-    if(records.rowCount) return res.status(409).json({message:'Preserve processed source documents. Exclude individual transactions from the review panel instead.'});
-    await pool.query("DELETE FROM bookkeeping_documents WHERE id = $1", [req.params.id]);
-    await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: result.rows[0].storage_key })).catch(()=>console.warn('An unused bookkeeping upload could not be removed from storage.'));
+    await deleteUnprocessedDocument({ pool, storage, bucket, storageConfigError, documentId: req.params.id });
     notify({ reason: "bookkeeping_changed" });
     return res.status(204).end();
   });
