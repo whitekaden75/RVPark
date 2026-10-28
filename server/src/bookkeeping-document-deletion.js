@@ -2,7 +2,7 @@ import { DeleteObjectCommand } from '@aws-sdk/client-s3';
 
 const fail = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode });
 
-export async function deleteUnprocessedDocument({ pool, storage, bucket, storageConfigError, documentId }) {
+export async function deleteBookkeepingDocument({ pool, storage, bucket, storageConfigError, documentId, confirmedExcludedCount = 0 }) {
   if (!/^[1-9]\d*$/.test(String(documentId || ''))) throw fail('Choose a valid document.', 400);
   if (!storage || !bucket) throw fail(storageConfigError || 'Document storage is not configured.', 503);
   const client = await pool.connect();
@@ -13,20 +13,30 @@ export async function deleteUnprocessedDocument({ pool, storage, bucket, storage
     const result = await client.query('SELECT id,storage_key,processing_status,metadata FROM bookkeeping_documents WHERE id=$1 FOR UPDATE', [documentId]);
     if (!result.rowCount) throw fail('Document not found.', 404);
     const document = result.rows[0];
-    if (document.metadata?.ai_queued || !['uploaded', 'queued', 'failed'].includes(document.processing_status)) {
-      throw fail('This file is queued, processing, or has already been processed. Cancel its waiting AI job before deleting an unused upload.');
+    if (document.metadata?.ai_queued || !['uploaded', 'queued', 'failed', 'rejected', 'needs_review', 'approved'].includes(document.processing_status)) {
+      throw fail('This file is queued or processing. Cancel its waiting AI job or wait for processing to finish before deleting it.');
     }
-    const transactions = await client.query('SELECT id FROM bookkeeping_transactions WHERE document_id=$1 LIMIT 1', [documentId]);
-    if (transactions.rowCount || document.metadata?.transaction_reset_history?.length) throw fail('This file has transaction history, including any excluded entries. Keep the original and use Reset entries to start over.');
-    const extractions = await client.query('SELECT id FROM bookkeeping_extractions WHERE document_id=$1 LIMIT 1', [documentId]);
-    if (extractions.rowCount) throw fail('This file has extraction history. Keep the original for your bookkeeping records.');
-    const bills = await client.query('SELECT id FROM bookkeeping_bills WHERE document_id=$1 LIMIT 1', [documentId]);
-    if (bills.rowCount) throw fail('This file is linked to a bill. Keep the original for your bookkeeping records.');
-    // Storage deletion is idempotent. Keep the library record on storage failure so it can be retried.
-    try { await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: document.storage_key })); }
-    catch { throw fail('The file could not be removed from storage. It remains in Documents; try deleting it again.', 502); }
+    // Lock every entry so approval, restoration and new bill/match links cannot race deletion.
+    const transactions = await client.query('SELECT id,status FROM bookkeeping_transactions WHERE document_id=$1 ORDER BY id FOR UPDATE', [documentId]);
+    if (transactions.rows.some(row => row.status !== 'void')) throw fail('This file still has active transactions. Reset or exclude all its entries before deleting the file.');
+    if (!Number.isSafeInteger(confirmedExcludedCount) || confirmedExcludedCount < 0 || confirmedExcludedCount !== transactions.rowCount) throw fail('The excluded-entry count changed. Refresh Documents and review the deletion again.');
+    const ids = transactions.rows.map(row => row.id);
+    const bills = await client.query('SELECT id FROM bookkeeping_bills WHERE document_id=$1 OR paid_transaction_id=ANY($2::bigint[]) LIMIT 1', [documentId, ids]);
+    if (bills.rowCount) throw fail('This file or an excluded entry is linked to a bill. Remove its bill links before deleting the file.');
+    const matches = await client.query(`SELECT id FROM bookkeeping_consolidations
+      WHERE duplicate_transaction_id=ANY($1::bigint[]) OR keeper_transaction_id=ANY($1::bigint[]) LIMIT 1`, [ids]);
+    if (matches.rowCount) throw fail('An excluded entry is linked to a consolidation or match. Undo those links in Reconcile before deleting the file.');
+    if (ids.length) {
+      await client.query('DELETE FROM bookkeeping_line_items WHERE transaction_id=ANY($1::bigint[])', [ids]);
+      const excluded = await client.query("DELETE FROM bookkeeping_transactions WHERE document_id=$1 AND status='void' RETURNING id", [documentId]);
+      if (excluded.rowCount !== transactions.rowCount) throw fail('This file’s entries changed. Refresh Documents and review the deletion again.');
+    }
+    await client.query('DELETE FROM bookkeeping_extractions WHERE document_id=$1', [documentId]);
     const removed = await client.query('DELETE FROM bookkeeping_documents WHERE id=$1 RETURNING id', [documentId]);
     if (!removed.rowCount) throw fail('This file changed before it could be deleted. Refresh Documents and try again.');
+    // Check all database constraints first; a storage failure rolls back the file and its history.
+    try { await storage.send(new DeleteObjectCommand({ Bucket: bucket, Key: document.storage_key })); }
+    catch { throw fail('The file could not be removed from storage. It remains in Documents; try deleting it again.', 502); }
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});

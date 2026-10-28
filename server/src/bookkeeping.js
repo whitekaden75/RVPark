@@ -9,7 +9,7 @@ import { loadBookkeepingAudit, statementAudit } from "./bookkeeping-audit.js";
 import { bookkeepingRoutes } from "./bookkeeping-http.js";
 import { bookkeepingStorageConfig, bookkeepingStorageErrorMessage, storageCopySource } from "./bookkeeping-storage.js";
 import { registerDocumentEntryResetRoutes } from "./bookkeeping-document-reset.js";
-import { deleteUnprocessedDocument } from "./bookkeeping-document-deletion.js";
+import { deleteBookkeepingDocument } from "./bookkeeping-document-deletion.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -90,10 +90,16 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   routes.get("/api/bookkeeping/documents", async (_req, res) => {
     const result = await pool.query(`SELECT d.*,COALESCE(counts.transaction_count,0) AS transaction_count,
       COALESCE(counts.history_count,0)>0 AS has_transaction_history,
+      COALESCE(counts.excluded_count,0) AS excluded_transaction_count,
       EXISTS(SELECT 1 FROM bookkeeping_extractions e WHERE e.document_id=d.id) AS has_extraction_history,
-      EXISTS(SELECT 1 FROM bookkeeping_bills b WHERE b.document_id=d.id) AS has_bill_links
+      EXISTS(SELECT 1 FROM bookkeeping_bills b WHERE b.document_id=d.id OR b.paid_transaction_id IN
+        (SELECT t.id FROM bookkeeping_transactions t WHERE t.document_id=d.id)) AS has_bill_links,
+      EXISTS(SELECT 1 FROM bookkeeping_consolidations c WHERE c.duplicate_transaction_id IN
+        (SELECT t.id FROM bookkeeping_transactions t WHERE t.document_id=d.id) OR c.keeper_transaction_id IN
+        (SELECT t.id FROM bookkeeping_transactions t WHERE t.document_id=d.id)) AS has_consolidation_links
       FROM (SELECT * FROM bookkeeping_documents ORDER BY uploaded_at DESC,id DESC LIMIT 200) d
       LEFT JOIN (SELECT t.document_id,count(*) FILTER (WHERE t.status<>'void')::integer AS transaction_count,
+        count(*) FILTER (WHERE t.status='void')::integer AS excluded_count,
         count(*)::integer AS history_count FROM bookkeeping_transactions t GROUP BY t.document_id) counts ON counts.document_id=d.id
       ORDER BY d.uploaded_at DESC,d.id DESC`);
     return res.json({ documents: result.rows });
@@ -128,7 +134,7 @@ export function registerBookkeepingRoutes(app, { pool, notify = () => {} }) {
   });
 
   routes.delete("/api/bookkeeping/documents/:id", async (req, res) => {
-    await deleteUnprocessedDocument({ pool, storage, bucket, storageConfigError, documentId: req.params.id });
+    await deleteBookkeepingDocument({ pool, storage, bucket, storageConfigError, documentId: req.params.id, confirmedExcludedCount: req.body?.confirmedExcludedCount });
     notify({ reason: "bookkeeping_changed" });
     return res.status(204).end();
   });

@@ -13,7 +13,9 @@ export function matchesDocumentStatus(document, filter) {
 }
 
 export function documentDeleteBlocker(document) {
-  if (!['uploaded', 'queued', 'failed'].includes(document.processing_status) || document.metadata?.ai_queued) return 'Cancel any waiting AI job first. Processing and processed files cannot be deleted.';
-  if (document.has_transaction_history || Number(document.transaction_count) > 0 || document.has_extraction_history || document.has_bill_links || document.metadata?.transaction_reset_history?.length) return 'This file has bookkeeping history or linked bills. Keep its original for your records; use Reset entries to start over.';
+  if (!['uploaded', 'queued', 'failed', 'rejected', 'needs_review', 'approved'].includes(document.processing_status) || document.metadata?.ai_queued) return 'Cancel any waiting AI job or wait for processing to finish before deleting this file.';
+  if (Number(document.transaction_count) > 0) return 'Reset or exclude all active transactions before deleting this file.';
+  if (document.has_bill_links) return 'Remove bill links before deleting this file and its excluded entries.';
+  if (document.has_consolidation_links) return 'Undo consolidation/match links in Reconcile before deleting this file and its excluded entries.';
   return '';
 }

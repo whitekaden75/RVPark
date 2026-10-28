@@ -20,16 +20,18 @@ test('Ready for AI matches the badge and excludes waiting, processing, failed an
   assert.deepEqual(documents.filter(doc => matchesDocumentStatus(doc, 'failed')).map(doc => doc.id), [6]);
 });
 
-test('unused ready and failed uploads can be deleted while financial history and AI jobs are protected', () => {
+test('files with only excluded entries and extraction/reset history can be deleted', () => {
   const ready = { processing_status: 'queued', metadata: {}, transaction_count: 0 };
-  assert.equal(documentDeleteBlocker(ready), '');
-  assert.equal(documentDeleteBlocker({ ...ready, processing_status: 'failed' }), '');
-  for (const history of [
-    { has_transaction_history: true }, { transaction_count: '2' }, { has_extraction_history: true },
-    { has_bill_links: true }, { metadata: { transaction_reset_history: [{ id: 'reset' }] } }
-  ]) assert.match(documentDeleteBlocker({ ...ready, ...history }), /bookkeeping history/);
-  for (const state of [
-    { processing_status: 'queued', metadata: { ai_queued: true } }, { processing_status: 'processing' },
-    { processing_status: 'needs_review' }, { processing_status: 'approved' }
-  ]) assert.ok(documentDeleteBlocker(state));
+  for (const status of ['uploaded', 'queued', 'failed', 'needs_review', 'approved']) {
+    assert.equal(documentDeleteBlocker({ ...ready, processing_status: status }), '');
+    assert.equal(documentDeleteBlocker({ ...ready, processing_status: status, has_transaction_history: true, excluded_transaction_count: 5, has_extraction_history: true, metadata: { transaction_reset_history: [{ id: 'reset' }] } }), '');
+  }
+});
+
+test('active entries, bill links, matches and AI jobs must be resolved before deletion', () => {
+  const ready = { processing_status: 'queued', metadata: {}, transaction_count: 0 };
+  assert.match(documentDeleteBlocker({ ...ready, transaction_count: '2' }), /active transactions/);
+  assert.match(documentDeleteBlocker({ ...ready, has_bill_links: true }), /bill links/);
+  assert.match(documentDeleteBlocker({ ...ready, has_consolidation_links: true }), /consolidation/);
+  for (const state of [{ processing_status: 'queued', metadata: { ai_queued: true } }, { processing_status: 'processing' }]) assert.ok(documentDeleteBlocker(state));
 });
