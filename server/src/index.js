@@ -16,6 +16,7 @@ import { createSavedPaymentMethods, storageConsentVersion, storageConsentText } 
 import { registerBookkeepingRoutes } from "./bookkeeping.js";
 import { registerFinanceRoutes } from "./bookkeeping-finance.js";
 import { registerLodgingRoutes } from "./bookkeeping-lodging.js";
+import { registerHistoricalDailyPaymentRoutes } from "./historical-daily-payments.js";
 import { applyBookedPricing, createBookingPricingQuote, loadBookedPricing } from "./booking-pricing.js";
 import {
   toPriceNumber,
@@ -3494,7 +3495,7 @@ async function loadReservationRearrangementInventory() {
   return { sites, stays, fixedHolds };
 }
 
-async function loadPricingRules(numberOfDays = null) {
+async function loadPricingRules(numberOfDays = null, queryable = pool) {
   const values = [];
   let whereClause = "";
 
@@ -3506,7 +3507,7 @@ async function loadPricingRules(numberOfDays = null) {
     whereClause = `WHERE number_of_days = $1`;
   }
 
-  const result = await pool.query(
+  const result = await queryable.query(
     `
       SELECT
         id,
@@ -3863,7 +3864,7 @@ async function fetchReservationDetails(queryable, reservationId) {
   }
 
   const [pricingRules, bookedPricing] = await Promise.all([
-    loadPricingRules(),
+    loadPricingRules(null, queryable),
     loadBookedPricing(queryable, [reservationId])
   ]);
   const pricingLookup = buildPricingRuleLookup(pricingRules);
@@ -4105,7 +4106,7 @@ async function fetchReservationList(queryable) {
       `,
       [reservationIds]
     ),
-    loadPricingRules(),
+    loadPricingRules(null, queryable),
     loadBookedPricing(queryable, reservationIds)
   ]);
 
@@ -9244,6 +9245,7 @@ app.delete("/api/reservations/:id", async (req, res) => {
 registerBookkeepingRoutes(app, { pool, notify: broadcastAdminDataChange });
 registerFinanceRoutes(app, { pool, stripe, notify: broadcastAdminDataChange });
 registerLodgingRoutes(app, { pool, notify: broadcastAdminDataChange });
+registerHistoricalDailyPaymentRoutes(app, { pool, getReservations: fetchReservationList, notify: broadcastAdminDataChange });
 registerAfterHoursCashRoutes(app, {pool,getReservation:fetchReservationDetails,insertPayment:insertReservationPaymentEvent,findOverlap:findReservationOverlap,notify:broadcastAdminDataChange});
 registerBalanceWaiverRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
 registerCombinedBookingRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});

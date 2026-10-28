@@ -36,13 +36,13 @@ export function buildFinanceReport({ stripeRows = [], officeRows = [], transacti
     entries.push({ id: `stripe:${row.id}`, source: 'stripe', date: pacificDate(row.occurred_at), vendor: row.description || 'Stripe activity', description: row.activity_type.replaceAll('_', ' '), type, amount: money(Number(row.amount_cents)), fees: money(Number(row.fee_cents)), net: money(Number(row.net_cents)), category: type === 'fee' ? 'Payment processing fees' : type === 'income' ? 'RV stay collections' : type === 'refund' ? 'Guest refunds' : 'Stripe transfers & adjustments', status: row.balance_status, sourceId: row.source_id, reservationId: row.reservation_id, stripeId: row.id });
   }
   for (const row of officeRows) {
-    entries.push({ id: `office:${row.id}`, source: 'office', date: pacificDate(row.recorded_at), vendor: row.guest_name || `Reservation #${row.reservation_id}`, description: row.note || row.payment_source, type: 'income', amount: Math.abs(Number(row.amount)), fees: 0, net: Math.abs(Number(row.amount)), category: 'RV stay collections', status: 'approved', reservationId: row.reservation_id });
+    entries.push({ id: `office:${row.id}`, source: 'office', date: pacificDate(row.recorded_at), vendor: row.guest_name || `Reservation #${row.reservation_id}`, description: row.note || row.payment_source, type: 'income', amount: Math.abs(Number(row.amount)), fees: 0, net: Math.abs(Number(row.amount)), category: 'RV stay collections', status: 'approved', reservationId: row.reservation_id, historicalAssumption:Boolean(row.historical_assumption) });
   }
   for (const row of transactions) {
     if (row.status !== 'approved' || (row.currency || 'USD').toUpperCase() !== 'USD') continue;
     entries.push({ id: `document:${row.id}`, transactionId: row.id, documentId: row.document_id, documentType: row.source_document_type || null, sourceFilename: row.source_filename || null, source: 'document', date: isoDate(row.transaction_date), vendor: row.vendor || 'Manual entry', description: row.description || '', type: row.transaction_type, amount: Math.abs(Number(row.total || 0)), fees: 0, category: row.category || 'Uncategorized', status: row.status });
   }
-  const summary = { stripeGross: 0, officeRevenue: 0, otherRevenue: 0, refunds: 0, fees: 0, expenses: 0, disputes: 0, payouts: 0 };
+  const summary = { stripeGross: 0, officeRevenue: 0, otherRevenue: 0, refunds: 0, fees: 0, expenses: 0, disputes: 0, payouts: 0, historicalAssumedIncome:0 };
   const months = new Map();
   const categories = new Map();
   for (const entry of entries) {
@@ -51,6 +51,7 @@ export function buildFinanceReport({ stripeRows = [], officeRows = [], transacti
     if (entry.type === 'income') {
       const target = entry.source === 'stripe' ? 'stripeGross' : entry.source === 'office' ? 'officeRevenue' : 'otherRevenue';
       summary[target] += amount;
+      if(entry.historicalAssumption) summary.historicalAssumedIncome += amount;
       income = amount;
     } else if (entry.type === 'refund') {
       // Positive refund_failure entries reverse an earlier refund.

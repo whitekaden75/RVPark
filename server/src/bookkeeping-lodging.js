@@ -94,7 +94,7 @@ export function buildLodgingReport({reservations=[],stays=[],sources=[],readings
   for (const payment of payments) {
     const date=dateText(payment.payment_date || payment.recorded_at), reservation=byId.get(String(payment.reservation_id));
     if (date<from || date>cutoff) continue;
-    receiptDetails.push({...payment,date,amount:amount(payment.amount),group:reservation ? monthly(reservation) ? 'monthly' : 'daily' : 'unassigned',guestName:reservation ? `${reservation.first_name || ''} ${reservation.last_name || ''}`.trim() : 'Unassigned reservation'});
+    receiptDetails.push({...payment,date,amount:amount(payment.amount),historicalAssumption:Boolean(payment.historical_assumption),dateAssumed:Boolean(payment.historical_date_assumed),group:reservation ? monthly(reservation) ? 'monthly' : 'daily' : 'unassigned',guestName:reservation ? `${reservation.first_name || ''} ${reservation.last_name || ''}`.trim() : 'Unassigned reservation'});
   }
   const refundDetails=refunds.map(row => {
     const reservation=byId.get(String(row.reservation_id));
@@ -106,15 +106,16 @@ export function buildLodgingReport({reservations=[],stays=[],sources=[],readings
     return {month:key,monthlyRent:add(rows.map(row => row.rent)),monthlyElectric:add(rows.map(row => row.electric)),
       monthlyEstimatedCharges:add(rows.flatMap(row => [row.rent,row.electric])),monthlyIncomplete:rows.filter(row => row.total==null).length,
       monthlyGuestCount:rows.length,dailyReceipts:add(receipts.filter(row => row.group==='daily').map(row => row.amount)),
+      dailyAssumedCash:add(receipts.filter(row => row.group==='daily' && row.historicalAssumption).map(row => row.amount)),
       dailyRefunds:add(returned.filter(row => row.group==='daily').map(row => row.amount)),
       monthlyRecordedReceipts:add(receipts.filter(row => row.group==='monthly').map(row => row.amount)),
       monthlyRecordedRefunds:add(returned.filter(row => row.group==='monthly').map(row => row.amount)),
       unassignedReceipts:add(receipts.filter(row => row.group==='unassigned').map(row => row.amount)),
       unassignedRefunds:add(returned.filter(row => row.group==='unassigned').map(row => row.amount)),
       unresolvedSources:unassigned.filter(row => dateText(row.billing_month).slice(0,7)===key).length};
-  }).map(row => ({...row,dailyNetReceipts:add([row.dailyReceipts,-row.dailyRefunds])}));
+  }).map(row => ({...row,dailyNetReceipts:add([row.dailyReceipts,-row.dailyRefunds]),dailyRecordedReceipts:add([row.dailyReceipts,-row.dailyAssumedCash])}));
   return {from,to,asOf,months:summaries,monthlyDetails:details,receiptDetails,refundDetails,unassignedSources:unassigned,cabinBills,
-    totals:Object.fromEntries(['monthlyRent','monthlyElectric','monthlyEstimatedCharges','monthlyIncomplete','monthlyGuestCount','dailyReceipts','dailyRefunds','dailyNetReceipts','monthlyRecordedReceipts','monthlyRecordedRefunds','unassignedReceipts','unassignedRefunds','unresolvedSources'].map(key => [key,add(summaries.map(row => row[key]))])),
+    totals:Object.fromEntries(['monthlyRent','monthlyElectric','monthlyEstimatedCharges','monthlyIncomplete','monthlyGuestCount','dailyReceipts','dailyRecordedReceipts','dailyAssumedCash','dailyRefunds','dailyNetReceipts','monthlyRecordedReceipts','monthlyRecordedRefunds','unassignedReceipts','unassignedRefunds','unresolvedSources'].map(key => [key,add(summaries.map(row => row[key]))])),
     reservationOptions:reservations.filter(row => !row.merged_into_reservation_id).map(row => ({id:row.id,name:`${row.first_name || ''} ${row.last_name || ''}`.trim(),rent:amount(row.monthly_rent_price),sites:[...new Set((grouped.get(String(row.id)) || []).map(stay => stay.site_number))].join(', ')}))};
 }
 
@@ -134,6 +135,8 @@ export function registerLodgingRoutes(app,{pool,notify=()=>{}}) {
       // Payment events are the canonical dated collections, including Stripe.
       // Do not add amount_paid or imported bank/receipt transactions a second time.
       const payments=await client.query(`SELECT e.id,e.reservation_id,e.amount,e.payment_source,
+        coalesce((to_jsonb(e)->>'historical_assumption')::boolean,false) AS historical_assumption,
+        coalesce((to_jsonb(e)->>'historical_date_assumed')::boolean,false) AS historical_date_assumed,
         (e.recorded_at AT TIME ZONE 'America/Los_Angeles')::date::text AS payment_date
         FROM reservation_payment_events e WHERE e.recorded_at>=($1::date::timestamp AT TIME ZONE 'America/Los_Angeles')
         AND e.recorded_at<(($2::date+1)::timestamp AT TIME ZONE 'America/Los_Angeles') ORDER BY e.recorded_at,e.id`,[period.from,period.to]);
