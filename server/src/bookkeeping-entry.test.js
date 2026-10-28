@@ -17,10 +17,8 @@ function fixture(overrides = {}) {
       return { rows: params[0] === document.id ? [state.document] : [] };
     }
     if (sql.startsWith('INSERT INTO bookkeeping_transactions')) {
-      assert.match(sql, /CASE WHEN \$9='approved' THEN \$1 ELSE NULL END/);
-      assert.match(sql, /CASE WHEN \$9='approved' THEN now\(\) ELSE NULL END/);
-      const [admin, date, vendor, description, total, category, account, type, status, notes, documentId] = params;
-      const transaction = { id: 99, uploaded_by_admin_user_id: admin, transaction_date: date, vendor, description, total, category, payment_account: account, transaction_type: type, status, notes, document_id: documentId, currency: 'USD' };
+      const [admin, date, vendor, description, total, category, account, type, status, notes, documentId, approvedBy, approved] = params;
+      const transaction = { id: 99, uploaded_by_admin_user_id: admin, transaction_date: date, vendor, description, total, category, payment_account: account, transaction_type: type, status, notes, document_id: documentId, currency: 'USD', approved_by_admin_user_id: approvedBy, approved_at: approved ? '2026-10-27T20:00:00Z' : null };
       state.transactions.push(transaction); return { rows: [transaction] };
     }
     if (sql.startsWith('UPDATE bookkeeping_documents')) {
@@ -38,6 +36,7 @@ test('standalone entry preserves its named account and existing immediate approv
   assert.equal(row.document_id, null); assert.equal(row.status, 'approved');
   assert.equal(row.payment_account, 'Business checking ending 1234'); assert.equal(row.vendor, 'Missing purchase');
   assert.equal(row.uploaded_by_admin_user_id, 7);
+  assert.equal(row.approved_by_admin_user_id, 7); assert.ok(row.approved_at);
   assert.equal(buildFinanceReport({ transactions: [row] }).summary.totalExpenses, 12.34);
   assert.ok(f.calls.some(call => call.sql === 'COMMIT')); assert.equal(f.released, 1);
 });
@@ -45,6 +44,7 @@ test('standalone entry preserves its named account and existing immediate approv
 for (const type of ['bank_statement','credit_card_statement']) test(`new ${type} entry is tied to that file and awaits review`, async () => {
   const f = fixture({ document_type: type }); const row = await f.create({ document_id: '12' });
   assert.equal(row.document_id, '12'); assert.equal(row.status, 'pending');
+  assert.equal(row.approved_by_admin_user_id, null); assert.equal(row.approved_at, null);
   assert.equal(f.state.document.processing_status, 'needs_review');
   assert.equal(buildFinanceReport({ transactions: [row] }).summary.totalExpenses, 0);
   assert.equal(f.calls.filter(call => call.sql.startsWith('INSERT')).length, 1); assert.equal(f.released, 1);

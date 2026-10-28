@@ -25,10 +25,12 @@ export async function createBookkeepingEntry({ pool, body = {}, adminUserId }) {
     }
     // A manually supplied statement entry must be reviewed with the rest of that file.
     const status = documentId ? 'pending' : 'approved';
+    // Keep each parameter in one type context. Reusing an ID inside a CASE with
+    // an untyped NULL can infer text before the INSERT infers integer/bigint.
     const result = await client.query(`INSERT INTO bookkeeping_transactions
       (uploaded_by_admin_user_id,transaction_date,vendor,description,total,currency,category,payment_account,transaction_type,status,notes,document_id,approved_by_admin_user_id,approved_at)
-      VALUES ($1,$2,$3,$4,$5,'USD',$6,$7,$8,$9,$10,$11,CASE WHEN $9='approved' THEN $1 ELSE NULL END,CASE WHEN $9='approved' THEN now() ELSE NULL END) RETURNING *`,
-    [adminUserId,date,vendor,body.description || '',Math.round(total * 100) / 100,body.category || null,account || null,body.transaction_type,status,body.notes || (documentId ? 'Manually added to statement' : 'Manual bookkeeping entry'),documentId]);
+      VALUES ($1,$2,$3,$4,$5,'USD',$6,$7,$8,$9,$10,$11,$12,CASE WHEN $13::boolean THEN now() ELSE NULL END) RETURNING *`,
+    [adminUserId,date,vendor,body.description || '',Math.round(total * 100) / 100,body.category || null,account || null,body.transaction_type,status,body.notes || (documentId ? 'Manually added to statement' : 'Manual bookkeeping entry'),documentId,documentId ? null : adminUserId,!documentId]);
     if (documentId) await client.query("UPDATE bookkeeping_documents SET processing_status='needs_review' WHERE id=$1", [documentId]);
     await client.query('COMMIT');
     return result.rows[0];
