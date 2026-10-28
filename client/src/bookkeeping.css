@@ -17,4 +17,19 @@
 
 .fin-document-approval{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:0 0 14px}.fin-document-approval>span{font-size:11px;color:var(--fin-muted,#75827c)}.fin-document-totals>button:disabled{cursor:not-allowed;opacity:.6}
 
-.fin-document-table .fin-document-editor-cell{padding:18px 14px;white-space:normal;background:#f5f8f5;border-top:1px solid #d5e4d8}.fin-inline-review{min-width:0;width:100%}.fin-inline-review .fin-section-title{margin-bottom:16px;gap:12px;flex-wrap:wrap}.fin-inline-review .fin-section-title h3{font-size:15px}.fin-inline-review .fin-form-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.fin-inline-review .fin-actions{margin-top:16px}.fin-inline-review .fin-form-grid input,.fin-inline-review .fin-form-grid select,.fin-inline-review .fin-form-grid textarea{font-size:12px}.fin-inline-review .fin-text-button{white-space:normal}
+.finance-dialog *{box-sizing:border-box}
+.fin-document-table td.fin-document-editor-cell{padding:12px 10px;white-space:normal;background:#f5f8f5;border-top:1px solid #d5e4d8}
+.fin-inline-review{min-width:0;width:100%;max-width:100%;white-space:normal;container-type:inline-size}
+.fin-inline-review .fin-section-title{margin-bottom:8px;gap:8px;flex-wrap:wrap}
+.fin-inline-review .fin-section-title h3{font-size:13px;margin:0}
+.fin-inline-review .fin-form-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0}
+.fin-inline-review .fin-form-grid label{min-width:0;gap:4px;font-size:11px}
+.fin-inline-review .fin-form-grid input,.fin-inline-review .fin-form-grid select,.fin-inline-review .fin-form-grid textarea{font-size:12px;padding:7px 8px;min-width:0;max-width:100%}
+.fin-inline-review .fin-actions{margin-top:10px;gap:6px}
+.finance-dialog .fin-inline-review .fin-button{font-size:11px;padding:7px 9px;min-height:32px;white-space:normal}
+.fin-inline-review .fin-text-button{font-size:11px;white-space:normal}
+.fin-inline-review .fin-small{font-size:11px;line-height:1.45;margin:8px 0}
+.fin-entry-fields{border:0;padding:0;margin:0;min-width:0}
+.fin-new-statement-entry{padding:12px;background:#f5f8f5;border:1px solid #d5e4d8;border-radius:8px;margin-bottom:14px}
+@container (max-width:350px){.fin-inline-review .fin-form-grid{grid-template-columns:minmax(0,1fr)}.fin-inline-review .fin-span-2{grid-column:span 1}}
+@container (min-width:600px){.fin-inline-review .fin-form-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}

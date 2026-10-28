@@ -1,5 +1,6 @@
 import { bookkeepingRoutes } from './bookkeeping-http.js';
 import { registerBookkeepingAuditRoutes } from './bookkeeping-audit.js';
+import { createBookkeepingEntry } from './bookkeeping-entry.js';
 const pacificDate = value => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
 export const cents = value => Math.round(Number(value || 0) * 100);
 const money = value => Math.round(value) / 100;
@@ -156,11 +157,9 @@ export function registerFinanceRoutes(app, { pool, stripe, notify = () => {} }) 
   routes.post('/api/bookkeeping/stripe/sync', async (req, res) => { try { res.json(await syncStripe(req.body)); } catch (error) { errorResponse(res, error); } });
 
   routes.post('/api/bookkeeping/entries', async (req, res) => {
-    const b = req.body || {};
-    if (!['income','expense','refund','transfer','adjustment'].includes(b.transaction_type) || !/^\d{4}-\d{2}-\d{2}$/.test(b.transaction_date || '') || !Number.isFinite(Number(b.total)) || cents(b.total) <= 0 || !String(b.vendor || '').trim()) return res.status(400).json({ message: 'Enter a date, vendor, positive amount, and transaction type.' });
     try {
-      const result = await pool.query(`INSERT INTO bookkeeping_transactions (uploaded_by_admin_user_id,transaction_date,vendor,description,total,currency,category,payment_account,transaction_type,status,notes,approved_by_admin_user_id,approved_at) VALUES ($1,$2,$3,$4,$5,'USD',$6,$7,$8,'approved',$9,$1,now()) RETURNING *`, [req.adminUser.id,b.transaction_date,b.vendor.trim(),b.description || '',money(cents(b.total)),b.category || null,b.payment_account || null,b.transaction_type,b.notes || 'Manual bookkeeping entry']);
-      notify({ reason: 'bookkeeping_changed' }); res.status(201).json({ transaction: result.rows[0] });
+      const transaction = await createBookkeepingEntry({ pool, body: req.body, adminUserId: req.adminUser.id });
+      notify({ reason: 'bookkeeping_changed' }); res.status(201).json({ transaction });
     } catch (error) { errorResponse(res, error); }
   });
 
