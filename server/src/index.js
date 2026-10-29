@@ -9094,7 +9094,8 @@ app.delete("/api/reservation-payment-events/:id", async (req, res) => {
           id,
           reservation_id,
           amount,
-          payment_source
+          payment_source,
+          to_jsonb(reservation_payment_events)->>'historical_assumption' AS historical_assumption
         FROM reservation_payment_events
         WHERE id = $1
         FOR UPDATE
@@ -9108,6 +9109,11 @@ app.delete("/api/reservation-payment-events/:id", async (req, res) => {
     }
 
     const paymentEvent = paymentEventResult.rows[0];
+
+    if (paymentEvent.historical_assumption === "true") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ message: "Use Bookkeeping > Lodging tax > Backfill history / Undo to reverse this historical batch and restore its original paid totals." });
+    }
 
     if (paymentEvent.payment_source !== "office_card_reader") {
       await client.query("ROLLBACK");

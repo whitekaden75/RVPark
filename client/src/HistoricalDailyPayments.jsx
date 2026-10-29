@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react';
 import { Alert, Button, Checkbox, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel } from '@mui/material';
+import HistoricalPaymentHistory from './HistoricalPaymentHistory.jsx';
 
 const money=value=>value==null?'—':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(value);
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Los_Angeles',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 
-export default function HistoricalDailyPayments({apiRequest,onApplied,disabled=false}) {
+export default function HistoricalDailyPayments({apiRequest,onApplied,onUndone,disabled=false}) {
   const [open,setOpen]=useState(false),[from,setFrom]=useState('2026-07-01'),[to,setTo]=useState(today);
   const [plan,setPlan]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[applying,setApplying]=useState(false),[confirmed,setConfirmed]=useState(false);
   const inFlight=useRef(false),dateKey=useRef('');dateKey.current=`${from}:${to}`;
@@ -24,7 +25,7 @@ export default function HistoricalDailyPayments({apiRequest,onApplied,disabled=f
     }catch(err){setError(err.message);setPlan(null);setConfirmed(false);}finally{inFlight.current=false;setBusy(false);setApplying(false);}
   }
   return <>
-    <div className="fin-historical-payment-callout"><div><strong>Fill the paper-record gap</strong><p>Review completed daily stays, recover missing Stripe entries, and add assumed cash payments for stays without linked Stripe records.</p></div><Button variant="outlined" disabled={disabled} onClick={()=>{setOpen(true);setError('');setPlan(null);setConfirmed(false);}}>Backfill historical daily payments</Button></div>
+    <div className="fin-historical-payment-callout"><div><strong>Fill the paper-record gap</strong><p>Review completed daily stays, recover missing Stripe entries, and add assumed cash payments for stays without linked Stripe records.</p></div><div className="fin-backfill-actions"><Button variant="outlined" disabled={disabled} onClick={()=>{setOpen(true);setError('');setPlan(null);setConfirmed(false);}}>Backfill historical daily payments</Button><HistoricalPaymentHistory apiRequest={apiRequest} onUndone={onUndone} disabled={disabled}/></div></div>
     <Dialog open={open} onClose={()=>{if(!busy)setOpen(false);}} fullWidth maxWidth="lg" aria-labelledby="historical-payment-title">
       <DialogTitle id="historical-payment-title">Backfill completed daily stays</DialogTitle>
       <DialogContent className="fin-modal-content finance-dialog">

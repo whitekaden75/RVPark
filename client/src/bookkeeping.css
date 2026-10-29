@@ -51,3 +51,4 @@
 .fin-historical-payment-callout>div{flex:1;min-width:220px}.fin-historical-payment-callout p{margin-top:6px!important;line-height:1.6;color:var(--fin-muted)}
 .fin-historical-payment-preview{max-height:45vh;overflow:auto}.fin-historical-skipped{margin-top:18px;font-size:12px}.fin-historical-skipped summary{cursor:pointer;font-weight:600}
 .fin-modal-content .fin-backfill-confirm{display:flex;flex-direction:row;align-items:center;margin:16px 0 0}.fin-backfill-confirm .MuiFormControlLabel-label{font-size:12px;line-height:1.6}
+.fin-backfill-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

@@ -8,6 +8,65 @@ const sum=rows=>rows.reduce((total,row)=>total+(cents(row.amount) || 0),0);
 const fail=(message,statusCode=409)=>Object.assign(new Error(message),{statusCode});
 const timestamp=value=>value && Number.isFinite(new Date(value).valueOf()) ? new Date(value).toISOString() : null;
 const parkDate=value=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Los_Angeles',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(value));
+const canonical=value=>JSON.stringify(value,(_,v)=>v && typeof v==='object' && !Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(key=>[key,v[key]])):v);
+const digest=value=>createHash('sha256').update(canonical(value)).digest('hex');
+const backfillNote=(row,batchId)=>{
+  const priceType=row.kind==='assumed_cash'?'bank':row.priceType;
+  return `Historical backfill (${row.kind==='assumed_cash'?'ASSUMED CASH — not independently verified':'recovered Stripe payment'}). ${row.basis} Batch: ${batchId}.${priceType?` Price type: ${priceType}`:''}`;
+};
+const lockTables='LOCK TABLE stripe_payment_records,reservations,reservation_payment_events,reservation_site_stays,pricing_rules,public_booking_checkouts,bookkeeping_historical_payment_backfills IN SHARE ROW EXCLUSIVE MODE';
+
+async function reservationState(client,id) {
+  const result=await client.query(`SELECT
+    (SELECT to_jsonb(r) FROM reservations r WHERE r.id=$1) AS reservation,
+    COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id) FROM reservation_site_stays s WHERE s.reservation_id=$1),'[]'::jsonb) AS stays,
+    COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id) FROM reservation_payment_events e WHERE e.reservation_id=$1),'[]'::jsonb) AS events`,[id]);
+  return result.rows[0];
+}
+
+async function loadUndoPlan(client,getReservations,batchId) {
+  if(typeof batchId!=='string' || !batchId || batchId.length>100)throw fail('Select a backfill batch.',400);
+  const audit=await client.query('SELECT * FROM bookkeeping_historical_payment_backfills WHERE batch_id=$1 ORDER BY id',[batchId]);
+  if(!audit.rowCount)throw fail('Backfill batch not found.',404);
+  const records=audit.rows,blocked=[],rows=[],states={};
+  const reservations=await getReservations(client);
+  if(records.some(row=>row.reversed_at))blocked.push('This batch has already been undone.');
+  for(const id of [...new Set(records.map(row=>String(row.reservation_id)))]) {
+    const entries=records.filter(row=>String(row.reservation_id)===id),first=entries[0],last=entries.at(-1);
+    const state=await reservationState(client,id);states[id]=state;
+    const reservation=reservations.find(row=>String(row.id)===id);
+    const label=`Booking #${id}`;
+    const expected=last.undo_state;
+    if(!state.reservation || !reservation) {blocked.push(`${label} no longer exists.`);continue;}
+    const restored=first.previous_amount_paid==null?null:Number(first.previous_amount_paid);
+    const current=state.reservation.amount_paid==null?null:Number(state.reservation.amount_paid);
+    rows.push({reservationId:id,guestName:`${reservation.first_name || ''} ${reservation.last_name || ''}`.trim(),removedAmount:sum(entries)/100,currentAmountPaid:current,restoredAmountPaid:restored});
+    if(entries.some(row=>String(row.proposal.reservationId)!==id))blocked.push(`${label} was merged or reassigned after the backfill.`);
+    if(cents(current)!==cents(last.updated_amount_paid))blocked.push(`${label}'s paid total has changed.`);
+    if(expected) {
+      if(canonical(state)!==canonical(expected))blocked.push(`${label}'s payments or booking details changed after this batch. Review them before undoing.`);
+    } else {
+      // Earlier batches predate full state snapshots. Verify their provenance,
+      // untouched payment history, dates, price and booking status conservatively.
+      const batchIds=new Set(entries.map(row=>String(row.payment_event_id)));
+      const otherEvents=state.events.filter(row=>!batchIds.has(String(row.id)));
+      const earliestId=Math.min(...entries.map(row=>Number(row.payment_event_id) || 0));
+      if(otherEvents.some(row=>Number(row.id)>earliestId || timestamp(row.created_at)>timestamp(first.created_at)) || sum(otherEvents)!==cents(first.proposal.existingEventAmount))blocked.push(`${label}'s payment history no longer matches the original backfill.`);
+      const stays=[...(reservation.siteStays || [])].sort((a,b)=>a.arrival_date.localeCompare(b.arrival_date));
+      if(reservation.status!=='active' || reservation.merged_into_reservation_id || isMonthlyAccount(reservation,stays) || reservation.effectiveBillingMode==='monthly' || stays[0]?.arrival_date!==first.proposal.arrival || stays.map(stay=>stay.leave_date).sort().at(-1)!==first.proposal.departure || [...new Set(stays.map(stay=>stay.site_number))].join(', ')!==first.proposal.sites || cents(reservation.bankTotalPrice)!==cents(first.proposal.cashPrice) || reservation.balanceWaiver?.active || reservation.balance_waiver?.active || timestamp(state.reservation.updated_at)>timestamp(first.created_at))blocked.push(`${label}'s booking details no longer match the original backfill.`);
+      for(const entry of entries) {
+        const event=state.events.find(row=>String(row.id)===String(entry.payment_event_id)),proposal=entry.proposal;
+        const expectedTime=await client.query("SELECT COALESCE($1::timestamptz,($2::date+time '12:00') AT TIME ZONE 'America/Los_Angeles') AS value",[proposal.recordedAt,proposal.paymentDate]);
+        if(!event || cents(event.amount)!==cents(entry.amount) || event.payment_source!==(entry.kind==='assumed_cash'?'office_card_reader':'stripe') || String(event.stripe_payment_record_id || '')!==String(proposal.stripePaymentRecordId || '') || event.note!==backfillNote(proposal,batchId) || event.historical_assumption!==(entry.kind==='assumed_cash') || event.historical_date_assumed!==proposal.dateAssumed || timestamp(event.recorded_at)!==timestamp(expectedTime.rows[0].value))blocked.push(`${label}'s backfilled payment is missing or has been edited.`);
+      }
+    }
+  }
+  const plan={batchId,from:date(records[0].period_start),to:date(records[0].period_end),entryCount:records.length,
+    assumedCashTotal:sum(records.filter(row=>row.kind==='assumed_cash'))/100,stripeRecoveredTotal:sum(records.filter(row=>row.kind==='stripe_record'))/100,
+    rows,blocked:[...new Set(blocked)],canUndo:blocked.length===0};
+  // Hash the current full records as well as the preview, including legacy batches.
+  return {...plan,snapshot:digest({plan,states,records})};
+}
 
 export function historicalDailyPeriod(query={},today) {
   const period=lodgingPeriod({from:query.from || '2026-07-01',to:query.to || today},today);
@@ -86,7 +145,7 @@ async function loadPlan(client,getReservations,period) {
   const stripeCheckouts=await client.query('SELECT reservation_id,stripe_checkout_session_id,to_jsonb(b)->>\'stripe_payment_intent_id\' AS stripe_payment_intent_id FROM public_booking_checkouts b WHERE reservation_id IS NOT NULL ORDER BY id');
   const exists=await client.query("SELECT to_regclass('bookkeeping_stripe_activity') AS relation");
   const stripeActivity=exists.rows[0]?.relation ? await client.query('SELECT DISTINCT reservation_id FROM bookkeeping_stripe_activity WHERE reservation_id IS NOT NULL') : {rows:[]};
-  const existingBackfills=await client.query('SELECT backfill_key FROM bookkeeping_historical_payment_backfills ORDER BY backfill_key');
+  const existingBackfills=await client.query("SELECT backfill_key FROM bookkeeping_historical_payment_backfills b WHERE to_jsonb(b)->>'reversed_at' IS NULL ORDER BY backfill_key");
   return planHistoricalDailyPayments({...period,reservations,stripeRecords:stripeRecords.rows,stripeCheckouts:stripeCheckouts.rows,stripeActivity:stripeActivity.rows,existingBackfills:existingBackfills.rows});
 }
 
@@ -113,14 +172,18 @@ export function registerHistoricalDailyPaymentRoutes(app,{pool,getReservations,n
       await client.query("SET LOCAL lock_timeout='5s'");
       // Match the payment writer order (Stripe then reservations then events).
       // Block new payments as well as edits while rechecking and writing a batch.
-      await client.query('LOCK TABLE stripe_payment_records,reservations,reservation_payment_events,reservation_site_stays,pricing_rules,public_booking_checkouts,bookkeeping_historical_payment_backfills IN SHARE ROW EXCLUSIVE MODE');
+      await client.query(lockTables);
       const plan=await loadPlan(client,getReservations,period);
       if(plan.snapshot!==body.snapshot)throw fail('Payments, dates, or prices changed. Refresh the preview and review the new list.');
       if(!plan.count)throw fail('There are no missing entries in this preview.');
       const batchId=randomUUID();
+      const originalBalances=new Map();
+      for(const id of new Set(plan.proposals.map(row=>row.reservationId))) {
+        const original=await client.query('SELECT amount_paid FROM reservations WHERE id=$1',[id]);
+        originalBalances.set(id,original.rows[0].amount_paid);
+      }
       for(const row of plan.proposals) {
-        const priceType=row.kind==='assumed_cash'?'bank':row.priceType;
-        const note=`Historical backfill (${row.kind==='assumed_cash'?'ASSUMED CASH — not independently verified':'recovered Stripe payment'}). ${row.basis} Batch: ${batchId}.${priceType?` Price type: ${priceType}`:''}`;
+        const note=backfillNote(row,batchId);
         const event=await client.query(`INSERT INTO reservation_payment_events
           (reservation_id,stripe_payment_record_id,amount,payment_source,note,recorded_at,historical_assumption,historical_date_assumed)
           VALUES($1,$2,$3,$4,$5,COALESCE($6::timestamptz,($7::date+time '12:00') AT TIME ZONE 'America/Los_Angeles'),$8,$9) RETURNING id`,
@@ -131,7 +194,14 @@ export function registerHistoricalDailyPaymentRoutes(app,{pool,getReservations,n
         await client.query(`INSERT INTO bookkeeping_historical_payment_backfills
           (batch_id,backfill_key,reservation_id,payment_event_id,kind,amount,previous_amount_paid,updated_amount_paid,period_start,period_end,payment_date_assumed,proposal,created_by_admin_user_id)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)`,
-        [batchId,row.key,row.reservationId,event.rows[0].id,row.kind,row.amount,row.previousAmountPaid,row.updatedAmountPaid,period.from,period.to,row.dateAssumed,JSON.stringify(row),req.adminUser.id]);
+        [batchId,row.key,row.reservationId,event.rows[0].id,row.kind,row.amount,originalBalances.get(row.reservationId),row.updatedAmountPaid,period.from,period.to,row.dateAssumed,JSON.stringify(row),req.adminUser.id]);
+      }
+      // Capture final state once every entry in the batch has been written.
+      // Legacy installations can still apply using the original setup SQL.
+      const undoEnabled=await client.query("SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='bookkeeping_historical_payment_backfills'::regclass AND attname='undo_state' AND NOT attisdropped) AS enabled");
+      if(undoEnabled.rows[0].enabled)for(const id of new Set(plan.proposals.map(row=>row.reservationId))) {
+        const state=await reservationState(client,id);
+        await client.query('UPDATE bookkeeping_historical_payment_backfills SET undo_state=$3::jsonb WHERE batch_id=$1 AND reservation_id=$2',[batchId,id,JSON.stringify(state)]);
       }
       await client.query('COMMIT');notify({reason:'bookkeeping_changed'});
       res.json({batchId,from:period.from,to:period.to,createdCount:plan.count,assumedCashTotal:plan.assumedCashTotal,stripeRecoveredTotal:plan.stripeRecoveredTotal});
@@ -140,5 +210,46 @@ export function registerHistoricalDailyPaymentRoutes(app,{pool,getReservations,n
       if(['55P03','40P01'].includes(error.code))throw fail('A booking or payment is being updated. Refresh the preview and try again.');
       if(!schemaError(res,error))throw error;
     } finally {client.release();}
+  });
+  const undoSchemaError=(res,error)=>{
+    if(['42P01','42703'].includes(error.code)) {res.status(503).json({message:'Run the historical daily payments setup SQL, then sql/2026-10-27_undo_historical_daily_payments.sql to enable batch history and undo. Neither setup SQL changes payments.'});return true;}
+    return false;
+  };
+  routes.get('/api/bookkeeping/historical-daily-payments/batches',async(req,res)=>{
+    try {
+      const result=await pool.query(`SELECT batch_id AS "batchId",min(created_at) AS "createdAt",min(period_start)::text AS "from",max(period_end)::text AS "to",
+        count(*)::int AS "createdCount",sum(amount) FILTER(WHERE kind='assumed_cash') AS "assumedCashTotal",sum(amount) FILTER(WHERE kind='stripe_record') AS "stripeRecoveredTotal",
+        max(reversed_at) AS "reversedAt" FROM bookkeeping_historical_payment_backfills GROUP BY batch_id ORDER BY min(created_at) DESC,batch_id DESC`);
+      res.json({batches:result.rows.map(row=>({...row,assumedCashTotal:Number(row.assumedCashTotal || 0),stripeRecoveredTotal:Number(row.stripeRecoveredTotal || 0)}))});
+    }catch(error){if(!undoSchemaError(res,error))throw error;}
+  });
+  routes.get('/api/bookkeeping/historical-daily-payments/undo-preview',async(req,res)=>{
+    const client=await pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const plan=await loadUndoPlan(client,getReservations,req.query.batchId);
+      await client.query('COMMIT');res.json(plan);
+    }catch(error){await client.query('ROLLBACK').catch(()=>{});if(!undoSchemaError(res,error))throw error;}finally{client.release();}
+  });
+  routes.post('/api/bookkeeping/historical-daily-payments/undo',async(req,res)=>{
+    const body=req.body || {};
+    if(body.confirmUndo!==true || !/^[a-f0-9]{64}$/.test(body.snapshot || ''))throw fail('Review this batch and confirm undo.',400);
+    const client=await pool.connect();
+    try {
+      await client.query('BEGIN');await client.query("SET LOCAL lock_timeout='5s'");await client.query(lockTables);
+      const plan=await loadUndoPlan(client,getReservations,body.batchId);
+      if(plan.snapshot!==body.snapshot)throw fail('The batch or its bookings changed. Refresh the undo preview.');
+      if(!plan.canUndo)throw fail(plan.blocked.join(' '));
+      const audit=await client.query('SELECT payment_event_id FROM bookkeeping_historical_payment_backfills WHERE batch_id=$1 ORDER BY id',[plan.batchId]);
+      await client.query('UPDATE bookkeeping_historical_payment_backfills SET reversed_at=now(),reversed_by_admin_user_id=$2,reversal_snapshot=$3::jsonb WHERE batch_id=$1',[plan.batchId,req.adminUser.id,JSON.stringify(plan)]);
+      await client.query('DELETE FROM reservation_payment_events WHERE id=ANY($1::bigint[])',[audit.rows.map(row=>row.payment_event_id)]);
+      for(const row of plan.rows)await client.query('UPDATE reservations SET amount_paid=$2 WHERE id=$1',[row.reservationId,row.restoredAmountPaid]);
+      await client.query('COMMIT');notify({reason:'bookkeeping_changed'});
+      res.json({batchId:plan.batchId,from:plan.from,to:plan.to,undoneCount:plan.entryCount,assumedCashTotal:plan.assumedCashTotal,stripeRecoveredTotal:plan.stripeRecoveredTotal});
+    }catch(error){
+      await client.query('ROLLBACK').catch(()=>{});
+      if(['55P03','40P01'].includes(error.code))throw fail('A booking or payment is being updated. Refresh the undo preview and try again.');
+      if(!undoSchemaError(res,error))throw error;
+    }finally{client.release();}
   });
 }

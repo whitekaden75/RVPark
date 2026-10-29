@@ -112,6 +112,8 @@ Open **Edit dates/site** to find **Monthly & combined bookings**. Save pending d
 
 ### Stripe Terminal
 
+The admin site checks the reader immediately after login on every admin page and refreshes its status every 15 seconds. **Check reader again** is available in payment panels, including when no reader has been found. A stalled check ends after 12 seconds and displays a connection error; Stripe configuration/account/mode errors are shown separately from payment failures. Deploy the frontend for this status-check fix; no database migration or backend change is required.
+
 Register the Stripe S710 to the live Stripe account and keep it assigned to the correct Terminal Location. The admin reservation flow uses Stripe's server-driven Terminal integration: after a reservation is created, the office can record cash/check or send the card deposit to the reader, and the reservation is updated only after Stripe confirms a successful card-present PaymentIntent.
 
 If the Stripe account has exactly one physical Terminal reader, the server discovers it automatically. If the account has multiple readers, set `STRIPE_TERMINAL_READER_ID` to the office reader ID (it begins with `tmr_`). Office Terminal buttons always use the card price. Bank-account/ACH payment remains available only through secure guest payment links; cash and check are recorded separately in the office.
@@ -359,6 +361,10 @@ In **Reconcile → All transactions**, the reconciliation assistant scans every 
 
 Bills are a due-date tracker. They do not add expenses themselves. Record the actual payment as an approved expense and link it to the bill; the same expense cannot pay two tracked bills. Nothing in this workspace initiates a bank payment. Export the selected period's ledger CSV for your accountant.
 
-This is a practical cash-basis bookkeeping workspace, not full QuickBooks parity: automatic bank feeds, double-entry accounting/balance sheets, payroll, tax filing, and accrual/deferred-revenue accounting are not implemented. Historical office collections predating payment-event records must be reviewed separately.
+In **Bookkeeping > Lodging tax**, the historical daily payment tool previews completed daily stays since July 1, 2026. Apply `sql/2026-10-27_historical_daily_payments.sql`, followed by `sql/2026-10-27_undo_historical_daily_payments.sql`, to enable recording and batch undo. These setup scripts do not change payments. Recording requires reviewing and confirming a preview; cash amounts and arrival-date proxies are explicitly labeled assumptions. Monthly accounts remain in the separate estimated-charges report.
+
+**Backfill history / Undo** shows batches recorded by this tool, including previously undone batches. Review a batch to see the ledger amounts removed and the original booking paid totals restored. Undo is atomic, retains the audit history and original Stripe records, and sends no messages, charges, or refunds. Changes to payments or booking details block undo; older batches are checked against their original provenance and payment totals. Reversed entries may be previewed and recorded again. Historical cash entries must be reversed through this batch tool rather than the ordinary office-payment delete action.
+
+This is a practical cash-basis bookkeeping workspace, not full QuickBooks parity: automatic bank feeds, double-entry accounting/balance sheets, payroll, tax filing, and accrual/deferred-revenue accounting are not implemented. Historical cash assumptions still require reconciliation against paper records.
 
 Verification: run `npm run build` in `client` and `node --test src/*.test.js` in `server`.

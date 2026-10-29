@@ -24,6 +24,7 @@ import {
 } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
 import CheckInPage from "./CheckInPage.jsx";
+import { useTerminalReader } from "./useTerminalReader.js";
 import MessageInbox from "./MessageInbox.jsx";
 import AdminOverview from "./AdminOverview.jsx";
 import ReservationTools from "./ReservationTools.jsx";
@@ -6094,6 +6095,9 @@ function CardPaymentForm({
 
 function TerminalPaymentPanel({
   reader,
+  readerError,
+  onRefreshReader,
+  isRefreshingReader = false,
   payment,
   reservationId,
   errorMessage,
@@ -6114,7 +6118,9 @@ function TerminalPaymentPanel({
         <div>
           <strong>{reader?.label || "Office Stripe Terminal"}</strong>
           <span>
-            {reader
+            {readerError
+              ? "Reader status unavailable"
+              : reader
               ? readerOnline
                 ? reader.simulatorMode
                   ? "Test simulator online — no real charge"
@@ -6122,8 +6128,14 @@ function TerminalPaymentPanel({
                 : "Reader offline"
               : "Checking reader connection…"}
           </span>
+          {onRefreshReader ? (
+            <button type="button" className="ghost-button" disabled={isRefreshingReader} onClick={onRefreshReader}>
+              {isRefreshingReader ? "Checking reader…" : "Check reader again"}
+            </button>
+          ) : null}
         </div>
       </div>
+      {readerError ? <div className="message error" role="alert">{readerError}</div> : null}
       {activePayment ? (
         <div className="terminal-payment-progress">
           {activePayment.status === "in_progress" ? (
@@ -6188,6 +6200,9 @@ function TerminalPaymentPanel({
 
 function FloatingTerminalPayment({
   reader,
+  readerError,
+  onRefreshReader,
+  isRefreshingReader,
   payment,
   errorMessage,
   onRetry,
@@ -6254,6 +6269,9 @@ function FloatingTerminalPayment({
       {!isMinimized ? (
         <TerminalPaymentPanel
           reader={reader}
+          readerError={readerError}
+          onRefreshReader={onRefreshReader}
+          isRefreshingReader={isRefreshingReader}
           payment={payment}
           reservationId={payment.reservationId}
           errorMessage={errorMessage}
@@ -6471,9 +6489,13 @@ export default function App() {
     useState("");
   const [schedulePaymentSuccessMessage, setSchedulePaymentSuccessMessage] =
     useState("");
-  const [terminalReader, setTerminalReader] = useState(null);
-  const [isRefreshingTerminalReader, setIsRefreshingTerminalReader] =
-    useState(false);
+  const {
+    reader: terminalReader,
+    setReader: setTerminalReader,
+    error: terminalReaderError,
+    isChecking: isRefreshingTerminalReader,
+    refresh: refreshTerminalReaderStatus,
+  } = useTerminalReader(isUnlocked && !["home", "guest"].includes(activePage), apiRequest);
   const [terminalPayment, setTerminalPayment] = useState(
     () => readPendingTerminalWorkflow()?.payment || null
   );
@@ -6856,35 +6878,6 @@ export default function App() {
       setCreatedReservation(refreshedReservation);
     }
   }, [createdReservation, editingReservationId, reservations]);
-
-  useEffect(() => {
-    if (
-      !isUnlocked ||
-      !["reservation", "schedule", "checkin", "monthly"].includes(activePage)
-    ) {
-      return undefined;
-    }
-
-    let isCancelled = false;
-
-    apiRequest("/stripe/terminal/status")
-      .then((result) => {
-        if (!isCancelled) {
-          setTerminalReader(result.reader);
-          setTerminalPaymentError("");
-        }
-      })
-      .catch((error) => {
-        if (!isCancelled) {
-          setTerminalReader(null);
-          setTerminalPaymentError(error.message);
-        }
-      });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [activePage, isUnlocked]);
 
   useEffect(() => {
     const paymentIntentId = terminalPayment?.paymentIntentId;
@@ -9516,22 +9509,6 @@ export default function App() {
     }
   }
 
-  async function refreshTerminalReaderStatus() {
-    setIsRefreshingTerminalReader(true);
-    setTerminalPaymentError("");
-
-    try {
-      const result = await apiRequest("/stripe/terminal/status");
-      setTerminalReader(result.reader);
-      return result.reader;
-    } catch (error) {
-      setTerminalPaymentError(error.message);
-      return null;
-    } finally {
-      setIsRefreshingTerminalReader(false);
-    }
-  }
-
   async function sendCheckInBalanceToTerminal(
     reservation,
     form,
@@ -10900,6 +10877,9 @@ export default function App() {
     terminalPayment && !isTerminalSourceVisible ? (
       <FloatingTerminalPayment
         reader={terminalReader}
+        readerError={terminalReaderError}
+        onRefreshReader={refreshTerminalReaderStatus}
+        isRefreshingReader={isRefreshingTerminalReader}
         payment={terminalPayment}
         errorMessage={terminalPaymentError}
         onRetry={retryTerminalPayment}
@@ -11265,6 +11245,7 @@ export default function App() {
             onOpenReservation={openScheduleReservation}
             onLoadReservation={loadCompleteCheckInReservation}
             terminalReader={terminalReader}
+            terminalReaderError={terminalReaderError}
             terminalPayment={terminalPayment}
             terminalError={terminalPaymentError}
             onSendToTerminal={sendCheckInBalanceToTerminal}
@@ -12362,6 +12343,9 @@ export default function App() {
                     </div>
                     <TerminalPaymentPanel
                       reader={terminalReader}
+                      readerError={terminalReaderError}
+                      onRefreshReader={refreshTerminalReaderStatus}
+                      isRefreshingReader={isRefreshingTerminalReader}
                       payment={terminalPayment}
                       reservationId={createdReservation.id}
                       errorMessage={terminalPaymentError}
@@ -13501,6 +13485,7 @@ export default function App() {
               <h3>{monthlySearchValue || monthlySiteFilter ? "Monthly guest results" : "Current guests"}</h3>
               <span className="muted">{filteredMonthlyReservations.length} {filteredMonthlyReservations.length === 1 ? "booking" : "bookings"}</span>
             </div>
+            {terminalReaderError ? <div className="message error" role="alert">{terminalReaderError}</div> : null}
             {terminalPaymentError ? (
               <div className="message error">{terminalPaymentError}</div>
             ) : null}
@@ -13743,6 +13728,9 @@ export default function App() {
                       {terminalPayment?.reservationId === reservation.id ? (
                         <TerminalPaymentPanel
                           reader={terminalReader}
+                          readerError={terminalReaderError}
+                          onRefreshReader={refreshTerminalReaderStatus}
+                          isRefreshingReader={isRefreshingTerminalReader}
                           payment={terminalPayment}
                           reservationId={reservation.id}
                           errorMessage={terminalPaymentError}
@@ -14925,6 +14913,9 @@ export default function App() {
                       ) : null}
                       <TerminalPaymentPanel
                         reader={terminalReader}
+                        readerError={terminalReaderError}
+                        onRefreshReader={refreshTerminalReaderStatus}
+                        isRefreshingReader={isRefreshingTerminalReader}
                         payment={terminalPayment}
                         reservationId={activeScheduleReservation.id}
                         errorMessage={terminalPaymentError}

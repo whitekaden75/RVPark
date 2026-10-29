@@ -296,6 +296,7 @@ export default function CheckInPage({
   onOpenReservation,
   onLoadReservation,
   terminalReader,
+  terminalReaderError,
   terminalPayment,
   terminalError,
   onSendToTerminal,
@@ -638,7 +639,9 @@ export default function CheckInPage({
               <div>
                 <strong>{terminalReader?.label || "Stripe Terminal"}</strong>
                 <span>
-                  {terminalReader
+                  {terminalReaderError
+                    ? "Reader status unavailable"
+                    : terminalReader
                     ? readerOnline
                       ? terminalReader.simulatorMode
                         ? "Test simulator — no real charge"
@@ -646,7 +649,7 @@ export default function CheckInPage({
                       : "Reader offline"
                     : "Checking reader connection…"}
                 </span>
-                {terminalReader && !readerOnline ? (
+                {!readerOnline ? (
                   <button
                     type="button"
                     className="ghost-button checkin-reader-refresh"
@@ -765,6 +768,7 @@ export default function CheckInPage({
                 ) : null}
               </div>
             ) : null}
+            {terminalReaderError ? <div className="message error" role="alert">{terminalReaderError}</div> : null}
             {terminalError ? <div className="message error">{terminalError}</div> : null}
           </section>
         ) : null}
