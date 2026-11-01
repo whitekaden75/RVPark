@@ -12,6 +12,8 @@ import { createLateArrivalTexts } from "./late-arrivals.js";
 import { applyBalanceWaiver, registerBalanceWaiverRoutes } from "./pricing-waivers.js";
 import { registerAfterHoursCashRoutes } from "./after-hours-cash.js";
 import { registerCombinedBookingRoutes } from "./combined-bookings.js";
+import { registerCheckoutReturnRoutes } from "./checkout-return.js";
+import { registerMonthlyOfficePaymentRoutes } from "./monthly-office-payments.js";
 import { createSavedPaymentMethods, storageConsentVersion, storageConsentText } from "./saved-payment-methods.js";
 import { registerBookkeepingRoutes } from "./bookkeeping.js";
 import { registerFinanceRoutes } from "./bookkeeping-finance.js";
@@ -33,7 +35,8 @@ import {
   buildPricingRuleLookup,
   buildBillingSummary,
   getPricingForSiteAndNights,
-  sumReservationTotals
+  sumReservationTotals,
+  getComplimentaryNightDates
 } from "./reservation-pricing.js";
 import {
   buildAvailabilityMap,
@@ -3749,6 +3752,7 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.pricing_category_override,
         r.requested_discounts,
         to_jsonb(r)->'balance_waiver' AS balance_waiver,
+        to_jsonb(r)->'nightly_price_adjustment' AS nightly_price_adjustment,
         to_jsonb(r)->'after_hours_cash_received' AS after_hours_cash_received,
         coalesce((to_jsonb(r)->>'monthly_classification')::boolean,false) AS monthly_classification,
         coalesce((to_jsonb(r)->>'manual_pricing_override')::boolean,false) AS manual_pricing_override,
@@ -3899,7 +3903,7 @@ async function fetchReservationDetails(queryable, reservationId) {
     livePricedSiteStays,
     bookedPricing.get(Number(reservationId))
   );
-  const totals = sumReservationTotals(pricedSiteStays);
+  const totals = sumReservationTotals(pricedSiteStays, getComplimentaryNightDates(reservationRow, pricedSiteStays));
   const billing = buildBillingSummary(
     reservationRow,
     totals,
@@ -3966,7 +3970,7 @@ function buildReservationDetailsFromParts(
     })()
   }));
   const pricedSiteStays = applyBookedPricing(reservationRow, livePricedSiteStays, bookedPricing);
-  const totals = sumReservationTotals(pricedSiteStays);
+  const totals = sumReservationTotals(pricedSiteStays, getComplimentaryNightDates(reservationRow, pricedSiteStays));
   const billing = buildBillingSummary(reservationRow, totals, paymentEventRows);
 
   return {
@@ -4025,6 +4029,7 @@ async function fetchReservationList(queryable) {
         r.pricing_category_override,
         r.requested_discounts,
         to_jsonb(r)->'balance_waiver' AS balance_waiver,
+        to_jsonb(r)->'nightly_price_adjustment' AS nightly_price_adjustment,
         to_jsonb(r)->'after_hours_cash_received' AS after_hours_cash_received,
         coalesce((to_jsonb(r)->>'monthly_classification')::boolean,false) AS monthly_classification,
         coalesce((to_jsonb(r)->>'manual_pricing_override')::boolean,false) AS manual_pricing_override,
@@ -4322,6 +4327,10 @@ function sanitizeGuestReservation(reservation) {
     totalStayNights: reservation.totalStayNights,
     paidStayNights: reservation.paidStayNights,
     unpaidStayNights: reservation.unpaidStayNights,
+    totalChargeableNights: reservation.totalChargeableNights,
+    paidChargeableNights: reservation.paidChargeableNights,
+    unpaidChargeableNights: reservation.unpaidChargeableNights,
+    additionalFreeNights: reservation.additionalFreeNights,
     remainingBalance: reservation.remainingBalance,
     bankRemainingBalance: reservation.bankRemainingBalance,
     cardRemainingBalance: reservation.cardRemainingBalance,
@@ -6674,6 +6683,10 @@ app.get("/api/guest/payment-links/:token", async (req, res) => {
       totalStayNights: reservation.totalStayNights,
       paidStayNights: reservation.paidStayNights,
       unpaidStayNights: reservation.unpaidStayNights,
+      totalChargeableNights: reservation.totalChargeableNights,
+      paidChargeableNights: reservation.paidChargeableNights,
+      unpaidChargeableNights: reservation.unpaidChargeableNights,
+      additionalFreeNights: reservation.additionalFreeNights,
       bankAmount,
       cardAmount,
       description: link.description || "",
@@ -6743,7 +6756,7 @@ app.post("/api/guest/payment-links/:token/checkouts", async (req, res) => {
     const paymentChoice = paymentMethod === "card" ? "card" : "bank";
     const returnUrl = `${baseUrl}/?pay=${encodeURIComponent(
       req.params.token
-    )}&pay_status=success&payment_choice=${paymentChoice}`;
+    )}&pay_status=success&payment_choice=${paymentChoice}&session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${baseUrl}/?pay=${encodeURIComponent(
       req.params.token
     )}&pay_status=cancel&payment_choice=${paymentChoice}`;
@@ -7313,7 +7326,7 @@ app.post("/api/reservations/:id/monthly-meter-readings", async (req, res) => {
     const result = await pool.query(`INSERT INTO monthly_meter_readings (reservation_id, reading, reading_date, note) VALUES ($1,$2,COALESCE($3::date,CURRENT_DATE),$4) RETURNING id, reading, reading_date::text, note, created_at`, [req.params.id, reading, req.body?.readingDate || null, String(req.body?.note || "")]);
     await pool.query("UPDATE reservations SET electric_meter_reading=$2 WHERE id=$1", [req.params.id, reading]);
     let billingMessage = null;
-    if (req.body?.prepareBillingMessage === true || req.body?.sendBillingMessage === true) {
+    if (req.body?.prepareBillingMessage === true) {
       const reservation = await fetchReservationDetails(pool, req.params.id);
       const chargesResult = await pool.query(`SELECT description, amount FROM public.monthly_recurring_charges WHERE reservation_id=$1 AND active=true ORDER BY id`, [req.params.id]);
       const recurringCharges = chargesResult.rows;
@@ -7324,20 +7337,12 @@ app.post("/api/reservations/:id/monthly-meter-readings", async (req, res) => {
       const token = createGuestPaymentLinkToken(reservation.id, total);
       const paymentUrl = `${baseUrl}/?pay=${encodeURIComponent(token)}`;
       const phone = normalizeSmsPhoneNumber(reservation.phone_number);
-      if (!phone && req.body?.sendBillingMessage === true) throw new Error("This guest does not have a valid phone number.");
       const lines = ["Riverpark RV Resort", `Monthly statement for ${reservation.first_name || "guest"}:`, `Rent: $${rent.toFixed(2)}`];
       recurringCharges.forEach((charge) => lines.push(`${charge.description}: $${Number(charge.amount).toFixed(2)}`));
       if (electricCharge > 0) lines.push(`Electric (${usage} kWh): $${electricCharge.toFixed(2)}`);
       lines.push(`Total due: $${total.toFixed(2)}`, `Pay by card or bank account: ${paymentUrl}`);
       const body = addSmsComplianceFooter(lines.join("\n"));
-      if (req.body?.sendBillingMessage === true) {
-        if (!isTwilioConfigured) throw new Error("Twilio is not configured for billing messages.");
-        const form = { To: phone, Body: body, ...(twilioMessagingServiceSid ? { MessagingServiceSid: twilioMessagingServiceSid } : { From: twilioPhoneNumber }) };
-        const message = await makeTwilioRequest(`/2010-04-01/Accounts/${encodeURIComponent(twilioAccountSid)}/Messages.json`, { method: "POST", form });
-        billingMessage = { sid: message.sid, total, paymentUrl, to: phone, body };
-      } else {
-        billingMessage = { total, paymentUrl, to: phone, body };
-      }
+      billingMessage = { total, paymentUrl, to: phone, body };
     }
     res.status(201).json({ ...result.rows[0], previousReading, usage, electricCharge: Number(electricCharge.toFixed(2)), billingMessage });
   } catch (error) { res.status(500).json({ message: error.message }); }
@@ -9255,6 +9260,8 @@ registerHistoricalDailyPaymentRoutes(app, { pool, getReservations: fetchReservat
 registerAfterHoursCashRoutes(app, {pool,getReservation:fetchReservationDetails,insertPayment:insertReservationPaymentEvent,findOverlap:findReservationOverlap,notify:broadcastAdminDataChange});
 registerBalanceWaiverRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
 registerCombinedBookingRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
+registerCheckoutReturnRoutes(app, { pool, stripe });
+registerMonthlyOfficePaymentRoutes(app, { pool, getReservation: fetchReservationDetails, notify: broadcastAdminDataChange });
 savedPaymentMethods.registerRoutes(app);
 
 app.listen(port, () => {

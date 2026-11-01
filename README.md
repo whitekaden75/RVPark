@@ -90,6 +90,20 @@ Office-created standard reservations without an online checkout quote continue u
 
 Every seventh consecutive night is free: six paid nights earn the seventh night free. The consecutive-night count continues when a guest switches sites without a date gap and resets when there is a gap. Manual-total, monthly, and yearly billing keep their separate billing behavior. This calculation uses the existing payment-event history and does not require another SQL migration.
 
+### Booking #1169 free-night correction
+
+After deploying the updated server/client, run `sql/2026-11-01_noah_1169_free_night_correction.sql` for the reviewed Noah Atkins booking. It validates his identity, Site A, October 30–November 8 dates, $113.98 collected, and two $56.99 Stripe receipts before granting one additional complimentary date. Combined with the ordinary weekly free night, that leaves seven chargeable nights, two already paid, and five more to pay: $275 cash/check or $284.95 card at the existing nightly prices. Payment history and collected amounts are unchanged. The correction is audited, safe to rerun, and stops applying if the sites/dates change. It grants no free nights to other bookings.
+
+### Monthly cash/check records and manual texts
+
+Run `sql/2026-11-01_monthly_office_payments.sql`, then deploy the server and client. Each Monthly guest card has **Record cash or check** with amount received, payment date, month covered, check number when applicable, and an optional note. These are real entries in the existing reservation payment ledger and flow into bookkeeping and lodging receipts once, on the entered payment date. They are not limited by a nightly stay balance. Saved requests can be retried after a lost response without counting the payment twice. **Payment history** lists cash/check and existing online/office payments; it does not infer that a whole month is paid from a partial receipt.
+
+**Send text…** prepares a monthly payment request in the message composer. **Text receipt…** prepares a receipt for a recorded payment. Review/edit the recipient and message, then press **Send text message** to send. Recording payments and saving meter readings never send texts or open the composer automatically; saving a reading updates the suggested monthly collection amount. The meter endpoint no longer supports direct sending through the old `sendBillingMessage` flag.
+
+### Bank verification after Checkout
+
+After Stripe Checkout returns, payment links, guest bank payments, and public bookings check the actual PaymentIntent before displaying the existing confirmation flow. Payments requiring microdeposit verification automatically open Stripe's hosted verification page, with a manual continuation link if navigation is blocked. Failed or incomplete payments stay on a help page with a status retry button. Only succeeded or processing payments continue normally. The return endpoint only reads payment status; it does not create another charge or mark a reservation paid. Deploy both the server and client; no database migration is required.
+
 ### Saved payment methods for reservations and monthly guests
 
 Before deploying this feature, run `sql/2026-10-24_saved_payment_methods.sql` against the existing database, then deploy both the server and client. The migration makes payment-method storage optional, creates consent and charge audit tables, and imports previously saved online payment methods only when their original consent timestamp exists. It can be rerun without restoring removed methods. `GUEST_AUTH_SECRET`, Stripe keys, and the existing `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `payment_intent.succeeded`, and `payment_intent.payment_failed` webhook events are required.

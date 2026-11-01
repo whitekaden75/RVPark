@@ -44,6 +44,7 @@ test("existing custom-amount links show the 3% card price rounded up to .99 and 
     const page = await call("get");
     assert.equal(page.bankAmount, bankAmount); assert.equal(page.cardAmount, cardAmount);
     const card = await call("post", "card");
+    assert.match(sessions.at(-1).success_url, /&session_id=\{CHECKOUT_SESSION_ID\}$/);
     assert.equal(Number(card.amount), cardAmount);
     assert.equal(sessions.at(-1).line_items[0].price_data.unit_amount, Math.round(cardAmount * 100));
     assert.equal(records.at(-1)[2], Math.round(cardAmount * 100));

@@ -6,7 +6,7 @@ import { applyBookedPricing, createBookingPricingQuote, loadBookedPricing } from
 import { applyBalanceWaiver } from "./pricing-waivers.js";
 import {
   buildBillingSummary, buildPricingRuleLookup, calculateChargeableNights,
-  getCardPrice, getPricingForSiteAndNights, sumReservationTotals
+  getCardPrice, getPricingForSiteAndNights, sumReservationTotals, getComplimentaryNightDates
 } from "./reservation-pricing.js";
 
 const reservation = {
@@ -242,7 +242,7 @@ test("schedule and check-in reservation loaders both return the original quote",
   } };
   const loaders = vm.runInNewContext(`${declarations.join("\n")}\n({ fetchReservationDetails, fetchReservationList })`, {
     applyBookedPricing, loadBookedPricing, buildPricingRuleLookup, getPricingForSiteAndNights,
-    sumReservationTotals, buildBillingSummary, applyBalanceWaiver,
+    sumReservationTotals, getComplimentaryNightDates, buildBillingSummary, applyBalanceWaiver,
     toPriceNumber: (value) => value == null ? null : Number(value),
     serializeReservationCheckIn: (value) => value || null,
     loadPricingRules: async () => liveRules,
@@ -470,7 +470,7 @@ test('schedule attaches mixed bank/card payments when PostgreSQL returns integer
       } };
       const loaders = vm.runInNewContext(`${declarations.join('\n')}\n({fetchReservationDetails,fetchReservationList})`, {
         applyBookedPricing, loadBookedPricing, buildPricingRuleLookup, getPricingForSiteAndNights,
-        sumReservationTotals, buildBillingSummary, applyBalanceWaiver,
+        sumReservationTotals, getComplimentaryNightDates, buildBillingSummary, applyBalanceWaiver,
         toPriceNumber: value => value == null ? null : Number(value), serializeReservationCheckIn: value => value || null,
         loadPricingRules: async () => [{site_category:'off_river_small_rig',number_of_days:1,normal_price:65,discount_price:55}],
         openEndedStayDate:'9999-12-31',

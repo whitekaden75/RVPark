@@ -24,6 +24,10 @@ import {
 } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
 import CheckInPage from "./CheckInPage.jsx";
+import MonthlyPaymentsPanel from "./MonthlyPaymentsPanel.jsx";
+import { paymentTenderLabel } from "./monthly-payments.js";
+import CheckoutReturnPage from "./CheckoutReturnPage.jsx";
+import { getCheckoutReturnSessionId } from "./checkout-return.js";
 import { useTerminalReader } from "./useTerminalReader.js";
 import MessageInbox from "./MessageInbox.jsx";
 import AdminOverview from "./AdminOverview.jsx";
@@ -766,13 +770,17 @@ function NightPaymentStatus({
   const progress = getNightPaymentProgress(reservation);
   const bankNightlyPrice = reservation?.bankDailyPrice;
   const cardNightlyPrice = reservation?.cardDailyPrice;
+  const hasFreeNightCorrection = Number(reservation?.additionalFreeNights || 0) > 0;
+  const paid = hasFreeNightCorrection ? reservation.paidChargeableNights : progress?.paid;
+  const total = hasFreeNightCorrection ? reservation.totalChargeableNights : progress?.total;
+  const unpaid = hasFreeNightCorrection ? reservation.unpaidChargeableNights : progress?.unpaid;
 
   if (!progress || progress.unpaid <= 0) return null;
 
   return (
     <div className={`night-payment-status ${className}`.trim()}>
       <strong>
-        {progress.paid} of {progress.total} nights paid
+        {paid} of {total} {hasFreeNightCorrection ? "chargeable " : ""}nights paid
       </strong>
       {showNightlyRates &&
       bankNightlyPrice !== null &&
@@ -785,10 +793,11 @@ function NightPaymentStatus({
         </span>
       ) : (
         <span>
-          {progress.unpaid} {progress.unpaid === 1 ? "night" : "nights"} left
+          {unpaid} {unpaid === 1 ? "night" : "nights"} left
           to pay
         </span>
       )}
+      {hasFreeNightCorrection ? <span>{reservation.totalStayNights - reservation.totalChargeableNights} free nights included in your {reservation.totalStayNights}-night stay.</span> : null}
     </div>
   );
 }
@@ -1104,12 +1113,8 @@ function formatMotorhomeDetails(reservation) {
   return details.length ? ` • ${details.join(" • ")}` : "";
 }
 
-function formatPaymentSource(value) {
-  if (value === "office_card_reader") {
-    return "Office card reader";
-  }
-
-  return "Online payment";
+function formatPaymentSource(value, note = "") {
+  return paymentTenderLabel({ paymentSource: value, note });
 }
 
 function buildConfirmationCode(reservation) {
@@ -6430,6 +6435,7 @@ export default function App() {
 
     return params.has("guest_payment") ? "guest" : "home";
   });
+  const [checkedCheckoutSessionId, setCheckedCheckoutSessionId] = useState("");
   const [reservationEditFocusSection, setReservationEditFocusSection] =
     useState("");
   const [reservationEditor, setReservationEditor] = useState(null);
@@ -10779,6 +10785,21 @@ export default function App() {
     } catch (error) { setAdminSaveNotice(error.message); }
   }
 
+  function applyMonthlyRecordedPayment(reservation) {
+    setReservations(current => current.map(entry => String(entry.id) === String(reservation.id) ? reservation : entry));
+    if (String(createdReservation?.id) === String(reservation.id)) setCreatedReservation(reservation);
+    if (String(activeScheduleReservation?.id) === String(reservation.id)) setActiveScheduleReservation(reservation);
+  }
+
+  function openMonthlyTextPreview(draft) {
+    setTextMessageForm({ to: formatPhoneNumber(draft.to), body: draft.body });
+    setTextMessageError("");
+    setTextMessageSuccess("");
+    setMessageMode("text");
+    setIsNewMessageOpen(true);
+    setActivePage("messages");
+  }
+
   async function addMonthlyMeterReading(reservation) {
     const value = monthlyEditValues[reservation.id] || {};
     const currentReading = Number(value.meter);
@@ -10793,12 +10814,8 @@ export default function App() {
     try {
       const reading = await apiRequest(`/reservations/${reservation.id}/monthly-meter-readings`, { method: "POST", body: JSON.stringify({ reading: value.meter, readingDate: value.meterDate, prepareBillingMessage: true }) });
       setMonthlyMeterHistory((current) => ({ ...current, [reservation.id]: [reading, ...(current[reservation.id] || [])] }));
-      if (reading.billingMessage) {
-        setTextMessageForm({ to: formatPhoneNumber(reading.billingMessage.to), body: reading.billingMessage.body });
-        setAdminSaveNotice("Meter reading saved. Review the billing text before sending, or leave it unsent.");
-        setIsNewMessageOpen(true);
-        setActivePage("messages");
-      } else setAdminSaveNotice("Meter reading saved.");
+      if (reading.billingMessage) setMonthlyChargeAmounts(current => ({ ...current, [reservation.id]: Number(reading.billingMessage.total).toFixed(2) }));
+      setAdminSaveNotice("Meter reading saved. Use Send text on the monthly guest card to review a statement.");
       await ensureReservationsLoaded({ force: true });
     } catch (error) { setAdminSaveNotice(error.message); }
   }
@@ -10894,6 +10911,11 @@ export default function App() {
     if (activePage !== "monthly") return;
     apiRequest("/monthly/rates").then(setMonthlyRates).catch(() => {});
   }, [activePage]);
+
+  const checkoutReturnSessionId = getCheckoutReturnSessionId(window.location.search);
+  if (checkoutReturnSessionId && checkedCheckoutSessionId !== checkoutReturnSessionId) {
+    return <CheckoutReturnPage sessionId={checkoutReturnSessionId} request={guestApiRequest} onReady={setCheckedCheckoutSessionId} />;
+  }
 
   if (publicPaymentToken) {
     return <PublicPaymentPage token={publicPaymentToken} />;
@@ -13572,6 +13594,8 @@ export default function App() {
                           <button type="button" className="ghost-button" onClick={() => { saveMonthlySettings(reservation); setEditingMonthlyCards((current) => ({ ...current, [reservation.id]: false })); }}>Save changes</button>
                         </div>
                       ) : null}
+                      <MonthlyPaymentsPanel key={`monthly-payments-${reservation.id}`} reservation={reservation} amount={chargeAmount} today={today}
+                        request={apiRequest} onPayment={applyMonthlyRecordedPayment} onPreviewText={openMonthlyTextPreview} />
                       <div className="monthly-meter-actions">
                         <button type="button" className="ghost-button" onClick={() => setAddingMonthlyMeter((current) => ({ ...current, [reservation.id]: !current[reservation.id] }))}>
                           {addingMonthlyMeter[reservation.id] ? "Cancel meter entry" : "Add new meter reading"}
@@ -14781,7 +14805,7 @@ export default function App() {
                           key={paymentEvent.id}
                           className="payment-history-item">
                           <span>
-                            {formatPaymentSource(paymentEvent.paymentSource)} •{" "}
+                            {formatPaymentSource(paymentEvent.paymentSource, paymentEvent.note)} •{" "}
                             {formatCurrency(paymentEvent.amount)} •{" "}
                             {new Date(paymentEvent.recordedAt).toLocaleString()}
                             {paymentEvent.note ? ` • ${paymentEvent.note}` : ""}

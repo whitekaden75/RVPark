@@ -524,6 +524,7 @@ export function buildBillingSummary(reservationRow, totals, paymentEvents = []) 
     totalStayNights,
     paidStayNights,
     unpaidStayNights,
+    additionalFreeNights: usesDailyNightBilling ? Number(totals.additionalFreeNights || 0) : 0,
     effectiveTotalPrice,
     cardTotalPrice,
     remainingBalance,
@@ -568,7 +569,29 @@ export function getPricingForSiteAndNights(
   };
 }
 
-export function sumReservationTotals(siteStays) {
+// A scoped office correction grants specific free dates without recording money
+// or changing another guest's nightly rate or weekly-free-night rule.
+export function getComplimentaryNightDates(reservation, siteStays) {
+  const correction = reservation.nightly_price_adjustment;
+  if (reservation.billing_mode !== "standard" || correction?.version !== 1 ||
+      !Array.isArray(correction.scopeStays) || !Array.isArray(correction.complimentaryDates)) return [];
+  const scope = stays => {
+    if (stays.some(stay => !stay || !Number.isFinite(Number(stay.site ?? stay.site_id)) ||
+        typeof (stay.arrival ?? stay.arrival_date) !== "string" || typeof (stay.departure ?? stay.leave_date) !== "string")) return null;
+    return stays.map(stay => ({ site: Number(stay.site ?? stay.site_id),
+      arrival: stay.arrival ?? stay.arrival_date, departure: stay.departure ?? stay.leave_date }))
+      .sort((a, b) => a.arrival.localeCompare(b.arrival) || a.site - b.site || a.departure.localeCompare(b.departure));
+  };
+  const expectedScope = scope(correction.scopeStays), actualScope = scope(siteStays);
+  if (!expectedScope || !actualScope || JSON.stringify(expectedScope) !== JSON.stringify(actualScope)) return [];
+  if (correction.complimentaryDates.some(date => typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+      !siteStays.some(stay => stay.arrival_date <= date && date < stay.leave_date))) return [];
+  return [...new Set(correction.complimentaryDates)];
+}
+
+export function sumReservationTotals(siteStays, complimentaryDates = []) {
+  const freeDates = new Set(complimentaryDates);
+  let additionalFreeNights = 0;
   let normalPrice = 0;
   let discountPrice = 0;
   let normalCardPrice = 0;
@@ -614,7 +637,10 @@ export function sumReservationTotals(siteStays) {
       consecutiveNight += 1;
       numberOfNights += 1;
 
-      if (consecutiveNight % 7 === 0) {
+      const date = freeDates.size ? new Date(Date.parse(`${segment.arrival_date}T00:00:00Z`) + nightIndex * 86400000).toISOString().slice(0, 10) : "";
+      const extraFreeNight = consecutiveNight % 7 !== 0 && freeDates.has(date);
+      if (consecutiveNight % 7 === 0 || extraFreeNight) {
+        if (extraFreeNight) additionalFreeNights += 1;
         coveredStayNightsByPaidNightCount[chargeableNights] = numberOfNights;
         continue;
       }
@@ -680,6 +706,7 @@ export function sumReservationTotals(siteStays) {
     normalCardNightlyPrices,
     discountCardNightlyPrices,
     coveredStayNightsByPaidNightCount,
+    additionalFreeNights,
     chargeableNights,
     numberOfNights
   };

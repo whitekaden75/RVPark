@@ -2097,6 +2097,72 @@ select option {
   padding-top: 18px;
 }
 
+.monthly-office-payments {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid rgba(36, 74, 49, 0.14);
+  padding-top: 16px;
+  min-width: 0;
+}
+
+.monthly-payment-heading h4 {
+  margin: 0 0 12px;
+}
+
+.monthly-office-payment-form {
+  display: grid;
+  gap: 14px;
+  border: 1px solid rgba(36, 74, 49, 0.18);
+  border-radius: 14px;
+  padding: 14px;
+  background: #f4f7f2;
+}
+
+.monthly-office-payment-form fieldset {
+  padding: 0;
+  margin: 0;
+  border: 0;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+}
+
+.monthly-payment-note {
+  grid-column: 1 / -1;
+}
+
+.monthly-payment-history summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 10px 0;
+}
+
+.monthly-payment-history-list {
+  display: grid;
+  gap: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+  list-style: none;
+  padding: 0;
+}
+
+.monthly-payment-history-list li {
+  border-top: 1px solid rgba(36, 74, 49, 0.14);
+  padding-top: 12px;
+  overflow-wrap: anywhere;
+}
+
+.monthly-payment-history-list li > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.monthly-payment-history-list p {
+  margin: 8px 0;
+}
+
 .monthly-charge-controls .payment-amount-field {
   width: 100%;
   max-width: none;
