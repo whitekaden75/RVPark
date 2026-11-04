@@ -108,7 +108,7 @@ export function getPaymentFollowUps(reservations, today) {
       : null;
     const hasBalance = Number(reservation.bankRemainingBalance ?? reservation.remainingBalance ?? 0) > 0 ||
       Number(reservation.cardRemainingBalance ?? 0) > 0;
-    if (hasNightProgress ? !(unpaidNights > 0) : !hasBalance) continue;
+    if (hasNightProgress ? !(unpaidNights > 0) && !(reservation.manualChargeTotal > 0 && hasBalance) : !hasBalance) continue;
 
     const visit = startedVisits.at(-1);
     rows.push({

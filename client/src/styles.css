@@ -8487,3 +8487,12 @@ select option {
     margin-left: 0;
   }
 }
+/* Office-entered reservation charges share the payment center's card layout. */
+.manual-charge-fields { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: 16px; }
+.manual-charge-preview { display: grid; gap: 6px; padding: 14px; background: var(--surface-soft, #f2f6f3); border-radius: 10px; }
+.manual-charge-preview span, .manual-charge-list li > div > span { display: block; color: var(--muted, #56645b); font-size: 0.9rem; }
+.manual-charge-mode { padding: 12px; border-left: 3px solid #467558; background: #f2f6f3; }
+.manual-charge-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.manual-charge-list .manual-charge-voided { opacity: 0.65; }
+.manual-charges-card .checkbox-row > span { display: grid; gap: 6px; }
+.manual-charge-fields .field-grid { align-items: end; }

@@ -14,6 +14,7 @@ import { registerAfterHoursCashRoutes } from "./after-hours-cash.js";
 import { registerCombinedBookingRoutes } from "./combined-bookings.js";
 import { registerCheckoutReturnRoutes } from "./checkout-return.js";
 import { registerMonthlyOfficePaymentRoutes } from "./monthly-office-payments.js";
+import { registerManualChargeRoutes } from "./manual-charges.js";
 import { createSavedPaymentMethods, storageConsentVersion, storageConsentText } from "./saved-payment-methods.js";
 import { registerBookkeepingRoutes } from "./bookkeeping.js";
 import { registerFinanceRoutes } from "./bookkeeping-finance.js";
@@ -1825,6 +1826,7 @@ function getRemainingBalancePaymentAmounts(reservation) {
 }
 
 function hasPaymentDueForReservation(reservation) {
+  if (Number(reservation?.bankRemainingBalance || 0) > 0 || Number(reservation?.cardRemainingBalance || 0) > 0) return true;
   const totalStayNights = Number(reservation?.totalStayNights);
   const unpaidStayNights = Number(reservation?.unpaidStayNights);
 
@@ -3751,6 +3753,7 @@ async function fetchReservationDetails(queryable, reservationId) {
         r.payment_method,
         r.pricing_category_override,
         r.requested_discounts,
+        to_jsonb(r)->'manual_charges' AS manual_charges,
         to_jsonb(r)->'balance_waiver' AS balance_waiver,
         to_jsonb(r)->'nightly_price_adjustment' AS nightly_price_adjustment,
         to_jsonb(r)->'after_hours_cash_received' AS after_hours_cash_received,
@@ -4028,6 +4031,7 @@ async function fetchReservationList(queryable) {
         r.payment_method,
         r.pricing_category_override,
         r.requested_discounts,
+        to_jsonb(r)->'manual_charges' AS manual_charges,
         to_jsonb(r)->'balance_waiver' AS balance_waiver,
         to_jsonb(r)->'nightly_price_adjustment' AS nightly_price_adjustment,
         to_jsonb(r)->'after_hours_cash_received' AS after_hours_cash_received,
@@ -4320,6 +4324,8 @@ function sanitizeGuestReservation(reservation) {
     bankDailyPrice: reservation.bankDailyPrice,
     cardDailyPrice: reservation.cardDailyPrice,
     amountPaid: reservation.amountPaid,
+    manualChargeTotal: reservation.manualChargeTotal,
+    manualChargePricingMode: reservation.manualChargePricingMode,
     balanceWaiver: reservation.balanceWaiver ? {active:reservation.balanceWaiver.active,waivedAt:reservation.balanceWaiver.waivedAt} : null,
     totalChargeableNights: reservation.totalChargeableNights,
     paidChargeableNights: reservation.paidChargeableNights,
@@ -9262,6 +9268,7 @@ registerBalanceWaiverRoutes(app, {pool,getReservation:fetchReservationDetails,no
 registerCombinedBookingRoutes(app, {pool,getReservation:fetchReservationDetails,notify:broadcastAdminDataChange});
 registerCheckoutReturnRoutes(app, { pool, stripe });
 registerMonthlyOfficePaymentRoutes(app, { pool, getReservation: fetchReservationDetails, notify: broadcastAdminDataChange });
+registerManualChargeRoutes(app, { pool, getReservation: fetchReservationDetails, notify: broadcastAdminDataChange });
 savedPaymentMethods.registerRoutes(app);
 
 app.listen(port, () => {

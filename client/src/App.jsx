@@ -32,6 +32,7 @@ import { useTerminalReader } from "./useTerminalReader.js";
 import MessageInbox from "./MessageInbox.jsx";
 import AdminOverview from "./AdminOverview.jsx";
 import ReservationTools from "./ReservationTools.jsx";
+import ManualCharges from "./ManualCharges.jsx";
 import { PaymentMethodSetupPage, SavedPaymentMethodsPanel, SavePaymentConsent } from "./SavedPaymentMethods.jsx";
 import { adminPrimaryPages, adminPageGroups, adminPages, getSiteOptions, updateStayField, isMonthlyGuest, normalizeAdminPage } from "./admin-ui.js";
 const BookkeepingPage = lazy(() => import("./BookkeepingPage.jsx"));
@@ -767,6 +768,9 @@ function NightPaymentStatus({
   if (reservation?.balanceWaiver?.active) {
     return <div className={`night-payment-status balance-waived-status ${className}`.trim()}><strong>Balance waived</strong><span>No further payment is due for this booking.</span></div>;
   }
+  if (reservation?.manualChargePricingMode === 'replace') {
+    return <div className={`night-payment-status ${className}`.trim()}><strong>Manual charges</strong><span>Your entered charges set the balance for this booking.</span></div>;
+  }
   const progress = getNightPaymentProgress(reservation);
   const bankNightlyPrice = reservation?.bankDailyPrice;
   const cardNightlyPrice = reservation?.cardDailyPrice;
@@ -815,7 +819,7 @@ function hasPaymentDueForReservation(reservation) {
   if (reservation?.balanceWaiver?.active) return false;
   const progress = getNightPaymentProgress(reservation);
 
-  if (progress) return progress.unpaid > 0;
+  if (progress?.unpaid > 0) return true;
 
   return (
     Number(
@@ -6478,7 +6482,7 @@ export default function App() {
   const [paymentLinkErrorMessage, setPaymentLinkErrorMessage] = useState("");
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] =
     useState("");
-  const [paymentLinkNights, setPaymentLinkNights] = useState("1");
+  const [paymentLinkNights, setPaymentLinkNights] = useState("full");
   const [reservationCardPayment, setReservationCardPayment] = useState(null);
   const [scheduleCardPayment, setScheduleCardPayment] = useState(null);
   const [openCardActionMenuId, setOpenCardActionMenuId] = useState("");
@@ -7066,7 +7070,7 @@ export default function App() {
         : ""
     );
     setActiveScheduleCheckNumber("");
-    setPaymentLinkNights("1");
+    setPaymentLinkNights("full");
     setIsEditingSchedulePricingCategory(false);
     setSchedulePaymentErrorMessage("");
     setSchedulePaymentSuccessMessage("");
@@ -7085,8 +7089,8 @@ export default function App() {
       : [];
     const fullStayOption = cardPaymentOptions.at(-1);
     const currentCardAmount =
-      fullStayOption?.amount ??
       activeScheduleReservation.cardRemainingBalance ??
+      fullStayOption?.amount ??
       activeScheduleReservation.remainingBalance;
 
     setActiveSchedulePaymentAmount(
@@ -9378,6 +9382,10 @@ export default function App() {
   }
 
   function getPaymentLinkAmountsForNights(reservation, nights) {
+    if (nights === 'full') return {
+      bankAmount: Number(reservation?.bankRemainingBalance ?? reservation?.remainingBalance ?? 0).toFixed(2),
+      cardAmount: Number(reservation?.cardRemainingBalance ?? reservation?.remainingBalance ?? 0).toFixed(2),
+    };
     const numberOfNights = Math.max(1, Number(nights) || 1);
     const useDiscountPrice = Boolean(reservation?.requestedDiscounts?.length);
     const bankPrices = useDiscountPrice
@@ -14864,6 +14872,15 @@ export default function App() {
                   </span>
                 </div>
                 <div className="payment-edit-sections">
+                  {activeScheduleReservation.status !== "canceled" ? <ManualCharges
+                    key={`charges-${activeScheduleReservation.id}`}
+                    reservation={activeScheduleReservation}
+                    request={apiRequest}
+                    onSaved={applySavedBookingTools}
+                    onRefresh={refreshReservationAndSiteData}
+                    onGenerateLink={generatePaymentLink}
+                    disabled={isSavingAdminEdit || isSavingBalanceWaiver || JSON.stringify(schedulePaymentForm) !== JSON.stringify(createSchedulePaymentForm(activeScheduleReservation))}
+                  /> : null}
                   {activeScheduleReservation.status !== "canceled" ? <SavedPaymentMethodsPanel key={`saved-${activeScheduleReservation.id}`} reservation={activeScheduleReservation} request={apiRequest} amount={activeSchedulePaymentAmount} onPayment={async () => {
                     const updated = await apiRequest(`/reservations/${activeScheduleReservation.id}`);
                     applySavedBookingTools(updated);
@@ -14909,8 +14926,7 @@ export default function App() {
                         </div>
                       </div>
                       <p className="muted">
-                        Enter any amount for this booking, including upgrades or additional charges.
-                        The amount can exceed the displayed balance.
+                        Enter the amount to collect. To increase the balance for extra nights or another charge, save a manual charge above first.
                       </p>
                       {activeScheduleReservation.cardPaymentOptions?.length ? (
                         <label className="payment-days-field">
@@ -15111,17 +15127,18 @@ export default function App() {
                     <div>
                       <strong>Send a payment link</strong>
                       <span className="muted">
-                        Choose one night or the full unpaid balance. The link can be paid by bank or card.
+                        Request the full balance, including manual charges, or choose nights from automatic pricing. The link can be paid by bank or card.
                       </span>
                     </div>
                     <div className="payment-link-generator-controls">
                       <label>
-                        Nights to request
+                        Amount to request
                         <select
                           value={paymentLinkNights}
                           onChange={(event) => setPaymentLinkNights(event.target.value)}>
+                          <option value="full">Full unpaid balance</option>
                           {Array.from({
-                            length: Math.max(1, Number(activeScheduleReservation.unpaidStayNights || 1)),
+                            length: Math.max(0, Number(activeScheduleReservation.unpaidStayNights || 0)),
                           }, (_, index) => {
                             const nights = index + 1;
                             return <option key={nights} value={String(nights)}>{nights} {nights === 1 ? "night" : "nights"}</option>;
@@ -15138,11 +15155,13 @@ export default function App() {
                         disabled={Number(activeScheduleReservation.bankRemainingBalance ?? activeScheduleReservation.remainingBalance ?? 0) <= 0}
                         onClick={() => generatePaymentLink(
                           activeScheduleReservation,
-                          `${paymentLinkNights}-night payment link`,
+                          paymentLinkNights === 'full' ? 'Full balance payment link' : `${paymentLinkNights}-night payment link`,
                           {
-                            customAmount: getPaymentLinkAmountsForNights(activeScheduleReservation, paymentLinkNights).bankAmount,
-                            customCardAmount: getPaymentLinkAmountsForNights(activeScheduleReservation, paymentLinkNights).cardAmount,
-                            description: `${paymentLinkNights}-night stay payment`,
+                            ...(paymentLinkNights === 'full' ? {} : {
+                              customAmount: getPaymentLinkAmountsForNights(activeScheduleReservation, paymentLinkNights).bankAmount,
+                              customCardAmount: getPaymentLinkAmountsForNights(activeScheduleReservation, paymentLinkNights).cardAmount,
+                            }),
+                            description: paymentLinkNights === 'full' ? 'Reservation balance including manual charges' : `${paymentLinkNights}-night stay payment`,
                           }
                         )}>
                         Generate payment link

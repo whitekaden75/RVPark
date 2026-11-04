@@ -347,6 +347,16 @@ Automatic and manual late-arrival texts share one durable claim per reservation/
 
 ## Reservation balance correction
 
+### Manual reservation charges
+
+Apply `sql/2026-11-04_manual_reservation_charges.sql` before deploying this feature. It adds a nullable JSONB ledger to reservations and does not change existing balances or record payments. Deploy both server and client.
+
+Open a reservation’s **Manage payments → Manual charges**. Enter a description, nights/quantity, your own rate, and an optional visit date. Each charge is added to the balance even if it exceeds the automatically calculated price or remaining night count. For recurring short visits, add a separate three-night charge for each visit. The entered amount is exact for all payment methods, with no automatic discounts, free nights, or card markup.
+
+If the automatic balance is wrong, select **Replace the automatic balance with manual charges** on the first entry. This preserves earlier receipts and makes only the new manual charges due; later payments reduce their combined balance. Further charges use the same manual pricing. The old automatic night count is hidden while this override applies. Save the charge before collecting money using the existing terminal, saved payment method, cash/check, or payment-link controls. **Full unpaid balance** links include manual charges and track the current balance; each charge also has a fixed-amount link for up to its amount, capped at the balance when generated. Payment history records receipts for the reservation as a whole, rather than assigning a receipt to a particular visit.
+
+**Void charge** removes its amount while preserving the entry, creator, time, and voiding admin. It does not refund payments. To return to automatic pricing, void the manual charges, then select **Restore automatic pricing**. Pricing and charge changes invalidate an earlier balance waiver. Void active charges and restore automatic pricing before combining reservations. The ledger is serialized under a reservation lock, and retries reuse a durable request ID to prevent duplicate charges after a lost response. Charges themselves do not count as collected income in bookkeeping.
+
 The schedule normalizes PostgreSQL integer/bigint IDs before attaching payment history, stays and check-ins. Missing payment history must not cause fully paid mixed cash/card stays to acquire an extra card fee. Older payments without a recorded price type use a consistent allocation when their saved aggregate exactly matches the full bank or card total; explicitly typed payments and real partial balances remain authoritative. See [the October 27 balance audit](RESERVATION_BALANCE_AUDIT.md) for read-only verification against existing reservations. No data migration is needed.
 
 ## Bookkeeping finance workspace

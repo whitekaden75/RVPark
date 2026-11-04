@@ -1,3 +1,5 @@
+import { applyManualCharges } from './manual-charges.js';
+
 // Shared booking and check-in calculations. Keep all price types on the same nightly rules.
 
 export function toPriceNumber(value) {
@@ -180,7 +182,8 @@ export function calculatePaidChargeableNights({
   paymentEvents,
   bankNightlyPrices,
   cardNightlyPrices,
-  totalChargeableNights
+  totalChargeableNights,
+  untypedPriceType = ''
 }) {
   let unallocatedPaidAmount = Math.max(Number(amountPaid) || 0, 0);
   let paidNights = 0;
@@ -194,9 +197,9 @@ export function calculatePaidChargeableNights({
   const matchesFullTotal = prices => prices.length === totalChargeableNights &&
     prices.every(price => Number.isFinite(Number(price)) && Number(price) > 0) &&
     Math.abs(roundCurrency(prices.reduce((total, price) => total + Number(price), 0)) - unallocatedPaidAmount) < 0.001;
-  const settledUntypedPriceType = !hasRecordedPriceType
+  const settledUntypedPriceType = untypedPriceType || (!hasRecordedPriceType
     ? matchesFullTotal(bankNightlyPrices) ? 'bank' : matchesFullTotal(cardNightlyPrices) ? 'card' : ''
-    : '';
+    : '');
 
   const allocateAmountToNights = (amount, preferredPriceType = "") => {
     partialPaymentCredit = roundCurrency(
@@ -273,6 +276,10 @@ export function calculatePaidChargeableNights({
 }
 
 export function buildBillingSummary(reservationRow, totals, paymentEvents = []) {
+  return applyManualCharges(reservationRow, buildBaseBillingSummary(reservationRow, totals, paymentEvents));
+}
+
+function buildBaseBillingSummary(reservationRow, totals, paymentEvents = []) {
   const utilityPrice = calculateUtilityPrice(reservationRow.electric_meter_reading);
   const selectedPaymentMethod = normalizeReservationPaymentMethod(
     reservationRow.payment_method
@@ -331,7 +338,10 @@ export function buildBillingSummary(reservationRow, totals, paymentEvents = []) 
         paymentEvents,
         bankNightlyPrices: selectedBankNightlyPrices,
         cardNightlyPrices: selectedCardNightlyPrices,
-        totalChargeableNights
+        totalChargeableNights,
+        untypedPriceType: reservationRow.manual_charges?.untypedBaseTotal === Number(
+          reservationRow.manual_charges?.untypedBasePriceType === 'card' ? selectedCardDailyTotal : selectedDailyTotal
+        ) ? reservationRow.manual_charges.untypedBasePriceType : ''
       })
     : null;
   const paidChargeableNights = paymentProgress?.paidNights ?? null;

@@ -13,6 +13,10 @@ export function sameBookingGuest(primary,source) {
 }
 
 export function combinedBookingPlan(primary,source,{monthly=true,totalPrice,billingMode:requestedBillingMode}={}) {
+  if ([primary, source].some(booking => booking.manual_charges?.mode === 'replace' ||
+      booking.manual_charges?.entries?.some(entry => !entry.voidedAt))) {
+    throw fault('Void the manual charges and restore automatic pricing before combining these bookings.');
+  }
   if(primary.status!=='active' || source.status!=='active') throw fault('Only active bookings can be combined.');
   if(primary.merged_into_reservation_id || source.merged_into_reservation_id) throw fault('A booking was already combined. Refresh and use its current booking.');
   if([primary,source].some(booking=>expectedEnvelopeAmount(booking)!==null && !booking.after_hours_cash_received)) throw fault('Verify after-hours cash before combining these bookings.');

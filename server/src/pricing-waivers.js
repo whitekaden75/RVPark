@@ -4,6 +4,7 @@ export function getBalanceWaiverScope(reservation, stays = reservation.siteStays
   const number = value => value == null || value === '' ? null : Number(value);
   const discounts = reservation.requested_discounts ?? reservation.requestedDiscounts ?? [];
   return {
+    ...(reservation.manual_charges ? { manualCharges: reservation.manual_charges } : {}),
     billingMode: reservation.billing_mode,
     manualPricingOverride: Boolean(reservation.manual_pricing_override),
     reservationTerm: reservation.reservation_term,
