@@ -33,7 +33,7 @@ import MessageInbox from "./MessageInbox.jsx";
 import AdminOverview from "./AdminOverview.jsx";
 import ReservationTools from "./ReservationTools.jsx";
 import ManualCharges from "./ManualCharges.jsx";
-import { PaymentMethodSetupPage, SavedPaymentMethodsPanel, SavePaymentConsent } from "./SavedPaymentMethods.jsx";
+import { PaymentMethodSetupPage, SavedPaymentMethodsPanel, SavePaymentConsent, RememberTerminalCard } from "./SavedPaymentMethods.jsx";
 import { adminPrimaryPages, adminPageGroups, adminPages, getSiteOptions, updateStayField, isMonthlyGuest, normalizeAdminPage } from "./admin-ui.js";
 const BookkeepingPage = lazy(() => import("./BookkeepingPage.jsx"));
 
@@ -6483,6 +6483,7 @@ export default function App() {
   const [paymentLinkSuccessMessage, setPaymentLinkSuccessMessage] =
     useState("");
   const [paymentLinkNights, setPaymentLinkNights] = useState("full");
+  const [terminalRememberCards, setTerminalRememberCards] = useState({});
   const [reservationCardPayment, setReservationCardPayment] = useState(null);
   const [scheduleCardPayment, setScheduleCardPayment] = useState(null);
   const [openCardActionMenuId, setOpenCardActionMenuId] = useState("");
@@ -6949,6 +6950,9 @@ export default function App() {
             }
           }
 
+          if (result.cardStorage?.status === 'saved') paymentSuccessMessage += ' Card remembered for future payments.';
+          else if (result.cardStorage?.status === 'unavailable') paymentSuccessMessage += ' This card could not be remembered; the payment is complete.';
+          else if (result.cardStorage?.status === 'pending') paymentSuccessMessage += ' Remembering the card is still pending. Refresh remembered cards to check.';
           setTerminalPaymentError("");
           setTerminalPayment((current) => ({
             ...current,
@@ -9472,7 +9476,7 @@ export default function App() {
     reservation,
     amountValue,
     priceTypeOverride = "",
-    { moto = false, customCharge = false } = {}
+    { moto = false, customCharge = false, rememberCard = terminalRememberCards[reservation.id] === true } = {}
   ) {
     setTerminalPaymentError("");
     setPaymentLinkErrorMessage("");
@@ -9495,10 +9499,13 @@ export default function App() {
             priceType: priceTypeOverride || "card",
             moto,
             customCharge,
+            rememberCard,
+            storageAccepted: rememberCard,
           }),
         }
       );
 
+      setTerminalRememberCards(current => ({ ...current, [reservation.id]: false }));
       setTerminalReader(result.reader);
       setTerminalPayment({
         reservationId: reservation.id,
@@ -9527,7 +9534,8 @@ export default function App() {
     reservation,
     form,
     amount,
-    priceType
+    priceType,
+    rememberCard = false
   ) {
     pendingTerminalCheckInRef.current = {
       reservationId: reservation.id,
@@ -9536,7 +9544,8 @@ export default function App() {
     const result = await startTerminalPayment(
       reservation,
       amount,
-      priceType
+      priceType,
+      { rememberCard }
     );
 
     if (!result) {
@@ -13703,6 +13712,11 @@ export default function App() {
                             ) : null}
                           </div>
                         </div>
+                        <RememberTerminalCard
+                          checked={terminalRememberCards[reservation.id] === true}
+                          onChange={checked => setTerminalRememberCards(current => ({ ...current, [reservation.id]: checked }))}
+                          disabled={startingTerminalReservationId === reservation.id || terminalIsBusyForReservation}
+                        />
                         <div className="button-row monthly-charge-actions">
                           <button
                             type="button"
@@ -14881,11 +14895,6 @@ export default function App() {
                     onGenerateLink={generatePaymentLink}
                     disabled={isSavingAdminEdit || isSavingBalanceWaiver || JSON.stringify(schedulePaymentForm) !== JSON.stringify(createSchedulePaymentForm(activeScheduleReservation))}
                   /> : null}
-                  {activeScheduleReservation.status !== "canceled" ? <SavedPaymentMethodsPanel key={`saved-${activeScheduleReservation.id}`} reservation={activeScheduleReservation} request={apiRequest} amount={activeSchedulePaymentAmount} onPayment={async () => {
-                    const updated = await apiRequest(`/reservations/${activeScheduleReservation.id}`);
-                    applySavedBookingTools(updated);
-                    await refreshReservationAndSiteData();
-                  }} /> : null}
                   {activeScheduleReservation.status !== "canceled" ? (
                     <div className="timeline-card payment-edit-card payment-method-card payment-method-card-primary">
                       <div className="payment-method-heading">
@@ -14964,6 +14973,11 @@ export default function App() {
                         onCancelAll={cancelAllTerminalPayments}
                         isCancelingAll={isCancelingAllTerminalPayments}
                       />
+                      <RememberTerminalCard
+                        checked={terminalRememberCards[activeScheduleReservation.id] === true}
+                        onChange={checked => setTerminalRememberCards(current => ({ ...current, [activeScheduleReservation.id]: checked }))}
+                        disabled={startingTerminalReservationId === activeScheduleReservation.id || (terminalPayment?.reservationId === activeScheduleReservation.id && ['in_progress', 'finalizing'].includes(terminalPayment.status))}
+                      />
                       <div className="payment-primary-actions">
                         <button
                           type="button"
@@ -15024,6 +15038,12 @@ export default function App() {
                           ? "For phone payments, enter the card details securely on the Stripe reader."
                           : "Phone payments will become available here when MOTO is enabled on the server."}
                       </p>
+                  {activeScheduleReservation.status !== "canceled" ? <SavedPaymentMethodsPanel key={`saved-${activeScheduleReservation.id}`} reservation={activeScheduleReservation} request={apiRequest} amount={activeSchedulePaymentAmount} onPayment={async () => {
+                    const updated = await apiRequest(`/reservations/${activeScheduleReservation.id}`);
+                    applySavedBookingTools(updated);
+                    await refreshReservationAndSiteData();
+                  }} /> : null}
+
                     </div>
                   ) : null}
 

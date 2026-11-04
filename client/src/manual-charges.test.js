@@ -6,6 +6,7 @@ import { getPaymentFollowUps } from './admin-ui.js';
 const form = { description: ' December visit ', quantity: '3', unitAmount: '55.00', serviceDate: '2026-12-12', replaceAutomaticBalance: true };
 test('manual charge entry preserves the chosen quantity, rate and replacement intent', () => {
   assert.deepEqual(manualChargePayload(form, 'request-1'), { ...form, description: 'December visit', quantity: 3, requestId: 'request-1' });
+  assert.equal(manualChargePayload({ ...form, replaceAutomaticBalance: false }, 'request-2').replaceAutomaticBalance, true);
   for (const changes of [{ unitAmount: '' }, { unitAmount: '-5' }, { unitAmount: '1.001' }, { unitAmount: 'NaN' }, { quantity: '1.5' }, { quantity: 0 }, { description: '' }]) {
     assert.throws(() => manualChargePayload({ ...form, ...changes }, 'request-1'));
   }

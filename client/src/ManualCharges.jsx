@@ -10,8 +10,7 @@ function restore(id) {
 export default function ManualCharges({ reservation, request, onSaved, onRefresh, onGenerateLink, disabled = false }) {
   const [pending, setPending] = useState(() => restore(reservation.id));
   const [form, setForm] = useState(() => restore(reservation.id) || {
-    description: '', quantity: '3', unitAmount: '', serviceDate: '',
-    replaceAutomaticBalance: reservation.manualChargePricingMode === 'replace',
+    description: '', quantity: '1', unitAmount: '', serviceDate: '',
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -31,11 +30,11 @@ export default function ManualCharges({ reservation, request, onSaved, onRefresh
     try {
       let updated;
       if (path === 'manual-charges') {
-        const payload = pending || manualChargePayload({ ...form, replaceAutomaticBalance: replacing || form.replaceAutomaticBalance }, crypto.randomUUID());
+        const payload = pending || manualChargePayload(form, crypto.randomUUID());
         setPending(payload);
         updated = await saveManualCharge({ reservationId: reservation.id, payload, request, storage: window.localStorage });
         setPending(null);
-        setForm(current => ({ ...current, description: '', serviceDate: '', replaceAutomaticBalance: updated.manualChargePricingMode === 'replace' }));
+        setForm(current => ({ ...current, description: '', serviceDate: '' }));
       } else {
         updated = await request(`/reservations/${reservation.id}/${path}`, { method: 'POST', body: JSON.stringify(body) });
       }
@@ -49,26 +48,26 @@ export default function ManualCharges({ reservation, request, onSaved, onRefresh
 
   return <section className="timeline-card payment-edit-card manual-charges-card" aria-label="Manual reservation charges">
     <div className="result-header"><h4>Manual charges</h4><strong>{money(reservation.manualChargeTotal)} in charges</strong></div>
-    <p>Set your own price for extra nights, a return visit, or another charge. These amounts can exceed automatic pricing and are added to the reservation balance. Saving a charge does not collect payment.</p>
-    {replacing ? <p className="manual-charge-mode"><strong>Manual charges replace the automatic balance.</strong> Earlier payments stay on record. Payments received after the override reduce these charges.</p> : null}
+    <p>Enter the exact amount this guest should owe. Saving replaces the current unpaid balance, including any earlier manual amount. Previously collected payments stay on record. No payment is collected when saving.</p>
+    {replacing ? <p className="manual-charge-mode"><strong>Manual balance is active.</strong> Payments received after the last replacement reduce this balance.</p> : null}
     <fieldset disabled={busy || disabled || Boolean(pending)} className="manual-charge-fields">
       <label>Description<input value={form.description} maxLength={200} placeholder="For example: December visit — three nights" onChange={event => update('description', event.target.value)} /></label>
       <div className="field-grid compact-grid">
         <label>Nights / quantity<input type="number" min="1" max="10000" step="1" value={form.quantity} onChange={event => update('quantity', event.target.value)} /></label>
-        <label>Your rate per night / item ($)<input type="number" min="0.01" step="0.01" value={form.unitAmount} onChange={event => update('unitAmount', event.target.value)} /></label>
+        <label>Amount / rate ($)<input type="number" min="0.01" step="0.01" value={form.unitAmount} onChange={event => update('unitAmount', event.target.value)} /></label>
         <label>Visit date <span className="optional-label">optional</span><input type="date" value={form.serviceDate} onChange={event => update('serviceDate', event.target.value)} /></label>
       </div>
-      {!replacing && !activeEntries.length ? <label className="checkbox-row compact-checkbox"><input type="checkbox" checked={form.replaceAutomaticBalance} onChange={event => update('replaceAutomaticBalance', event.target.checked)} /><span><strong>Replace the automatic balance with manual charges</strong><small>Use this if the current {money(bankBalance)} automatic balance is incorrect. Previously collected payments stay on record; only these new charges will be due.</small></span></label> : null}
+
     </fieldset>
-    <div className="manual-charge-preview"><strong>New charge: {money(Number.isFinite(total) ? total : 0)}</strong><span>The entered total is the same for cash, check, bank, and card. No automatic discounts or card markup are added.</span>
-      {form.replaceAutomaticBalance && !replacing ? <span>After saving, the amount due will be {money(total)} in place of the current automatic balance.</span> : null}
+    <div className="manual-charge-preview"><strong>New balance due: {money(Number.isFinite(total) ? total : 0)}</strong><span>The entered total is the same for cash, check, bank, and card. No automatic discounts or card markup are added.</span>
+      <span>Replaces the current {money(bankBalance)} balance. To cover two three-night visits at once, enter 6 nights and your nightly rate.</span>
     </div>
-    <button type="button" className="primary-button" disabled={busy || disabled} onClick={() => mutate('manual-charges', null, 'Charge saved. Add the next visit as another charge, or collect payment below.')}>
-      {busy ? 'Saving…' : pending ? 'Retry saving this charge' : `Add ${money(Number.isFinite(total) ? total : 0)} charge`}
+    <button type="button" className="primary-button" disabled={busy || disabled} onClick={() => mutate('manual-charges', null, 'Balance replaced. Collect this exact amount using the payment controls below.')}>
+      {busy ? 'Saving…' : pending ? 'Retry saving this charge' : `Replace balance with ${money(Number.isFinite(total) ? total : 0)}`}
     </button>
     {pending && !busy ? <p className="muted">Retry this same charge to confirm whether it saved before entering another one.</p> : null}
     {entries.length ? <ul className="timeline-list manual-charge-list">{entries.map(entry => <li key={entry.id} className={entry.voidedAt ? 'manual-charge-voided' : ''}>
-      <div><strong>{entry.description} · {money(entry.amount)}{entry.voidedAt ? ' · Voided' : ''}</strong><span>{entry.quantity} × {money(entry.unitAmount)}{entry.serviceDate ? ` · Visit: ${entry.serviceDate}` : ''} · Added {new Date(entry.createdAt).toLocaleDateString()}</span></div>
+      <div><strong>{entry.description} · {money(entry.amount)}{entry.replacedByChargeId ? ' · Replaced' : entry.voidedAt ? ' · Voided' : ''}</strong><span>{entry.quantity} × {money(entry.unitAmount)}{entry.serviceDate ? ` · Visit: ${entry.serviceDate}` : ''} · Added {new Date(entry.createdAt).toLocaleDateString()}</span></div>
       {!entry.voidedAt ? <div className="button-row">
         <button type="button" className="ghost-button" disabled={busy || disabled || Boolean(pending) || Math.max(bankBalance, cardBalance) <= 0 || reservation.balanceWaiver?.active} onClick={() => onGenerateLink(reservation, 'Manual charge payment link', {
           customAmount: Math.min(entry.amount, bankBalance), customCardAmount: Math.min(entry.amount, cardBalance), description: entry.description,

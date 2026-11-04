@@ -7,7 +7,7 @@ export function manualChargePayload(form, requestId) {
     throw new Error('Enter a positive rate with up to two decimal places.');
   }
   return { description, quantity, unitAmount: form.unitAmount, serviceDate: form.serviceDate,
-    replaceAutomaticBalance: form.replaceAutomaticBalance, requestId };
+    replaceAutomaticBalance: true, requestId };
 }
 
 export const manualChargeStorageKey = id => `rvpark-manual-charge-${id}`;

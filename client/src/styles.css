@@ -8496,3 +8496,4 @@ select option {
 .manual-charge-list .manual-charge-voided { opacity: 0.65; }
 .manual-charges-card .checkbox-row > span { display: grid; gap: 6px; }
 .manual-charge-fields .field-grid { align-items: end; }
+.remember-terminal-card > span { display: grid; gap: 6px; }

@@ -32,25 +32,12 @@ test('six manually priced nights replace the incorrect $20 balance and preserve 
   assert.equal(bill({ manual_charges: ledger, amount_paid: 140, requested_discounts: ['AAA'] }).bankRemainingBalance, 330);
 });
 
-test('additive charges exceed nightly pricing, survive partial receipts and settle once', () => {
-  const manual_charges = { ...ledger, mode: 'add' };
-  assert.equal(bill({ manual_charges }).bankRemainingBalance, 350);
-  const events = [{ id: 1, amount: 140, note: 'Price type: bank' }, { id: 2, amount: 185, note: 'Price type: bank' }];
-  const partial = bill({ manual_charges, amount_paid: 325 }, events);
-  assert.equal(partial.unpaidStayNights, 0);
-  assert.equal(partial.bankRemainingBalance, 165);
-  assert.equal(partial.cardRemainingBalance, 165);
-  events.push({ id: 3, amount: 165, note: 'Price type: card' });
-  assert.equal(bill({ manual_charges, amount_paid: 490, payment_method: 'card' }, events).cardRemainingBalance, 0);
-  assert.equal(bill({ manual_charges, amount_paid: 490 }, events).bankRemainingBalance, 0);
-});
-
-test('an imported stay remains settled when subsequent manual receipts have explicit tender types', () => {
-  const manual_charges = { version: 1, mode: 'add', untypedBasePriceType: 'bank', untypedBaseTotal: 160, entries: [entry] };
-  const events = [{ id: 1, amount: 60, note: 'Imported' }, { id: 2, amount: 100, note: 'Imported' }, { id: 3, amount: 165, note: 'Price type: bank' }];
-  const result = bill({ manual_charges, amount_paid: 325 }, events);
-  assert.equal(result.bankRemainingBalance, 0);
-  assert.equal(result.cardRemainingBalance, 0);
+test('existing additive entries replace the old $20 balance while retaining payments already collected', () => {
+  const manual_charges = { ...ledger, mode: 'add', amountPaidAtFirstCharge: 140 };
+  delete manual_charges.amountPaidBeforeOverride;
+  assert.equal(bill({ manual_charges }).bankRemainingBalance, 330);
+  assert.equal(bill({ manual_charges, amount_paid: 305 }).bankRemainingBalance, 165);
+  assert.equal(bill({ manual_charges, amount_paid: 470 }).cardRemainingBalance, 0);
 });
 
 test('unknown, monthly and manual-total base prices can be replaced with exact office charges', () => {
@@ -60,20 +47,6 @@ test('unknown, monthly and manual-total base prices can be replaced with exact o
     assert.equal(result.bankRemainingBalance, 330);
     assert.equal(result.cardRemainingBalance, 330);
     assert.equal(result.amountPaid, 140);
-  }
-});
-
-test('manual charges on a free stay settle, and lost automatic quotes do not consume earlier receipts', () => {
-  const freeTotals = sumReservationTotals([{ numberOfNights: 3, normalDailyPrice: 0, discountDailyPrice: 0,
-    arrival_date: '2026-11-01', leave_date: '2026-11-04' }]);
-  const manual_charges = { version: 1, mode: 'add', amountPaidAtFirstCharge: 140, entries: [entry] };
-  const free = buildBillingSummary({ ...row, amount_paid: 165, manual_charges }, freeTotals, [{ amount: 165, note: 'Price type: bank' }]);
-  assert.equal(free.bankRemainingBalance, 0);
-  assert.equal(free.cardRemainingBalance, 0);
-  for (const [amount_paid, remaining] of [[140, 165], [200, 105], [305, 0]]) {
-    const unknown = buildBillingSummary({ ...row, amount_paid, manual_charges }, { normalPrice: null, discountPrice: null });
-    assert.equal(unknown.bankRemainingBalance, remaining);
-    assert.equal(unknown.bankTotalPrice, null);
   }
 });
 
@@ -141,20 +114,27 @@ test('PostgreSQL persists, deduplicates, voids and rolls back manual charges wit
     assert.equal((await call('', payload, '99')).code, 404);
     assert.equal((await call('/restore-automatic', {})).code, 409);
     const second = await call('', { ...payload, requestId: '22222222-2222-4222-8222-222222222222', description: 'December visit', serviceDate: '2026-12-12' });
-    assert.equal(second.body.bankRemainingBalance, 330);
+    assert.equal(second.body.bankRemainingBalance, 165);
+    assert.equal(second.body.manualCharges[0].replacedByChargeId, '22222222-2222-4222-8222-222222222222');
+    assert.equal(second.body.manualCharges[1].voidedAt, undefined);
+    const third = await call('', { ...payload, requestId: '33333333-3333-4333-8333-333333333333', unitAmount: '60', replaceAutomaticBalance: false });
+    assert.equal(third.body.bankRemainingBalance, 180);
+    assert.equal(third.body.manualCharges.filter(entry => !entry.voidedAt).length, 1);
     await db.exec('UPDATE reservations SET amount_paid=305 WHERE id=42');
-    assert.equal((await getReservation(db, 42)).cardRemainingBalance, 165);
+    assert.equal((await getReservation(db, 42)).cardRemainingBalance, 15);
+    assert.equal((await call('/:chargeId/void', {})).body.bankRemainingBalance, 15);
+    await db.exec('UPDATE reservations SET amount_paid=320 WHERE id=42');
     const voided = await call('/:chargeId/void', {});
     assert.equal(voided.body.bankRemainingBalance, 0);
-    assert.equal(voided.body.amountPaid, 305);
+    assert.equal(voided.body.amountPaid, 320);
     assert.equal(voided.body.manualCharges[0].voidedByAdminUserId, 7);
     const beforeRepeat = notifications.length;
     await call('/:chargeId/void', {});
     assert.equal(notifications.length, beforeRepeat);
     await db.exec(`CREATE FUNCTION reject_charge_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test failure'; END $$;
       CREATE TRIGGER reject_charge_write BEFORE UPDATE ON reservations FOR EACH ROW EXECUTE FUNCTION reject_charge_write();`);
-    assert.equal((await call('', { ...payload, requestId: '33333333-3333-4333-8333-333333333333' })).code, 500);
-    assert.equal((await getReservation(db, 42)).manualCharges.length, 2);
+    assert.equal((await call('', { ...payload, requestId: '44444444-4444-4444-8444-444444444444' })).code, 500);
+    assert.equal((await getReservation(db, 42)).manualCharges.length, 3);
     assert.equal(notifications.length, beforeRepeat);
   } finally { await db.close(); }
 });

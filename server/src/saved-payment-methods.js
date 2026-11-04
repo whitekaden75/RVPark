@@ -22,7 +22,7 @@ export function validateSavedCharge(body) {
 }
 
 export function createSavedPaymentMethods({ pool, stripe, getReservation, signToken, readToken,
-  secret, allowedOrigins, syncPayments, notify }) {
+  secret, allowedOrigins, syncPayments, notify, refreshTerminalCards = async () => {} }) {
   function baseUrl(value) {
     const url = String(value || "").trim().replace(/\/+$/, "");
     if (!/^https?:\/\//i.test(url) || (allowedOrigins.length && !allowedOrigins.includes(url))) {
@@ -166,6 +166,7 @@ export function createSavedPaymentMethods({ pool, stripe, getReservation, signTo
     app.get("/api/reservations/:id/saved-payment-methods", route(async (req, res) => {
       const reservation = await reservationFor(req.params.id);
       await refreshSessions(reservation);
+      await refreshTerminalCards({ customerId: reservation.customer_id });
       const result = await pool.query(`SELECT id,payment_method_type AS type,brand,last4,exp_month,exp_year,consent_at
         FROM reservation_saved_payment_methods WHERE customer_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC`, [reservation.customer_id]);
       res.json(result.rows);

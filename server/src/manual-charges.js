@@ -20,9 +20,11 @@ export function manualChargeInput(body = {}) {
     throw fault('Choose a valid visit date or leave it blank.');
   }
   if (!uuid(body.requestId)) throw fault('A charge request ID is required. Refresh and try again.');
-  if (typeof body.replaceAutomaticBalance !== 'boolean') throw fault('Choose how to apply the manual charge.');
+  if (body.replaceAutomaticBalance !== undefined && typeof body.replaceAutomaticBalance !== 'boolean') throw fault('Enter valid charge details.');
+  // Keep the legacy flag in the request fingerprint for safe retries. New
+  // entries always replace the balance, including requests from older clients.
   return { id: body.requestId, description, quantity, unitAmount: round(body.unitAmount),
-    amount: round(quantity * Number(body.unitAmount)), serviceDate, replaceAutomaticBalance: body.replaceAutomaticBalance };
+    amount: round(quantity * Number(body.unitAmount)), serviceDate, replaceAutomaticBalance: body.replaceAutomaticBalance ?? true };
 }
 
 // Charges are exact office-entered amounts for every tender. They do not inherit
@@ -31,35 +33,21 @@ export function applyManualCharges(row, billing) {
   const ledger = row.manual_charges;
   const entries = ledger?.version === 1 && Array.isArray(ledger.entries) ? ledger.entries : [];
   const total = round(entries.filter(entry => !entry.voidedAt).reduce((sum, entry) => sum + Number(entry.amount), 0));
-  const replace = ledger?.version === 1 && ledger.mode === 'replace';
+  // Older additive entries also replace automatic pricing. Preserve payments
+  // collected since the original entry instead of resetting their paid baseline.
+  const replace = ledger?.version === 1 && (ledger.mode === 'replace' || entries.some(entry => !entry.voidedAt));
   const details = { manualCharges: entries, manualChargeTotal: total, manualChargePricingMode: replace ? 'replace' : 'add' };
-  if (!entries.length && !replace) return { ...billing, ...details };
-  if (replace) {
-    const totalPrice = round(Number(ledger.amountPaidBeforeOverride) + total);
-    const remaining = round(Math.max(totalPrice - billing.amountPaid, 0));
-    return { ...billing, ...details,
-      bankTotalPrice: totalPrice, cardTotalPrice: totalPrice, effectiveTotalPrice: totalPrice,
-      remainingBalance: remaining, bankRemainingBalance: remaining, cardRemainingBalance: remaining,
-      bankDailyPrice: null, cardDailyPrice: null, totalChargeableNights: null, paidChargeableNights: null,
-      unpaidChargeableNights: null, totalStayNights: null, paidStayNights: null, unpaidStayNights: null,
-      cardPaymentOptions: [], partialPaymentCredit: 0 };
-  }
-  if (!total) return { ...billing, ...details };
-  // Standard billing already allocates payments to nights and exposes any money
-  // left after the final night. Apply that overflow to the added charges once.
-  const overflow = billing.totalChargeableNights != null
-    ? billing.unpaidChargeableNights === 0 || billing.bankRemainingBalance === 0 && billing.cardRemainingBalance === 0
-      ? billing.partialPaymentCredit : 0
-    : Math.max(billing.amountPaid - Number(billing.effectiveTotalPrice ?? ledger.amountPaidAtFirstCharge ?? billing.amountPaid), 0);
-  const balance = value => round(Math.max(Number(value || 0) + total - overflow, 0));
-  const bankRemainingBalance = balance(billing.bankRemainingBalance);
-  const cardRemainingBalance = balance(billing.cardRemainingBalance);
+  if (!replace) return { ...billing, ...details };
+  const paidBaseline = ledger.amountPaidBeforeOverride ?? ledger.amountPaidAtFirstCharge ?? billing.amountPaid;
+  const totalPrice = round(Number(paidBaseline) + total);
+  const remaining = round(Math.max(totalPrice - billing.amountPaid, 0));
   return { ...billing, ...details,
-    bankTotalPrice: billing.bankTotalPrice == null ? null : round(Number(billing.bankTotalPrice) + total),
-    cardTotalPrice: billing.cardTotalPrice == null ? null : round(Number(billing.cardTotalPrice) + total),
-    effectiveTotalPrice: billing.effectiveTotalPrice == null ? null : round(Number(billing.effectiveTotalPrice) + total),
-    bankRemainingBalance, cardRemainingBalance,
-    remainingBalance: billing.selectedPaymentMethod === 'card' ? cardRemainingBalance : bankRemainingBalance };
+    bankTotalPrice: totalPrice, cardTotalPrice: totalPrice, effectiveTotalPrice: totalPrice,
+    remainingBalance: remaining, bankRemainingBalance: remaining, cardRemainingBalance: remaining,
+    bankDailyPrice: null, cardDailyPrice: null, totalChargeableNights: null, paidChargeableNights: null,
+    unpaidChargeableNights: null, totalStayNights: null, paidStayNights: null, unpaidStayNights: null,
+    cardPaymentOptions: [], partialPaymentCredit: 0 };
+
 }
 
 export function registerManualChargeRoutes(app, { pool, getReservation, notify, now = () => new Date() }) {
@@ -89,29 +77,16 @@ export function registerManualChargeRoutes(app, { pool, getReservation, notify, 
           if (Object.keys(input).some(key => prior[key] !== input[key])) throw fault('This charge request already has different details. Refresh and try again.', 409);
           changed = false;
         } else {
-          if (!ledger.entries.length) ledger.amountPaidAtFirstCharge = reservation.amountPaid;
-          // Preserve a previously settled imported stay's known price type when
-          // later manual payments make the aggregate exceed its original total.
-          if (!ledger.entries.length && !(reservation.paymentEvents || []).some(event => /price type:\s*(bank|card)/i.test(event.note || ''))) {
-            const settledType = reservation.amountPaid === reservation.bankTotalPrice ? 'bank'
-              : reservation.amountPaid === reservation.cardTotalPrice ? 'card' : '';
-            if (settledType) {
-              ledger.untypedBasePriceType = settledType;
-              ledger.untypedBaseTotal = settledType === 'card' ? reservation.cardTotalPrice : reservation.bankTotalPrice;
-            }
+          const replacedAt = now().toISOString();
+          for (const entry of ledger.entries) if (!entry.voidedAt) {
+            entry.voidedAt = replacedAt;
+            entry.voidedByAdminUserId = req.adminUser.id;
+            entry.replacedByChargeId = input.id;
           }
-          if (input.replaceAutomaticBalance && ledger.mode !== 'replace') {
-            if (ledger.entries.some(entry => !entry.voidedAt)) throw fault('Void the existing manual charges before replacing automatic pricing.', 409);
-            ledger.mode = 'replace';
-            ledger.amountPaidBeforeOverride = reservation.amountPaid;
-            ledger.replacedAt = now().toISOString();
-            ledger.replacedByAdminUserId = req.adminUser.id;
-          } else if (!input.replaceAutomaticBalance && ledger.mode === 'replace') {
-            throw fault('This reservation uses manual pricing. Refresh before adding another charge.', 409);
-          }
-          if (ledger.mode !== 'replace' && reservation.bankTotalPrice == null) {
-            throw fault('This booking has no automatic total. Choose “Replace automatic balance” to set its charges.', 409);
-          }
+          ledger.mode = 'replace';
+          ledger.amountPaidBeforeOverride = reservation.amountPaid;
+          ledger.replacedAt = replacedAt;
+          ledger.replacedByAdminUserId = req.adminUser.id;
           ledger.entries.push({ ...input, createdAt: now().toISOString(), adminUserId: req.adminUser.id });
         }
       } else if (action === 'void') {

@@ -18,6 +18,13 @@ export function SavePaymentConsent({ checked, onChange, disabled = false }) {
   </label>;
 }
 
+export function RememberTerminalCard({ checked, onChange, disabled = false }) {
+  return <label className="checkbox-row saved-payment-consent remember-terminal-card">
+    <input type="checkbox" checked={checked === true} disabled={disabled} onChange={event => onChange(event.target.checked)} />
+    <span><strong>Remember card</strong><small>The guest agrees to save the card used for this payment for future reservation payments. Each later charge needs separate approval.</small></span>
+  </label>;
+}
+
 export function PaymentMethodSetupPage({ token, request }) {
   const [details, setDetails] = useState(null);
   const [accepted, setAccepted] = useState(false);
@@ -59,7 +66,7 @@ export function PaymentMethodSetupPage({ token, request }) {
   </section></main>;
 }
 
-export function SavedPaymentMethodsPanel({ reservation, request, amount = "", onPayment }) {
+export function SavedPaymentMethodsPanel({ reservation, request, amount = "", onPayment, allowSetup = false }) {
   const [restoredAttempt] = useState(() => readAttempt(reservation.id));
   const [open, setOpen] = useState(false);
   const [methods, setMethods] = useState(null);
@@ -89,7 +96,7 @@ export function SavedPaymentMethodsPanel({ reservation, request, amount = "", on
       setMethods(rows); setSelected((current) => rows.some((row) => String(row.id) === current) ? current : String(rows[0]?.id || ""));
     }).catch((err) => { if (!canceled) setError(err.message); });
     return () => { canceled = true; };
-  }, [open, reservation.id, request]);
+  }, [open, reservation.id, reservation.amountPaid, request]);
   useEffect(() => { if (!attempt) { setChargeAmount(String(amount || "")); setApproved(false); } }, [amount]);
   async function act(action) {
     setBusy(true); setError(""); setMessage("");
@@ -123,17 +130,17 @@ export function SavedPaymentMethodsPanel({ reservation, request, amount = "", on
   }
   const method = methods?.find((row) => String(row.id) === selected);
   return <details className="saved-payment-panel timeline-card" onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Saved payment methods <span className="muted">· reservations &amp; monthly payments</span></summary>
+    <summary>Use a remembered card <span className="muted">· or saved bank account</span></summary>
     {open ? <div className="saved-payment-content">
-      <p>Save a guest’s card securely, then collect individually approved reservation, rent, or utility payments.</p>
+      <p>Collect an individually approved payment using this guest’s remembered payment method. To remember a new card, select “Remember card” before sending its payment to the terminal.</p>
       {error ? <div className="message error" role="alert">{error}{attempt ? " Retry this same request to check it safely before starting another charge." : ""}</div> : null}
       {message ? <div className="message" role="status">{message}</div> : null}
       <div className="button-row">
         {attempt && (!result || result.status === "processing") ? <button type="button" className="primary-button" disabled={busy} onClick={charge}>{busy ? "Checking payment…" : "Retry / check previous payment"}</button> : null}
-        <button type="button" className="ghost-button" disabled={busy} onClick={() => act(async () => {
+        {allowSetup ? <button type="button" className="ghost-button" disabled={busy} onClick={() => act(async () => {
           const link = await request(`${path}/payment-method-setup-links`, { method: "POST", body: JSON.stringify({ baseUrl: window.location.origin }) });
           setSetupUrl(link.setupUrl);
-        })}>Create secure card-save link</button>
+        })}>Create secure card-save link</button> : null}
         <button type="button" className="ghost-button" disabled={busy} onClick={() => act(load)}>Refresh saved methods</button>
       </div>
       {setupUrl ? <div className="saved-payment-link"><label>Guest card-save link (valid for 7 days)
@@ -142,7 +149,7 @@ export function SavedPaymentMethodsPanel({ reservation, request, amount = "", on
         <button className="ghost-button" type="button" onClick={() => act(async () => { await navigator.clipboard.writeText(setupUrl); setMessage("Card-save link copied."); })}>Copy link</button>
         <a className="ghost-button" href={setupUrl} target="_blank" rel="noreferrer">Open for guest</a>
       </div><p className="muted">The guest checks the authorization box and enters their card in Stripe. This link collects no payment.</p></div> : null}
-      {methods === null ? <p>Loading saved methods…</p> : !methods.length ? <p className="muted">No payment method is saved. Create a card-save link above; the guest can add one without making a payment.</p> : <>
+      {methods === null ? <p>Loading saved methods…</p> : !methods.length ? <p className="muted">No payment method is remembered yet. Select “Remember card” above before the guest pays on the terminal.</p> : <>
         <label>Payment method<select value={selected} disabled={busy || Boolean(attempt)} onChange={(event) => { setSelected(event.target.value); setApproved(false); }}>
           {methods.map((row) => <option key={row.id} value={row.id}>{row.brand || row.type} ending {row.last4}{row.exp_month ? ` · expires ${row.exp_month}/${row.exp_year}` : ""}</option>)}
         </select></label>

@@ -1,3 +1,4 @@
+import { RememberTerminalCard } from "./SavedPaymentMethods.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const parkRules = [
@@ -314,6 +315,7 @@ export default function CheckInPage({
   const [form, setForm] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [rememberCard, setRememberCard] = useState(false);
   const [isRecordingPayment, setIsRecordingPayment] = useState(false);
   const [officePaymentAmount, setOfficePaymentAmount] = useState("");
   const [checkNumber, setCheckNumber] = useState("");
@@ -387,6 +389,7 @@ export default function CheckInPage({
         !getCheckInForStay(reservation, stay)?.signatureDataUrl
           ? await onLoadReservation(reservation.id)
           : reservation;
+      setRememberCard(false);
       setActiveReservationId(completeReservation.id);
       setActiveStayId(stay.id);
       setForm(createCheckInForm(completeReservation));
@@ -459,7 +462,7 @@ export default function CheckInPage({
       const selectedBalance = cardBalance;
       const nightProgress = getNightPaymentProgress(activeReservation);
       const paymentIsDue = nightProgress
-        ? nightProgress.unpaid > 0
+        ? nightProgress.unpaid > 0 || selectedBalance > 0
         : selectedBalance > 0;
 
       if (paymentIsDue && selectedBalance <= 0) {
@@ -474,7 +477,8 @@ export default function CheckInPage({
           activeReservation,
           checkInForm,
           selectedBalance,
-          "card"
+          "card",
+          rememberCard
         );
 
         if (!result) {
@@ -552,7 +556,7 @@ export default function CheckInPage({
         )
       : 0;
     const hasBalance = paymentNightProgress
-      ? paymentNightProgress.unpaid > 0
+      ? paymentNightProgress.unpaid > 0 || standardBalance > 0 || cardBalance > 0
       : standardBalance > 0 || cardBalance > 0;
     const activeTerminalPayment =
       terminalPayment?.reservationId === activeReservation.id
@@ -852,6 +856,7 @@ export default function CheckInPage({
                   </small>
                 </div>
               ) : null}
+              <RememberTerminalCard checked={rememberCard} onChange={setRememberCard} disabled={isSubmitting || terminalBusy} />
               <div className="checkin-terminal-submit-actions">
                 <button
                   type="button"

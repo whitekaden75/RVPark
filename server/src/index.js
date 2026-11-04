@@ -16,6 +16,7 @@ import { registerCheckoutReturnRoutes } from "./checkout-return.js";
 import { registerMonthlyOfficePaymentRoutes } from "./monthly-office-payments.js";
 import { registerManualChargeRoutes } from "./manual-charges.js";
 import { createSavedPaymentMethods, storageConsentVersion, storageConsentText } from "./saved-payment-methods.js";
+import { createTerminalCardStorage } from "./terminal-card-storage.js";
 import { registerBookkeepingRoutes } from "./bookkeeping.js";
 import { registerFinanceRoutes } from "./bookkeeping-finance.js";
 import { registerLodgingRoutes } from "./bookkeeping-lodging.js";
@@ -107,8 +108,10 @@ const savedPaymentMethods = createSavedPaymentMethods({
     return `${encoded}.${signTokenPayload(encoded, secret)}`;
   },
   readToken: readSignedToken, secret: guestAuthSecret, allowedOrigins: allowedClientOrigins,
-  syncPayments: syncOpenStripePayments, notify: broadcastAdminDataChange
+  syncPayments: syncOpenStripePayments, notify: broadcastAdminDataChange,
+  refreshTerminalCards: options => terminalCardStorage.refresh(options)
 });
+const terminalCardStorage = createTerminalCardStorage({ pool, stripe, savedMethods: savedPaymentMethods, getReservation: fetchReservationDetails });
 const isWebPushConfigured = Boolean(vapidPublicKey && vapidPrivateKey);
 const isTwilioConfigured = Boolean(
   twilioAccountSid &&
@@ -2984,6 +2987,9 @@ async function handleStripeWebhookEvent(event) {
     client.release();
   }
 
+  if (event.type === 'payment_intent.succeeded' && event.data.object.metadata?.remember_card === 'true') {
+    await terminalCardStorage.complete(event.data.object.id).catch(error => console.error('Terminal card storage pending', error.code || error.message));
+  }
   return { createdReservationId, updatedReservationId };
 }
 
@@ -3176,6 +3182,7 @@ async function syncOpenStripePayments({
     }
   }
 
+  if (!terminalOnly) await terminalCardStorage.refresh({ reservationId });
   return summary;
 }
 
@@ -7592,7 +7599,10 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
       });
     }
 
+    const cardConsent = req.body?.rememberCard
+      ? await terminalCardStorage.prepare(req.body, reservation, req.adminUser?.id) : null;
     const paymentIntent = await stripe.paymentIntents.create({
+      ...(cardConsent ? { customer: cardConsent.customer, setup_future_usage: 'off_session' } : {}),
       amount: amountCents,
       currency: "usd",
       payment_method_types: [isMoto ? "card" : "card_present"],
@@ -7602,6 +7612,7 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
         ? `Riverpark RV Resort monthly charge for reservation #${reservation.id}`
         : `Riverpark RV Resort reservation #${reservation.id}`,
       metadata: {
+        ...(cardConsent ? { remember_card: 'true' } : {}),
         reservation_id: String(reservation.id),
         payment_amount_cents: String(amountCents),
         payment_price_type: priceType,
@@ -7639,6 +7650,8 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
       ]
     );
 
+    if (cardConsent) await terminalCardStorage.remember(paymentIntent, reservation, cardConsent);
+
     let updatedReader;
 
     try {
@@ -7648,7 +7661,7 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
           payment_intent: paymentIntent.id,
           process_config: isMoto
             ? { moto: true }
-            : { enable_customer_cancellation: true }
+            : { enable_customer_cancellation: true, ...(cardConsent ? { allow_redisplay: 'always' } : {}) }
         }
       );
       updatedReader = await presentSimulatedTerminalPayment(updatedReader);
@@ -7736,7 +7749,7 @@ app.post("/api/reservations/:id/terminal-payments", async (req, res) => {
         : "Payment sent. Ask the guest to follow the prompts on the reader."
     });
   } catch (error) {
-    return res.status(error.statusCode || 500).json({ message: error.message });
+    return res.status(error.status || error.statusCode || 500).json({ message: error.message });
   }
 });
 
@@ -7783,7 +7796,10 @@ app.get("/api/stripe/terminal/payments/:paymentIntentId", async (req, res) => {
       ? await fetchReservationDetails(pool, recordResult.rows[0].reservation_id)
       : null;
 
+    const cardStorage = succeeded && paymentIntent.metadata?.remember_card === 'true'
+      ? await terminalCardStorage.complete(paymentIntentId).catch(() => ({ status: 'pending' })) : null;
     return res.json({
+      cardStorage,
       paymentIntentId,
       paymentStatus: paymentIntent.status,
       actionStatus: readerActionMatches
@@ -7837,7 +7853,7 @@ app.post("/api/stripe/terminal/payments/:paymentIntentId/retry", async (req, res
         process_config:
           paymentIntent.metadata?.payment_entry_mode === "moto"
             ? { moto: true }
-            : { enable_customer_cancellation: true }
+            : { enable_customer_cancellation: true, ...(paymentIntent.metadata?.remember_card === 'true' ? { allow_redisplay: 'always' } : {}) }
       }
     );
     updatedReader = await presentSimulatedTerminalPayment(updatedReader);
