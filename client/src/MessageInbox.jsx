@@ -146,12 +146,12 @@ export default function MessageInbox({ messages, customers, selectedNumber, onSe
       <textarea ref={inputRef} rows="1" maxLength="1500" aria-label={`Message ${selected.name}`} placeholder="Text message" value={reply} onChange={event => setDrafts(current => ({ ...current, [draftKey]: event.target.value }))} />
       <button type="submit" className="messaging-send" aria-label={isSending ? "Sending message" : "Send message"} disabled={isSending || !reply.trim() || configured === false}><Icon name="send" /><span className="messaging-send-label">{isSending ? "Sending…" : "Send"}</span></button>
     </form>
-  </section> : <div className="messaging-empty-thread"><Icon name="compose" /><h3>Your conversations</h3><p>Select a contact to read and reply.</p></div>;
+  </section> : <div className="messaging-empty-thread"><span className="messaging-empty-icon"><Icon name="compose" /></span><h3>A friendly word goes a long way.</h3><p>Select a conversation to read and reply,<br />or start a new message with a guest.</p><button type="button" className="messaging-send" onClick={onNewMessageOpen}>New message <Icon name="compose" /></button><small>Park announcements appear here as individual conversations.</small></div>;
 
   return <>
     <section className="messaging-inbox" aria-label="Text message inbox">
       <aside className="messaging-sidebar" aria-label="Contacts">
-        <div className="messaging-sidebar-heading"><div><h3>Messages</h3><small>{unreadCount ? `${unreadCount} unread conversation${unreadCount === 1 ? "" : "s"}` : "You're all caught up"}</small></div><button type="button" className="messaging-icon-button" aria-label="Start a new message" onClick={onNewMessageOpen}><Icon name="compose" /></button></div>
+        <div className="messaging-sidebar-heading"><div><h3>Inbox</h3><small>{unreadCount ? `${unreadCount} unread conversation${unreadCount === 1 ? "" : "s"}` : "You're all caught up"}</small></div><button type="button" className="messaging-icon-button" aria-label="Start a new message" onClick={onNewMessageOpen}><Icon name="compose" /></button></div>
         <div className="messaging-search"><input type="search" aria-label="Search conversations" placeholder="Search name or message" value={search} onChange={event => setSearch(event.target.value)} /></div>
         <nav className="messaging-contacts" aria-label="Conversations">
           {filtered.map(conversation => <button key={conversation.key} type="button" className={`messaging-contact ${selected?.key === conversation.key ? "selected" : ""}`} aria-current={selected?.key === conversation.key ? "true" : undefined} onClick={() => onSelect(conversation)}>

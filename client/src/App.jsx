@@ -30,6 +30,7 @@ import CheckoutReturnPage from "./CheckoutReturnPage.jsx";
 import { getCheckoutReturnSessionId } from "./checkout-return.js";
 import { useTerminalReader } from "./useTerminalReader.js";
 import MessageInbox from "./MessageInbox.jsx";
+import ParkBroadcast from "./ParkBroadcast.jsx";
 import AdminOverview from "./AdminOverview.jsx";
 import ReservationTools from "./ReservationTools.jsx";
 import ManualCharges from "./ManualCharges.jsx";
@@ -13805,12 +13806,11 @@ export default function App() {
 
         {activePage === "messages" ? (
           <Paper component="section" className="card messaging-page" elevation={0}>
-            <div className="page-section-header">
-              <h2>{messageMode === "text" ? "Text Messages" : "Emails"}</h2>
+            <div className="page-section-header messaging-page-header">
+              <div><span className="messaging-eyebrow">GUEST COMMUNICATIONS</span><h2>Messages</h2><p>Send park updates and keep in touch with your guests.</p></div>
               <div className="section-actions">
-                <button type="button" className={messageMode === "text" ? "primary-button" : "ghost-button"} onClick={() => setMessageMode("text")}>Texts</button>
-                <button type="button" className={messageMode === "email" ? "primary-button" : "ghost-button"} onClick={() => setMessageMode("email")}>Emails</button>
-                <button
+                <div className="messaging-mode-switch" role="group" aria-label="Message channel"><button type="button" aria-pressed={messageMode === "text"} onClick={() => setMessageMode("text")}>Texts</button><button type="button" aria-pressed={messageMode === "email"} onClick={() => setMessageMode("email")}>Emails</button></div>
+                {messageMode === "text" ? <><button
                   type="button"
                   className="ghost-button"
                   disabled={isLoadingTextMessages}
@@ -13819,10 +13819,10 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  className="ghost-button"
+                  className="primary-button"
                   onClick={() => setIsNewMessageOpen(true)}>
-                  New message
-                </button>
+                  + New message
+                </button></> : null}
               </div>
             </div>
 
@@ -13863,8 +13863,11 @@ export default function App() {
               </div>
             ) : null}
             {messageMode === "text" ? <>
+            <ParkBroadcast apiRequest={apiRequest} configured={isTextMessagingConfigured} onSent={loadTextMessageHistory} />
+            <div className="messaging-tools-heading"><h3>Arrival messaging</h3><span>A warm welcome, right on time</span></div>
+            <div className="messaging-arrival-tools">
             <details className="sms-booking-details arrival-reminders" aria-label="Arrival reminders">
-              <summary>Arrival texts</summary>
+              <summary><span>Arrival reminders<small>Personalized texts for today or tomorrow</small></span></summary>
               <div className="button-row">
                 <button type="button" className={arrivalTextMode === "tomorrow" ? "primary-button" : "ghost-button"} onClick={() => setArrivalTextMode("tomorrow")}>Tomorrow’s arrivals</button>
                 <button type="button" className={arrivalTextMode === "today" ? "primary-button" : "ghost-button"} onClick={() => setArrivalTextMode("today")}>Today’s arrivals</button>
@@ -13885,10 +13888,10 @@ export default function App() {
                     {guest.eligible ? <textarea aria-label={`Arrival message for ${guest.first_name} ${guest.last_name}`} rows="8" value={arrivalTextDrafts[String(guest.id)] || ""} onChange={event => setArrivalTextDrafts(current => ({ ...current, [String(guest.id)]: event.target.value }))} /> : <p className="muted">This guest is not eligible for a reminder.</p>}
                   </div>)}
                 </div>
-              </details> : arrivalTextPreview ? <p className="muted">No active bookings arrive tomorrow.</p> : null}
+              </details> : arrivalTextPreview ? <p className="muted">No active bookings arrive {arrivalTextMode}.</p> : null}
             </details>
             <details className="sms-booking-details arrival-reminders" aria-label="Late arrival messages">
-              <summary>Late arrival texts</summary>
+              <summary><span>Late arrival instructions<small>A smooth check-in, even after office hours</small></span></summary>
               <p>New same-day bookings made at or after 5:00 PM Pacific Time receive these instructions automatically. Guests with a balance receive a secure payment link in the message. Already-sent texts are skipped.</p>
               <div className="button-row">
                 <button type="button" className="primary-button" disabled={isSendingTextMessage || !isTextMessagingConfigured || !lateArrivalPreview?.recipients.some(guest => guest.eligible && lateArrivalSelected[String(guest.id)])} onClick={sendLateArrivalTexts}>
@@ -13906,8 +13909,10 @@ export default function App() {
                 </div>
               </details> : lateArrivalPreview ? <p className="muted">No late arrivals found for today.</p> : null}
             </details>
+            </div>
+            <div className="messaging-tools-heading"><h3>Guest conversations</h3><span>Every reply, in one place</span></div>
             </> : null}
-            {!smsWebhookConfigured ? <Alert severity="warning">Incoming messages require TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on the server.</Alert> : null}
+            {messageMode === "text" && !smsWebhookConfigured ? <Alert severity="warning" sx={{ mb: 2 }}>Incoming messages require TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on the server.</Alert> : null}
             {messageMode === "text" ? <MessageInbox
               messages={textMessages}
               customers={customers}

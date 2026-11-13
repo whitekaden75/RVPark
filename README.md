@@ -202,6 +202,16 @@ Redeploy both services, sign in to Admin on each phone, and press **Enable booki
 
 The From address must use a SendGrid-verified Single Sender or an authenticated domain. After changing these backend variables, redeploy the server.
 
+### Text everyone currently staying in the park
+
+Run `sql/2026-11-12_park_text_broadcasts.sql` before deploying both services. The existing `text_messages` migration and Twilio configuration are also required. The migration only creates announcement history and does not send texts.
+
+In **Messages → Texts**, **Text everyone in the park** previews daily, monthly, and yearly guests with active stays covering today's Pacific calendar date (`arrival <= today < departure`), including open-ended stays. Future stays, checkout dates, canceled/pending bookings, and merged records are excluded. Review the guest list, write an update, and select **Review & send**. Messages go individually to each distinct valid mobile number; replies stay private in the inbox. Recorded text opt-outs apply across all current bookings sharing that number. Twilio also enforces provider-side unsubscribes.
+
+Sending rechecks the reviewed audience and rejects a changed list. Announcements run in the background, report each recipient's queued/failed/skipped/review status, and keep durable claims against double clicks and lost responses. A saved announcement ID lets this browser recover its last send after navigation or refresh. **Check send status** reuses the same ID and never resends an accepted announcement. Interrupted sends move to review after two minutes without progress; check Twilio history before creating a replacement. Queued means accepted for delivery, not confirmed delivered. The normal inbox continues to show subsequent delivery callbacks.
+
+Verification: `npm test` and `npm run build` in `client`; `node --test src/*.test.js` in `server`. Set `RVPARK_TEST_DATABASE_URL` to a disposable local PostgreSQL database to include the park-audience and concurrent-send integration checks. All automated sends use mocks.
+
 ### QR-only after-hours drive-up page
 
 Set `AFTER_HOURS_ACCESS_TOKEN` on the backend to a long, random value. The only URL for the drive-up page is:

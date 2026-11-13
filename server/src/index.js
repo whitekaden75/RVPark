@@ -9,6 +9,7 @@ import { createMessaging } from "./messaging.js";
 import { createMessageNotifier } from "./message-notifications.js";
 import { createArrivalReminders } from "./arrival-reminders.js";
 import { createLateArrivalTexts } from "./late-arrivals.js";
+import { createParkBroadcasts } from "./park-broadcasts.js";
 import { applyBalanceWaiver, registerBalanceWaiverRoutes } from "./pricing-waivers.js";
 import { registerAfterHoursCashRoutes } from "./after-hours-cash.js";
 import { registerCombinedBookingRoutes } from "./combined-bookings.js";
@@ -683,6 +684,34 @@ const arrivalReminders = createArrivalReminders({
   configured: () => isTwilioConfigured,
   createPaymentLink: createLateArrivalPaymentLink,
   send: sendReservationText
+});
+
+const parkBroadcasts = createParkBroadcasts({
+  pool, today: getParkTodayDate, normalizePhone: normalizeSmsPhoneNumber,
+  addFooter: addSmsComplianceFooter, send: sendReservationText,
+  configured: () => isTwilioConfigured
+});
+
+const parkBroadcastError = (res, error) => res.status(error.status || 503).json({
+  message: error.code === "42P01"
+    ? "Run sql/2026-11-12_park_text_broadcasts.sql and the text_messages migration before sending park announcements."
+    : error.message || "Unable to load the park announcement."
+});
+
+app.get("/api/messages/park-broadcasts/preview", async (_req, res) => {
+  try { return res.json(await parkBroadcasts.preview()); }
+  catch (error) { return parkBroadcastError(res, error); }
+});
+
+app.post("/api/messages/park-broadcasts", async (req, res) => {
+  try { return res.status(202).json(await parkBroadcasts.start(req.body || {})); }
+  catch (error) { return parkBroadcastError(res, error); }
+});
+
+app.get("/api/messages/park-broadcasts/:id", async (req, res) => {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(400).json({ message: "Invalid announcement ID." });
+  try { return res.json(await parkBroadcasts.get(req.params.id)); }
+  catch (error) { return parkBroadcastError(res, error); }
 });
 
 app.get("/api/messages/arrival-reminders", async (req, res) => {
